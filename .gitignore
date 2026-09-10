@@ -1,0 +1,47 @@
+tests/
+# Python cache y compilados
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Entornos virtuales
+.venv/
+venv/
+
+# Bases de datos y archivos locales de ejecución
+agent_history.db
+.coverage
+
+# Caché de pruebas
+.pytest_cache/
+
+# logs y archivos de registro
+logs/
+*.log
+
+.env
+agentes_visuales 05092026.txt   
+output_saver.txt
+agentes_visuales 06092026.txt   
+practica0.txt
+agentes_visuales 07092026.tx'   
+practica1.txt
+practica2_agente_loop.txt
+bug.txt                          
+practica3.txt
+Estructura del Proyecto.txt
+reporte_integracion.txt
+reporte_usuarios_2026-09-08.md
+saludo.txt
+lista.txt
+test_del_programa.txt
+tiempo.txt
+os
+
+# Archivos generados por agentes
+*.html
+output/
+tmp/
+
+productos10.txt
+*.txt

@@ -1,0 +1,2195 @@
+# core/executors.py - VERSIÓN REFACTORIZADA COMPLETA
+"""
+Ejecutores de agentes con soporte para todos los tipos.
+
+CARACTERÍSTICAS PRINCIPALES:
+- ✅ Validación robusta de entrada
+- ✅ Timeouts por tipo de operación
+- ✅ Sustitución de variables inteligente (extrae contenido relevante)
+- ✅ Extracción automática de contenido de agentes File, LLM, HTTP, Shell, Python
+- ✅ Caché para resultados HTTP (LRU con TTL)
+- ✅ Rate limiting para APIs externas
+- ✅ Progreso en tiempo real con señales
+- ✅ Logging estructurado
+- ✅ Manejo de errores granular
+- ✅ Soporte para todos los tipos de agentes
+
+TIPOS DE AGENTES SOPORTADOS:
+- Python / Python Script
+- Shell
+- HTTP
+- File
+- LLM (DeepSeek)
+- Loop
+"""
+
+import json
+import os
+import re
+import time
+import logging
+import hashlib
+import threading
+import subprocess
+import platform
+import shutil
+import tempfile
+from typing import Dict, Any, Optional, Tuple, List, Union
+from collections import OrderedDict
+from urllib.parse import urlparse
+
+import requests
+
+from core.agent import Agente, TipoAgente
+from core.sandbox import PythonSandbox, SandboxError
+from .cancellation import obtener_gestor_cancelacion, CancellationToken
+
+# ============================================================
+# CONFIGURACIÓN DE LOGGING
+# ============================================================
+
+logger = logging.getLogger(__name__)
+
+# ============================================================
+# CONSTANTES DE SEGURIDAD Y CONFIGURACIÓN
+# ============================================================
+
+# Límites de seguridad
+MAX_BYTES_LECTURA_ARCHIVO = 10 * 1024 * 1024      # 10 MB
+MAX_HTTP_BODY_SIZE = 50 * 1024 * 1024             # 50 MB
+MAX_SHELL_COMMAND_LENGTH = 10000                  # 10k caracteres
+MAX_FILE_PATH_LENGTH = 1000                       # 1k caracteres
+MAX_CODIGO_LENGTH = 100000                        # 100 KB
+
+# Caché HTTP
+HTTP_CACHE_SIZE = 100
+HTTP_CACHE_TTL = 300                              # 5 minutos
+DEFAULT_USER_AGENT = "Agentes-Visuales/1.0"
+
+# Métodos HTTP soportados
+ALLOWED_HTTP_METHODS = {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}
+
+# Variables reservadas del sistema
+_VARIABLES_RESERVADAS = frozenset(
+    ("contexto", "resultado", "nombre", "descripcion", "id", "fecha", "hora")
+)
+
+# Comandos shell peligrosos (solo advertencia)
+DANGEROUS_SHELL_COMMANDS = frozenset([
+    'rm -rf', 'dd if=', 'mkfs', 'chmod 777', 'chown', 'sudo',
+    ':(){ :|:& };:', 'mkfs', 'dd', '>/dev/sda'
+])
+
+# Directorios peligrosos para eliminar
+DANGEROUS_DIRS = frozenset(['/', 'C:\\', '/home', '/root', '/etc', '/var'])
+
+
+# ============================================================
+# CACHÉ HTTP (LRU con TTL)
+# ============================================================
+
+class HTTPCache:
+    """
+    Caché LRU para resultados de peticiones HTTP.
+    Thread-safe con TTL configurable.
+    """
+    
+    def __init__(self, max_size: int = HTTP_CACHE_SIZE, ttl: int = HTTP_CACHE_TTL):
+        self.max_size = max_size
+        self.ttl = ttl
+        self._cache: OrderedDict = OrderedDict()
+        self._lock = threading.RLock()
+        self._stats = {"hits": 0, "misses": 0}
+    
+    def _generate_key(self, url: str, method: str, headers: Dict, body: Optional[Any]) -> str:
+        """Genera una clave única para la petición."""
+        headers_normalized = {k.lower(): v for k, v in (headers or {}).items()}
+        headers_json = json.dumps(headers_normalized, sort_keys=True)
+        
+        body_str = ""
+        if body is not None:
+            try:
+                body_str = json.dumps(body, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                body_str = str(body)
+        
+        key_str = f"{method.upper()}|{url}|{headers_json}|{body_str}"
+        return hashlib.sha256(key_str.encode('utf-8')).hexdigest()
+    
+    def get(self, url: str, method: str, headers: Dict, body: Optional[Any]) -> Optional[Dict]:
+        """Obtiene un resultado del caché."""
+        key = self._generate_key(url, method, headers, body)
+        
+        with self._lock:
+            if key not in self._cache:
+                self._stats["misses"] += 1
+                return None
+            
+            entry = self._cache[key]
+            if time.time() - entry['timestamp'] > self.ttl:
+                del self._cache[key]
+                self._stats["misses"] += 1
+                return None
+            
+            self._cache.move_to_end(key)
+            self._stats["hits"] += 1
+            return entry['result']
+    
+    def put(self, url: str, method: str, headers: Dict, body: Optional[Any], result: Dict):
+        """Guarda un resultado en el caché."""
+        key = self._generate_key(url, method, headers, body)
+        
+        with self._lock:
+            if len(self._cache) >= self.max_size:
+                oldest = next(iter(self._cache))
+                del self._cache[oldest]
+            
+            self._cache[key] = {
+                'timestamp': time.time(),
+                'result': result
+            }
+    
+    def clear(self):
+        """Limpia el caché."""
+        with self._lock:
+            self._cache.clear()
+            self._stats = {"hits": 0, "misses": 0}
+    
+    def get_stats(self) -> Dict[str, Union[int, float]]:
+        """Obtiene estadísticas del caché."""
+        with self._lock:
+            total = self._stats["hits"] + self._stats["misses"]
+            return {
+                'size': len(self._cache),
+                'hits': self._stats["hits"],
+                'misses': self._stats["misses"],
+                'hit_ratio': self._stats["hits"] / total if total > 0 else 0
+            }
+
+
+# ============================================================
+# RATE LIMITER
+# ============================================================
+
+class RateLimiter:
+    """
+    Rate limiter simple para APIs externas.
+    Thread-safe.
+    """
+    
+    def __init__(self, calls_per_second: float = 10):
+        self.calls_per_second = calls_per_second
+        self._last_call = 0.0
+        self._lock = threading.RLock()
+    
+    def wait(self):
+        """Espera si es necesario para respetar el rate limit."""
+        with self._lock:
+            now = time.time()
+            elapsed = now - self._last_call
+            min_interval = 1.0 / self.calls_per_second
+            
+            if elapsed < min_interval:
+                time.sleep(min_interval - elapsed)
+            
+            self._last_call = time.time()
+
+
+# ============================================================
+# EJECUTOR PRINCIPAL
+# ============================================================
+
+class AgentExecutor:
+    """
+    Ejecuta agentes de diferentes tipos con funcionalidad real.
+    """
+    
+    # ============================================================
+    # RECURSOS COMPARTIDOS (Singletons)
+    # ============================================================
+    
+    _http_cache: Optional[HTTPCache] = None
+    _rate_limiter: Optional[RateLimiter] = None
+    _class_lock = threading.RLock()
+    
+    @classmethod
+    def _get_http_cache(cls) -> HTTPCache:
+        with cls._class_lock:
+            if cls._http_cache is None:
+                cls._http_cache = HTTPCache()
+            return cls._http_cache
+    
+    @classmethod
+    def _get_rate_limiter(cls) -> RateLimiter:
+        with cls._class_lock:
+            if cls._rate_limiter is None:
+                cls._rate_limiter = RateLimiter()
+            return cls._rate_limiter
+    
+    @classmethod
+    def clear_http_cache(cls):
+        """Limpia el caché HTTP."""
+        with cls._class_lock:
+            if cls._http_cache is not None:
+                cls._http_cache.clear()
+    
+    @classmethod
+    def get_http_cache_stats(cls) -> Dict:
+        """Obtiene estadísticas del caché HTTP."""
+        with cls._class_lock:
+            if cls._http_cache is not None:
+                return cls._http_cache.get_stats()
+            return {'size': 0, 'hits': 0, 'misses': 0, 'hit_ratio': 0}
+    
+    # ============================================================
+    # ACTUALIZACIÓN DE PROGRESO
+    # ============================================================
+    
+    @staticmethod
+    def _actualizar_progreso(agente: Agente, progreso: int, mensaje: str = ""):
+        """
+        Actualiza el progreso del agente y emite señal a través del bridge.
+        
+        Args:
+            agente: Agente a actualizar
+            progreso: Progreso (0-100)
+            mensaje: Mensaje opcional
+        """
+        agente.progreso = min(100, max(0, progreso))
+        if mensaje:
+            agente.mensaje = mensaje
+        
+        # Emitir señal a través del bridge si está disponible
+        if hasattr(agente, '_bridge') and agente._bridge is not None:
+            try:
+                agente._bridge.agente_actualizado.emit(agente.id)
+            except Exception as e:
+                logger.debug(f"Error emitiendo señal de progreso: {e}")
+    
+    # ============================================================
+    # EXTRACCIÓN INTELIGENTE DE CONTENIDO
+    # ============================================================
+    
+    @staticmethod
+    def _extraer_contenido_relevante(valor: Any) -> Any:
+        """
+        Extrae el contenido más relevante de un resultado de agente.
+        
+        Prioridades:
+        1. Agente File (lectura) → 'contenido'
+        2. Agente File (JSON parseado) → 'json'
+        3. Agente LLM → 'respuesta'
+        4. Agente HTTP → 'json'
+        5. Agente Shell → 'stdout'
+        6. Agente Python → 'resultado'
+        7. Agente Loop → 'items'
+        8. Otro dict → el dict completo
+        9. Otro tipo → el valor original
+        
+        Args:
+            valor: Valor a procesar
+            
+        Returns:
+            Any: Contenido extraído o valor original
+        """
+        if not isinstance(valor, dict):
+            return valor
+        
+        # Agente File que leyó un archivo
+        if 'contenido' in valor and isinstance(valor['contenido'], str):
+            return valor['contenido']
+        
+        # Agente File que leyó JSON parseado
+        if 'json' in valor and valor['json'] is not None:
+            return valor['json']
+        
+        # Agente LLM
+        if 'respuesta' in valor:
+            return valor['respuesta']
+        
+        # Agente HTTP
+        if 'json' in valor and valor['json'] is not None:
+            return valor['json']
+        
+        # Agente Shell
+        if 'stdout' in valor:
+            return valor['stdout']
+        
+        # Agente Python
+        if 'resultado' in valor:
+            return valor['resultado']
+        
+        # Agente Loop
+        if 'items' in valor:
+            return valor['items']
+        
+        # Otro dict
+        return valor
+    
+    # ============================================================
+    # VARIABLES Y SUSTITUCIÓN
+    # ============================================================
+    
+    @staticmethod
+    def _variables_disponibles(agente: Agente, contexto: Dict) -> Dict[str, str]:
+        """
+        Construye el diccionario de variables sustituibles.
+        
+        Incluye:
+        - Variables reservadas (contexto, resultado, nombre, descripcion, id, fecha, hora)
+        - Una entrada por cada dependencia en el contexto
+        - Extracción automática de contenido relevante
+        
+        Args:
+            agente: Agente actual
+            contexto: Diccionario de contexto
+            
+        Returns:
+            Dict[str, str]: Variables disponibles para sustitución
+        """
+        contexto = contexto or {}
+        ahora = time.localtime()
+        
+        # Variables base
+        variables = {
+            "contexto": json.dumps(contexto, indent=2, default=str) if contexto else "",
+            "resultado": json.dumps(contexto, indent=2, default=str) if contexto else "",
+            "nombre": agente.nombre,
+            "descripcion": agente.descripcion,
+            "id": agente.id,
+            "fecha": time.strftime("%Y-%m-%d", ahora),
+            "hora": time.strftime("%H:%M:%S", ahora),
+        }
+        
+        # Variables de dependencias con extracción inteligente
+        for clave, valor in contexto.items():
+            if clave in variables:
+                continue
+            
+            valor_extraido = AgentExecutor._extraer_contenido_relevante(valor)
+            
+            if isinstance(valor_extraido, str):
+                variables[clave] = valor_extraido
+            elif isinstance(valor_extraido, (dict, list)):
+                try:
+                    variables[clave] = json.dumps(
+                        valor_extraido, indent=2, default=str, ensure_ascii=False
+                    )
+                except (TypeError, ValueError):
+                    variables[clave] = str(valor_extraido)
+            else:
+                variables[clave] = str(valor_extraido)
+        
+        return variables
+    
+    @staticmethod
+    def _sustituir_variables(texto: str, variables: Dict[str, str]) -> str:
+        """
+        Sustituye variables en un texto usando el patrón {variable}.
+        
+        Args:
+            texto: Texto con variables
+            variables: Diccionario de variables
+            
+        Returns:
+            str: Texto con variables sustituidas
+        """
+        if not texto or "{" not in texto or not variables:
+            return texto
+        
+        # Solo sustituir variables que existen
+        pattern = re.compile(
+            r"\{\s*(" + "|".join(re.escape(k) for k in variables.keys()) + r")\s*\}"
+        )
+        return pattern.sub(lambda m: variables.get(m.group(1), m.group(0)), texto)
+    
+    # ============================================================
+    # VALIDADORES
+    # ============================================================
+    
+    @staticmethod
+    def _validar_ruta_archivo(ruta: str) -> bool:
+        """Valida una ruta de archivo."""
+        if not ruta:
+            return False
+        if len(ruta) > MAX_FILE_PATH_LENGTH:
+            return False
+        
+        normalized = os.path.normpath(ruta)
+        if normalized.startswith(('..', '/', '\\')):
+            return False
+        
+        basename = os.path.basename(normalized)
+        if basename.startswith('.') and basename not in ('.', '..'):
+            return False
+        
+        return True
+    
+    @staticmethod
+    def _validar_url(url: str) -> bool:
+        """Valida una URL HTTP/HTTPS."""
+        if not url:
+            return False
+        if len(url) > 2000:
+            return False
+        
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ('http', 'https'):
+                return False
+            if not parsed.netloc:
+                return False
+            if any(c in url for c in ('\n', '\r', '\t')):
+                return False
+            return True
+        except Exception:
+            return False
+    
+    @staticmethod
+    def _es_lista_valida(items: Any) -> bool:
+        """Verifica si un valor es una lista válida."""
+        return isinstance(items, list)
+    
+    @staticmethod
+    def _resolver_ruta_en_contexto(contexto: Dict, ruta: str) -> Any:
+        """Resuelve una ruta en el contexto (ej: 'Dependencia.clave')."""
+        if not ruta:
+            return None
+        
+        partes = ruta.split('.')
+        valor = contexto.get(partes[0])
+        
+        for parte in partes[1:]:
+            if isinstance(valor, dict):
+                valor = valor.get(parte)
+            else:
+                return None
+        
+        return valor
+    
+    # ============================================================
+    # MÉTODO PRINCIPAL DE EJECUCIÓN
+    # ============================================================
+    
+    # core/executors.py - MÉTODO ejecutar COMPLETO CON CANCELACIÓN
+
+    @staticmethod
+    def ejecutar(
+        agente: Agente, 
+        contexto: Dict = None,
+        cancellation_token: Optional['CancellationToken'] = None
+    ) -> Tuple[bool, str, Dict]:
+        """
+        Ejecuta un agente según su tipo con soporte para cancelación.
+        
+        Args:
+            agente: Agente a ejecutar
+            contexto: Contexto con resultados de dependencias
+            cancellation_token: Token de cancelación (opcional)
+            
+        Returns:
+            Tuple[bool, str, Dict]: (éxito, mensaje, resultado)
+        """
+        contexto = contexto or {}
+        start_time = time.time()
+        
+        # Verificar cancelación antes de empezar
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de iniciar", {'error': 'cancelled'}
+        
+        try:
+            # Validar configuración
+            es_valido, mensaje_error = agente.validar_configuracion()
+            if not es_valido:
+                return False, f"Configuración inválida: {mensaje_error}", {'error': mensaje_error}
+            
+            # Ejecutar según tipo
+            tipo = agente.tipo
+            if tipo == TipoAgente.PYTHON:
+                return AgentExecutor._ejecutar_python(agente, contexto, cancellation_token)
+            elif tipo == TipoAgente.SHELL:
+                return AgentExecutor._ejecutar_shell(agente, contexto, cancellation_token)
+            elif tipo == TipoAgente.HTTP:
+                return AgentExecutor._ejecutar_http(agente, contexto, cancellation_token)
+            elif tipo == TipoAgente.FILE:
+                return AgentExecutor._ejecutar_file(agente, contexto, cancellation_token)
+            elif tipo == TipoAgente.LLM:
+                return AgentExecutor._ejecutar_llm(agente, contexto, cancellation_token)
+            elif tipo == TipoAgente.LOOP:
+                return AgentExecutor._ejecutar_loop(agente, contexto, cancellation_token)
+            else:
+                return False, f"Tipo de agente no soportado: {tipo}", {}
+        
+        except Exception as e:
+            execution_time = time.time() - start_time
+            logger.exception(f"Error en ejecución de {agente.nombre}")
+            return False, f"Error crítico: {str(e)}", {
+                'error': str(e),
+                'tipo': type(e).__name__,
+                'duracion': execution_time
+            }
+    
+    # ============================================================
+    # 1. EJECUTOR PYTHON
+    # ============================================================
+    
+    # core/executors.py - MÉTODO _ejecutar_python CON CANCELACIÓN
+
+    @staticmethod
+    def _ejecutar_python(
+        agente: Agente, 
+        contexto: Dict,
+        cancellation_token: Optional['CancellationToken'] = None
+    ) -> Tuple[bool, str, Dict]:
+        """Ejecuta código Python en un subproceso aislado con soporte para cancelación."""
+        
+        # Verificar cancelación
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
+        
+        AgentExecutor._actualizar_progreso(agente, 20, "Preparando entorno Python...")
+        
+        codigo = agente.codigo_python or ""
+        
+        if not codigo.strip():
+            # Simulación si no hay código
+            AgentExecutor._actualizar_progreso(agente, 50, "Simulando ejecución...")
+            duracion = max(0.01, float(agente.duracion or 0.5))
+            # Verificar cancelación durante la simulación
+            for _ in range(int(min(duracion, 5) * 10)):
+                if cancellation_token and cancellation_token.esta_cancelado():
+                    return False, "Cancelado durante simulación", {'error': 'cancelled'}
+                time.sleep(0.1)
+            AgentExecutor._actualizar_progreso(agente, 100, "Simulación completada")
+            return True, f"Simulado {duracion:.2f}s", {
+                "simulado": True,
+                "duracion": duracion,
+                "nombre": agente.nombre
+            }
+        
+        if len(codigo) > MAX_CODIGO_LENGTH:
+            AgentExecutor._actualizar_progreso(agente, 100, "Código demasiado largo")
+            return False, f"Código demasiado largo (máx {MAX_CODIGO_LENGTH//1024}KB)", {
+                'error': 'code_too_long'
+            }
+        
+        timeout = getattr(agente, 'timeout_python', 30)
+        AgentExecutor._actualizar_progreso(agente, 40, "Ejecutando código Python...")
+        
+        try:
+            exito, mensaje, resultado = PythonSandbox.ejecutar(
+                codigo, 
+                contexto, 
+                timeout=timeout,
+                cancellation_token=cancellation_token
+            )
+            
+            AgentExecutor._actualizar_progreso(
+                agente, 100,
+                "Código ejecutado correctamente" if exito else f"Error: {mensaje[:50]}"
+            )
+            
+            return exito, mensaje, resultado
+        
+        except SandboxError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Error en sandbox: {str(e)[:50]}")
+            return False, f"Error en sandbox: {str(e)}", {'error': str(e)}
+    
+    # ============================================================
+    # 2. EJECUTOR SHELL
+    # ============================================================
+    
+    # core/executors.py - MÉTODO _ejecutar_shell COMPLETO CON CANCELACIÓN
+
+    @staticmethod
+    def _ejecutar_shell(
+        agente: Agente, 
+        contexto: Dict,
+        cancellation_token: Optional['CancellationToken'] = None
+    ) -> Tuple[bool, str, Dict]:
+        """
+        Ejecuta un comando de shell con sustitución de variables y soporte para cancelación.
+        """
+        
+        # Verificar cancelación
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
+        
+        AgentExecutor._actualizar_progreso(agente, 20, "Preparando comando shell...")
+        
+        variables = AgentExecutor._variables_disponibles(agente, contexto)
+        comando = AgentExecutor._sustituir_variables(agente.comando_shell, variables)
+        working_dir = AgentExecutor._sustituir_variables(agente.working_dir, variables)
+        
+        if not comando:
+            AgentExecutor._actualizar_progreso(agente, 100, "Comando vacío")
+            return False, "No hay comando shell definido", {}
+        
+        if len(comando) > MAX_SHELL_COMMAND_LENGTH:
+            AgentExecutor._actualizar_progreso(agente, 100, "Comando demasiado largo")
+            return False, f"Comando demasiado largo (máx {MAX_SHELL_COMMAND_LENGTH} caracteres)", {}
+        
+        # Advertencia de comandos peligrosos
+        for dangerous in DANGEROUS_SHELL_COMMANDS:
+            if dangerous in comando:
+                logger.warning(f"Comando shell contiene operación potencialmente peligrosa: {dangerous}")
+        
+        AgentExecutor._actualizar_progreso(agente, 50, f"Ejecutando: {comando[:50]}...")
+        
+        try:
+            # Directorio de trabajo
+            cwd = None
+            if working_dir and AgentExecutor._validar_ruta_archivo(working_dir):
+                if os.path.exists(working_dir) and os.path.isdir(working_dir):
+                    cwd = working_dir
+            
+            # Entorno limpio
+            env = os.environ.copy()
+            safe_env_vars = ['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TMPDIR']
+            if platform.system() == "Windows":
+                safe_env_vars.extend(['SYSTEMROOT', 'TEMP', 'APPDATA'])
+            
+            clean_env = {k: env.get(k, '') for k in safe_env_vars if k in env}
+            clean_env['PYTHONUNBUFFERED'] = '1'
+            
+            timeout = getattr(agente, 'timeout_shell', 30)
+            
+            # ── Crear proceso ──
+            proceso = subprocess.Popen(
+                comando,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=cwd,
+                env=clean_env,
+                encoding='utf-8',
+                errors='replace'
+            )
+            
+            # ── Callback de cancelación ──
+            def cancelar_proceso(token):
+                nonlocal proceso
+                try:
+                    if proceso and proceso.poll() is None:
+                        proceso.terminate()
+                        time.sleep(0.3)
+                        if proceso.poll() is None:
+                            proceso.kill()
+                        logger.info(f"Proceso shell cancelado: {comando[:50]}...")
+                except Exception as e:
+                    logger.warning(f"Error cancelando proceso shell: {e}")
+            
+            if cancellation_token:
+                cancellation_token.agregar_callback(cancelar_proceso)
+            
+            try:
+                # ── Esperar con verificación periódica ──
+                inicio = time.time()
+                while True:
+                    # Verificar cancelación
+                    if cancellation_token and cancellation_token.esta_cancelado():
+                        cancelar_proceso(cancellation_token)
+                        return False, "Cancelado por usuario", {'error': 'cancelled', 'comando': comando[:100]}
+                    
+                    # Verificar timeout
+                    if time.time() - inicio > timeout:
+                        cancelar_proceso(cancellation_token)
+                        return False, f"Timeout ({timeout}s)", {'error': 'timeout', 'comando': comando[:100]}
+                    
+                    # Verificar si el proceso terminó
+                    if proceso.poll() is not None:
+                        break
+                    
+                    time.sleep(0.05)
+                
+                # Recolectar resultados
+                stdout, stderr = proceso.communicate(timeout=1)
+                codigo = proceso.returncode
+                
+            finally:
+                if cancellation_token:
+                    cancellation_token.eliminar_callback(cancelar_proceso)
+            
+            AgentExecutor._actualizar_progreso(agente, 90, "Procesando resultado...")
+            
+            stdout = stdout.strip()
+            stderr = stderr.strip()
+            
+            # Truncar salidas largas
+            if len(stdout) > 10000:
+                stdout = stdout[:10000] + "\n... (truncado)"
+            if len(stderr) > 10000:
+                stderr = stderr[:10000] + "\n... (truncado)"
+            
+            AgentExecutor._actualizar_progreso(agente, 100, "Comando completado")
+            
+            resultado_dict = {
+                "codigo": codigo,
+                "stdout": stdout,
+                "stderr": stderr
+            }
+            
+            if codigo == 0:
+                mensaje = f"Comando ejecutado correctamente (código: {codigo})"
+                if stdout:
+                    mensaje += f"\nSalida: {stdout[:200]}..."
+                return True, mensaje, resultado_dict
+            else:
+                mensaje = f"Comando falló (código: {codigo})"
+                if stderr:
+                    mensaje += f"\nError: {stderr[:200]}..."
+                return False, mensaje, resultado_dict
+        
+        except subprocess.TimeoutExpired:
+            AgentExecutor._actualizar_progreso(agente, 100, "Timeout")
+            return False, f"Comando excedió el tiempo límite ({timeout}s)", {}
+        except subprocess.SubprocessError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Error: {str(e)[:50]}")
+            return False, f"Error en subproceso: {str(e)}", {}
+        except Exception as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Error: {str(e)[:50]}")
+            return False, f"Error en comando shell: {str(e)}", {}
+    
+    # ============================================================
+    # 3. EJECUTOR HTTP
+    # ============================================================
+    
+    # core/executors.py - REFACTORIZAR _ejecutar_http
+
+    # core/executors.py - MÉTODO _ejecutar_http COMPLETO CON CANCELACIÓN
+
+        # ============================================================
+    # 3. EJECUTOR HTTP (COMPLETAMENTE REFACTORIZADO)
+    # ============================================================
+    
+    @staticmethod
+    def _ejecutar_http(
+        agente: Agente, 
+        contexto: Dict,
+        cancellation_token: Optional['CancellationToken'] = None
+    ) -> Tuple[bool, str, Dict]:
+        """
+        Realiza una petición HTTP con sustitución de variables y soporte para cancelación.
+        
+        ✅ CARACTERÍSTICAS:
+        - Sustitución de variables en URL, headers y body
+        - Caché LRU con TTL configurable
+        - Rate limiting para APIs externas
+        - Soporte para todos los métodos HTTP (GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS)
+        - Cancelación en tiempo real (cierra la sesión)
+        - Formato de salida SIEMPRE consistente
+        - Manejo granular de errores
+        - Timeout configurable por agente
+        - Auto-retry con backoff (via requests.Session)
+        - Límites de seguridad (tamaño de body, URL length)
+        - Logging detallado
+        
+        Args:
+            agente: Agente HTTP a ejecutar
+            contexto: Contexto con resultados de dependencias
+            cancellation_token: Token de cancelación (opcional)
+            
+        Returns:
+            Tuple[bool, str, Dict]: (éxito, mensaje, resultado)
+            
+        FORMATO DE SALIDA SIEMPRE CONSISTENTE:
+        {
+            'status_code': int | None,
+            'headers': dict,
+            'body': str,
+            'body_truncated': bool,
+            'body_size': int,
+            'json': dict | list | None,  # ← SIEMPRE incluido, None si no es JSON
+            'url': str,
+            'elapsed': float,
+            'error': str | None,  # Solo si hay error
+            'cancelled': bool,    # Solo si fue cancelado
+        }
+        """
+        
+        # ── 1. VERIFICAR CANCELACIÓN ──
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de ejecutar", {
+                'error': 'cancelled',
+                'cancelled': True,
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': '',
+                'elapsed': 0
+            }
+        
+        AgentExecutor._actualizar_progreso(agente, 10, "Preparando petición HTTP...")
+        
+        # ── 2. VALIDAR Y PREPARAR PARÁMETROS ──
+        variables = AgentExecutor._variables_disponibles(agente, contexto)
+        
+        # URL
+        url_raw = agente.url_http or ""
+        url = AgentExecutor._sustituir_variables(url_raw, variables)
+        
+        if not url or not url.strip():
+            AgentExecutor._actualizar_progreso(agente, 100, "URL vacía")
+            return False, "No hay URL definida", {
+                'error': 'empty_url',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': '',
+                'elapsed': 0
+            }
+        
+        if not AgentExecutor._validar_url(url):
+            AgentExecutor._actualizar_progreso(agente, 100, "URL inválida")
+            return False, f"URL inválida: {url}", {
+                'error': 'invalid_url',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': url[:100],
+                'elapsed': 0
+            }
+        
+        # Método
+        metodo = agente.metodo_http.upper() if agente.metodo_http else "GET"
+        if metodo not in ALLOWED_HTTP_METHODS:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Método no soportado: {metodo}")
+            return False, f"Método HTTP no soportado: {metodo}", {
+                'error': 'unsupported_method',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': url[:100],
+                'elapsed': 0
+            }
+        
+        # Headers
+        headers = {}
+        if agente.headers_http:
+            for k, v in agente.headers_http.items():
+                if k and v:
+                    try:
+                        headers[k] = AgentExecutor._sustituir_variables(str(v), variables)
+                    except Exception as e:
+                        logger.warning(f"Error sustituyendo header '{k}': {e}")
+                        headers[k] = str(v)
+        
+        # Headers por defecto (solo si no están establecidos)
+        if 'User-Agent' not in headers:
+            headers['User-Agent'] = DEFAULT_USER_AGENT
+        if 'Accept' not in headers:
+            headers['Accept'] = 'application/json, */*'
+        
+        # Body
+        body_texto_raw = agente.body_http or ""
+        body_texto = AgentExecutor._sustituir_variables(body_texto_raw, variables)
+        
+        body = None
+        content_type = headers.get('Content-Type', '')
+        
+        if body_texto and metodo in ("POST", "PUT", "PATCH"):
+            # Intentar parsear como JSON
+            if 'application/json' in content_type.lower() or body_texto.strip().startswith(('{', '[')):
+                try:
+                    body = json.loads(body_texto)
+                except json.JSONDecodeError:
+                    # Si falla el parseo, enviar como texto plano
+                    body = body_texto
+                    if 'Content-Type' not in headers:
+                        headers['Content-Type'] = 'text/plain'
+            else:
+                body = body_texto
+                if 'Content-Type' not in headers:
+                    headers['Content-Type'] = 'text/plain'
+        
+        # Timeout
+        timeout = getattr(agente, 'timeout_http', 30)
+        if timeout < 1:
+            timeout = 30
+            logger.warning(f"Timeout HTTP inválido ({agente.timeout_http}), usando 30s")
+        
+        AgentExecutor._actualizar_progreso(agente, 30, f"{metodo} {url[:60]}...")
+        
+        # ── 3. VERIFICAR CACHÉ ──
+        http_cache = AgentExecutor._get_http_cache()
+        cached_result = http_cache.get(url, metodo, headers, body)
+        if cached_result is not None:
+            AgentExecutor._actualizar_progreso(agente, 100, "✅ Respuesta desde caché")
+            logger.debug(f"HTTP caché hit: {metodo} {url[:60]}...")
+            return True, "Respuesta desde caché", cached_result
+        
+        # ── 4. RATE LIMITING ──
+        rate_limiter = AgentExecutor._get_rate_limiter()
+        rate_limiter.wait()
+        
+        AgentExecutor._actualizar_progreso(agente, 50, "Enviando petición...")
+        
+        # ── 5. EJECUTAR PETICIÓN CON CANCELACIÓN ──
+        import threading
+        import requests
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        
+        session = None
+        response = None
+        error = None
+        completed = threading.Event()
+        
+        try:
+            # Configurar sesión con retry
+            session = requests.Session()
+            retry = Retry(
+                total=2,
+                backoff_factor=0.5,
+                status_forcelist=[429, 500, 502, 503, 504],
+                allowed_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+            )
+            adapter = HTTPAdapter(max_retries=retry)
+            session.mount('http://', adapter)
+            session.mount('https://', adapter)
+            
+            # ── Callback de cancelación ──
+            def cancelar_peticion(token):
+                nonlocal session
+                try:
+                    if session:
+                        session.close()
+                        logger.info(f"🛑 Petición HTTP cancelada: {url[:60]}...")
+                except Exception as e:
+                    logger.warning(f"Error cancelando petición HTTP: {e}")
+            
+            if cancellation_token:
+                cancellation_token.agregar_callback(cancelar_peticion)
+            
+            # ── Ejecutar petición en hilo separado ──
+            def hacer_peticion():
+                nonlocal response, error
+                try:
+                    kwargs = {
+                        'headers': headers,
+                        'timeout': timeout,
+                        'allow_redirects': True,
+                        'verify': True,
+                    }
+                    
+                    # Añadir body según método
+                    if metodo in ("POST", "PUT", "PATCH"):
+                        if isinstance(body, dict):
+                            kwargs['json'] = body
+                        else:
+                            kwargs['data'] = body
+                    
+                    # Ejecutar según método
+                    if metodo == "GET":
+                        response = session.get(url, **kwargs)
+                    elif metodo == "POST":
+                        response = session.post(url, **kwargs)
+                    elif metodo == "PUT":
+                        response = session.put(url, **kwargs)
+                    elif metodo == "DELETE":
+                        response = session.delete(url, **kwargs)
+                    elif metodo == "PATCH":
+                        response = session.patch(url, **kwargs)
+                    elif metodo == "HEAD":
+                        response = session.head(url, **kwargs)
+                    elif metodo == "OPTIONS":
+                        response = session.options(url, **kwargs)
+                        
+                except requests.exceptions.Timeout as e:
+                    error = e
+                except requests.exceptions.ConnectionError as e:
+                    error = e
+                except requests.exceptions.SSLError as e:
+                    error = e
+                except requests.exceptions.TooManyRedirects as e:
+                    error = e
+                except requests.exceptions.RequestException as e:
+                    error = e
+                except Exception as e:
+                    error = e
+                finally:
+                    completed.set()
+            
+            # Iniciar hilo
+            thread = threading.Thread(target=hacer_peticion, daemon=True)
+            thread.start()
+            
+            # ── Esperar con verificación de cancelación ──
+            inicio = time.time()
+            while not completed.is_set():
+                # Verificar cancelación
+                if cancellation_token and cancellation_token.esta_cancelado():
+                    session.close()
+                    AgentExecutor._actualizar_progreso(agente, 100, "⛔ Cancelado por usuario")
+                    return False, "Cancelado por usuario", {
+                        'error': 'cancelled',
+                        'cancelled': True,
+                        'status_code': None,
+                        'headers': {},
+                        'body': '',
+                        'json': None,
+                        'url': url[:100],
+                        'elapsed': time.time() - inicio
+                    }
+                
+                # Verificar timeout global (timeout + margen)
+                if time.time() - inicio > timeout + 5:
+                    session.close()
+                    AgentExecutor._actualizar_progreso(agente, 100, "⏱️ Timeout")
+                    return False, f"Timeout en petición HTTP ({timeout}s)", {
+                        'error': 'timeout',
+                        'status_code': None,
+                        'headers': {},
+                        'body': '',
+                        'json': None,
+                        'url': url[:100],
+                        'elapsed': timeout
+                    }
+                
+                completed.wait(0.05)
+            
+            # ── Si hubo error en el hilo ──
+            if error:
+                raise error
+            
+            # ── Si no hay respuesta ──
+            if response is None:
+                raise requests.exceptions.RequestException("No se recibió respuesta")
+            
+        except requests.exceptions.Timeout as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "⏱️ Timeout")
+            return False, f"Timeout en petición HTTP ({timeout}s)", {
+                'error': 'timeout',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': url[:100],
+                'elapsed': timeout
+            }
+            
+        except requests.exceptions.ConnectionError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "❌ Error de conexión")
+            return False, f"Error de conexión: {url}", {
+                'error': 'connection_error',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': url[:100],
+                'elapsed': 0,
+                'detail': str(e)
+            }
+            
+        except requests.exceptions.SSLError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "❌ Error SSL")
+            return False, f"Error SSL en: {url}", {
+                'error': 'ssl_error',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': url[:100],
+                'elapsed': 0,
+                'detail': str(e)
+            }
+            
+        except requests.exceptions.TooManyRedirects as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "❌ Demasiadas redirecciones")
+            return False, f"Demasiadas redirecciones en: {url}", {
+                'error': 'too_many_redirects',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': url[:100],
+                'elapsed': 0,
+                'detail': str(e)
+            }
+            
+        except requests.exceptions.RequestException as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"❌ Error: {str(e)[:50]}")
+            return False, f"Error en petición HTTP: {str(e)}", {
+                'error': 'request_exception',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': url[:100],
+                'elapsed': 0,
+                'detail': str(e)
+            }
+            
+        except Exception as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"❌ Error inesperado: {str(e)[:50]}")
+            logger.exception(f"Error inesperado en HTTP: {e}")
+            return False, f"Error inesperado en HTTP: {str(e)}", {
+                'error': 'unexpected',
+                'status_code': None,
+                'headers': {},
+                'body': '',
+                'json': None,
+                'url': url[:100],
+                'elapsed': 0,
+                'detail': str(e)
+            }
+            
+        finally:
+            # ── Limpiar callback ──
+            if cancellation_token:
+                cancellation_token.eliminar_callback(cancelar_peticion)
+        
+        # ── 6. PROCESAR RESPUESTA ──
+        AgentExecutor._actualizar_progreso(agente, 80, f"📥 Procesando respuesta {response.status_code}...")
+        
+        # Calcular tamaño del body
+        body_size = len(response.content)
+        body_truncated = body_size > MAX_HTTP_BODY_SIZE
+        
+        # Obtener body como texto
+        try:
+            body_text = response.text
+        except UnicodeDecodeError:
+            # Si no se puede decodificar, usar base64
+            import base64
+            body_text = f"[BINARY DATA: {base64.b64encode(response.content).decode('ascii')[:100]}...]"
+        
+        if body_truncated:
+            body_text = body_text[:10000] + "\n... (truncado)"
+        
+        # Intentar parsear JSON
+        json_data = None
+        if response.headers.get('Content-Type', '').startswith('application/json'):
+            try:
+                json_data = response.json()
+            except (ValueError, json.JSONDecodeError):
+                # Intentar parsear manualmente si falla
+                try:
+                    json_data = json.loads(body_text[:10000])
+                except (ValueError, json.JSONDecodeError):
+                    pass
+        
+        # ── 7. CONSTRUIR RESULTADO (SIEMPRE CONSISTENTE) ──
+        resultado = {
+            "status_code": response.status_code,
+            "headers": dict(response.headers),
+            "body": body_text,
+            "body_truncated": body_truncated,
+            "body_size": body_size,
+            "json": json_data,  # ← SIEMPRE incluido, puede ser None
+            "url": response.url,
+            "elapsed": response.elapsed.total_seconds(),
+            "error": None,
+        }
+        
+        # ── 8. GUARDAR EN CACHÉ (solo si es exitoso) ──
+        if 200 <= response.status_code < 400:
+            http_cache.put(url, metodo, headers, body, resultado)
+            logger.debug(f"HTTP cacheado: {metodo} {url[:60]}... (status: {response.status_code})")
+        else:
+            logger.debug(f"HTTP no cacheado: {metodo} {url[:60]}... (status: {response.status_code})")
+        
+        AgentExecutor._actualizar_progreso(agente, 100, f"✅ Completado (status: {response.status_code})")
+        
+        # ── 9. RETORNAR RESULTADO ──
+        if 200 <= response.status_code < 300:
+            mensaje = f"Petición exitosa (status: {response.status_code})"
+            if json_data is not None:
+                # Mostrar resumen del JSON en el mensaje
+                if isinstance(json_data, dict):
+                    claves = list(json_data.keys())[:3]
+                    mensaje += f" - JSON claves: {claves}"
+                elif isinstance(json_data, list):
+                    mensaje += f" - JSON array: {len(json_data)} items"
+            return True, mensaje, resultado
+        else:
+            mensaje = f"Petición falló (status: {response.status_code})"
+            if json_data is not None:
+                # Extraer mensaje de error si existe
+                if isinstance(json_data, dict):
+                    error_msg = json_data.get('error') or json_data.get('message') or json_data.get('detail')
+                    if error_msg:
+                        mensaje += f" - {error_msg[:100]}"
+            return False, mensaje, resultado
+    
+    # ============================================================
+    # 4. EJECUTOR FILE (REFACTORIZADO CON CANCELACIÓN)
+    # ============================================================
+    
+    @staticmethod
+    def _ejecutar_file(
+        agente: Agente,
+        contexto: Dict,
+        cancellation_token: Optional['CancellationToken'] = None
+    ) -> Tuple[bool, str, Dict]:
+        """
+        Realiza operaciones con archivos con sustitución de variables y soporte para cancelación.
+
+        MEJORAS IMPLEMENTADAS:
+        - ✅ Extracción inteligente de contenido (no serializa todo a JSON)
+        - ✅ Prioriza 'contenido' y 'resultado' explícitos
+        - ✅ Si hay una sola dependencia, extrae su contenido relevante
+        - ✅ Si hay múltiples, busca el más útil por prioridad:
+              respuesta (LLM) > contenido (File) > json (HTTP) > body (HTTP) > resultado (Python)
+        - ✅ Strings se escriben directamente SIN comillas ni escapes
+        - ✅ Solo dicts y lists se serializan como JSON (cuando corresponde)
+        - ✅ Logging detallado para diagnóstico
+
+        Operaciones soportadas:
+        - leer: Lee un archivo y retorna su contenido
+        - escribir: Escribe contenido en un archivo
+        - copiar: Copia un archivo
+        - mover: Mueve/renombra un archivo
+        - eliminar: Elimina un archivo o directorio
+
+        La cancelación es soportada durante operaciones de lectura/escritura de archivos grandes.
+        """
+
+        # ── Verificar cancelación antes de ejecutar ──
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
+
+        AgentExecutor._actualizar_progreso(agente, 20, "Preparando operación de archivo...")
+
+        # ── Sustituir variables ──
+        variables = AgentExecutor._variables_disponibles(agente, contexto)
+        origen = AgentExecutor._sustituir_variables(agente.archivo_origen, variables)
+        destino = AgentExecutor._sustituir_variables(agente.archivo_destino, variables)
+        operacion = agente.operacion_file or "leer"
+
+        AgentExecutor._actualizar_progreso(agente, 40, f"Operación: {operacion}")
+
+        # ── Validar según operación ──
+        if operacion in ("leer", "eliminar"):
+            ruta_archivo = origen
+            if not ruta_archivo:
+                AgentExecutor._actualizar_progreso(agente, 100, "Ruta no especificada")
+                return False, f"No se especificó ruta para operación: {operacion}", {}
+            if not AgentExecutor._validar_ruta_archivo(ruta_archivo):
+                AgentExecutor._actualizar_progreso(agente, 100, "Ruta inválida")
+                return False, f"Ruta inválida: {ruta_archivo}", {}
+
+        elif operacion in ("escribir", "copiar", "mover"):
+            if not destino:
+                AgentExecutor._actualizar_progreso(agente, 100, "Destino no especificado")
+                return False, f"No se especificó destino para operación: {operacion}", {}
+            if not AgentExecutor._validar_ruta_archivo(destino):
+                AgentExecutor._actualizar_progreso(agente, 100, "Ruta destino inválida")
+                return False, f"Ruta destino inválida: {destino}", {}
+
+            if operacion in ("copiar", "mover") and origen:
+                if not AgentExecutor._validar_ruta_archivo(origen):
+                    AgentExecutor._actualizar_progreso(agente, 100, "Ruta origen inválida")
+                    return False, f"Ruta origen inválida: {origen}", {}
+                ruta_archivo = origen
+            else:
+                ruta_archivo = destino
+        else:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Operación no soportada: {operacion}")
+            return False, f"Operación de archivo no soportada: {operacion}", {}
+
+        # ── Verificar cancelación antes de la operación ──
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de operación", {'error': 'cancelled'}
+
+        try:
+            # ══════════════════════════════════════════════════════════
+            # LEER
+            # ══════════════════════════════════════════════════════════
+            if operacion == "leer":
+                if not os.path.exists(ruta_archivo):
+                    AgentExecutor._actualizar_progreso(agente, 100, "Archivo no encontrado")
+                    return False, f"Archivo no encontrado: {ruta_archivo}", {}
+
+                if not os.path.isfile(ruta_archivo):
+                    AgentExecutor._actualizar_progreso(agente, 100, "No es un archivo")
+                    return False, f"No es un archivo: {ruta_archivo}", {}
+
+                tamaño = os.path.getsize(ruta_archivo)
+                if tamaño > MAX_BYTES_LECTURA_ARCHIVO:
+                    AgentExecutor._actualizar_progreso(agente, 100, "Archivo demasiado grande")
+                    return False, (
+                        f"Archivo demasiado grande ({tamaño} bytes > {MAX_BYTES_LECTURA_ARCHIVO} límite)"
+                    ), {"archivo": ruta_archivo, "tamaño": tamaño}
+
+                AgentExecutor._actualizar_progreso(agente, 70, "Leyendo archivo...")
+
+                # ── Leer con verificación de cancelación ──
+                contenido = ""
+                chunk_size = 8192
+                with open(ruta_archivo, 'r', encoding='utf-8', errors='replace') as f:
+                    while True:
+                        if cancellation_token and cancellation_token.esta_cancelado():
+                            return False, "Cancelado durante lectura", {
+                                'error': 'cancelled',
+                                'archivo': ruta_archivo,
+                                'bytes_leidos': len(contenido)
+                            }
+                        chunk = f.read(chunk_size)
+                        if not chunk:
+                            break
+                        contenido += chunk
+
+                AgentExecutor._actualizar_progreso(agente, 100, "Archivo leído")
+
+                resultado = {
+                    "archivo": ruta_archivo,
+                    "tamaño": tamaño,
+                    "contenido": contenido,
+                    "total_caracteres": len(contenido)
+                }
+
+                # Si es JSON, intentar parsearlo y añadirlo
+                if ruta_archivo.endswith('.json'):
+                    try:
+                        resultado["json"] = json.loads(contenido)
+                    except json.JSONDecodeError:
+                        pass
+
+                # ✅ NUEVO: aplicar el modo de salida elegido por el usuario
+                modo_salida = getattr(agente, 'modo_salida_file', 'auto') or 'auto'
+                resultado = AgentExecutor._aplicar_modo_salida_file(
+                    resultado, modo_salida, contenido
+                )
+
+                return True, f"Archivo leído: {ruta_archivo} ({len(contenido)} caracteres)", resultado
+
+            # ══════════════════════════════════════════════════════════
+            # ESCRIBIR (REFACTORIZADO CON EXTRACCIÓN INTELIGENTE)
+            # ══════════════════════════════════════════════════════════
+            elif operacion == "escribir":
+                # ── Obtener contenido a escribir (con extracción inteligente) ──
+                contenido = None
+
+                # Prioridad 1: 'contenido' explícito en el contexto
+                if 'contenido' in contexto:
+                    contenido = contexto['contenido']
+                    logger.debug(f"File: usando 'contenido' explícito del contexto")
+
+                # Prioridad 2: 'resultado' explícito en el contexto
+                elif 'resultado' in contexto:
+                    contenido = contexto['resultado']
+                    logger.debug(f"File: usando 'resultado' explícito del contexto")
+
+                # Prioridad 3: Extracción inteligente desde las dependencias
+                elif contexto:
+                    # Si hay UNA sola dependencia, extraer su contenido relevante
+                    if len(contexto) == 1:
+                        valor_unico = next(iter(contexto.values()))
+                        contenido = AgentExecutor._extraer_contenido_relevante(valor_unico)
+                        logger.debug(
+                            f"File: extraído contenido relevante de la única dependencia "
+                            f"(tipo: {type(valor_unico).__name__})"
+                        )
+                    else:
+                        # Múltiples dependencias: buscar la más relevante por prioridad
+                        # Orden: respuesta (LLM) > contenido (File) > json (HTTP) > body (HTTP) > resultado (Python)
+                        for clave, valor in contexto.items():
+                            if not isinstance(valor, dict):
+                                continue
+
+                            # LLM: 'respuesta'
+                            if 'respuesta' in valor and valor['respuesta']:
+                                contenido = valor['respuesta']
+                                logger.debug(f"File: usando 'respuesta' del agente '{clave}'")
+                                break
+
+                            # File: 'contenido'
+                            if 'contenido' in valor and valor['contenido']:
+                                contenido = valor['contenido']
+                                logger.debug(f"File: usando 'contenido' del agente '{clave}'")
+                                break
+
+                            # HTTP: 'json' o 'body'
+                            if 'json' in valor and valor['json'] is not None:
+                                contenido = valor['json']
+                                logger.debug(f"File: usando 'json' del agente '{clave}'")
+                                break
+                            if 'body' in valor and valor['body']:
+                                contenido = valor['body']
+                                logger.debug(f"File: usando 'body' del agente '{clave}'")
+                                break
+
+                            # Python: 'resultado'
+                            if 'resultado' in valor and valor['resultado']:
+                                contenido = valor['resultado']
+                                logger.debug(f"File: usando 'resultado' del agente '{clave}'")
+                                break
+
+                        # Fallback: usar extracción inteligente del primer valor
+                        if contenido is None:
+                            primer_valor = next(iter(contexto.values()))
+                            contenido = AgentExecutor._extraer_contenido_relevante(primer_valor)
+                            logger.debug(f"File: fallback con extracción inteligente")
+
+                # Prioridad 4: Sin contexto ni contenido → mensaje por defecto
+                if contenido is None:
+                    contenido = {
+                        'mensaje': 'Archivo generado automáticamente',
+                        'fecha': time.strftime("%Y-%m-%d %H:%M:%S"),
+                        'agente': agente.nombre
+                    }
+                    logger.debug(f"File: sin contexto, usando mensaje por defecto")
+
+                # ── Convertir a string (respetando el tipo original) ──
+                if isinstance(contenido, str):
+                    # ✅ Si ya es string, usar directamente SIN comillas ni escapes
+                    contenido_str = contenido
+                elif isinstance(contenido, dict):
+                    # Diccionario → JSON formateado
+                    contenido_str = json.dumps(contenido, indent=2, default=str, ensure_ascii=False)
+                elif isinstance(contenido, list):
+                    # Lista → JSON formateado
+                    contenido_str = json.dumps(contenido, indent=2, default=str, ensure_ascii=False)
+                elif isinstance(contenido, (int, float, bool)):
+                    # Números y booleanos → string simple
+                    contenido_str = str(contenido)
+                else:
+                    # Otros tipos → representación string
+                    contenido_str = str(contenido)
+
+                logger.debug(f"File: contenido final = {len(contenido_str)} caracteres")
+
+                # ── Crear directorio si es necesario ──
+                directorio = os.path.dirname(ruta_archivo)
+                if directorio:
+                    os.makedirs(directorio, exist_ok=True)
+
+                AgentExecutor._actualizar_progreso(agente, 70, "Escribiendo archivo...")
+
+                # ── Escribir con verificación de cancelación ──
+                chunk_size = 8192
+                with open(ruta_archivo, 'w', encoding='utf-8') as f:
+                    for i in range(0, len(contenido_str), chunk_size):
+                        if cancellation_token and cancellation_token.esta_cancelado():
+                            return False, "Cancelado durante escritura", {
+                                'error': 'cancelled',
+                                'archivo': ruta_archivo,
+                                'caracteres_escritos': i
+                            }
+                        f.write(contenido_str[i:i + chunk_size])
+
+                AgentExecutor._actualizar_progreso(agente, 100, "Archivo escrito")
+
+                resultado = {
+                    "archivo": ruta_archivo,
+                    "caracteres_escritos": len(contenido_str),
+                    "contenido_preview": contenido_str[:200] if len(contenido_str) > 200 else contenido_str
+                }
+
+                return True, f"Archivo escrito: {ruta_archivo} ({len(contenido_str)} caracteres)", resultado
+
+            # ══════════════════════════════════════════════════════════
+            # COPIAR
+            # ══════════════════════════════════════════════════════════
+            elif operacion == "copiar":
+                if not os.path.exists(origen):
+                    AgentExecutor._actualizar_progreso(agente, 100, "Origen no encontrado")
+                    return False, f"Archivo origen no encontrado: {origen}", {}
+
+                if not os.path.isfile(origen):
+                    AgentExecutor._actualizar_progreso(agente, 100, "No es un archivo")
+                    return False, f"No es un archivo: {origen}", {}
+
+                directorio_destino = os.path.dirname(destino)
+                if directorio_destino:
+                    os.makedirs(directorio_destino, exist_ok=True)
+
+                AgentExecutor._actualizar_progreso(agente, 70, "Copiando archivo...")
+                shutil.copy2(origen, destino)
+
+                AgentExecutor._actualizar_progreso(agente, 100, "Archivo copiado")
+
+                resultado = {
+                    "origen": origen,
+                    "destino": destino,
+                    "tamaño": os.path.getsize(destino)
+                }
+
+                return True, f"Archivo copiado: {origen} → {destino}", resultado
+
+            # ══════════════════════════════════════════════════════════
+            # MOVER
+            # ══════════════════════════════════════════════════════════
+            elif operacion == "mover":
+                if not os.path.exists(origen):
+                    AgentExecutor._actualizar_progreso(agente, 100, "Origen no encontrado")
+                    return False, f"Archivo origen no encontrado: {origen}", {}
+
+                if not os.path.isfile(origen):
+                    AgentExecutor._actualizar_progreso(agente, 100, "No es un archivo")
+                    return False, f"No es un archivo: {origen}", {}
+
+                directorio_destino = os.path.dirname(destino)
+                if directorio_destino:
+                    os.makedirs(directorio_destino, exist_ok=True)
+
+                AgentExecutor._actualizar_progreso(agente, 70, "Moviendo archivo...")
+                shutil.move(origen, destino)
+
+                AgentExecutor._actualizar_progreso(agente, 100, "Archivo movido")
+
+                resultado = {
+                    "origen": origen,
+                    "destino": destino,
+                    "tamaño": os.path.getsize(destino) if os.path.exists(destino) else None
+                }
+
+                return True, f"Archivo movido: {origen} → {destino}", resultado
+
+            # ══════════════════════════════════════════════════════════
+            # ELIMINAR
+            # ══════════════════════════════════════════════════════════
+            elif operacion == "eliminar":
+                if not os.path.exists(ruta_archivo):
+                    AgentExecutor._actualizar_progreso(agente, 100, "Archivo no encontrado")
+                    return False, f"Archivo no encontrado: {ruta_archivo}", {}
+
+                # Verificar directorios peligrosos
+                if os.path.isdir(ruta_archivo):
+                    if ruta_archivo in DANGEROUS_DIRS or os.path.dirname(ruta_archivo) in DANGEROUS_DIRS:
+                        AgentExecutor._actualizar_progreso(agente, 100, "No se permite eliminar")
+                        return False, f"No se permite eliminar directorios del sistema: {ruta_archivo}", {}
+
+                    AgentExecutor._actualizar_progreso(agente, 70, "Eliminando directorio...")
+                    shutil.rmtree(ruta_archivo)
+                    mensaje = f"Directorio eliminado: {ruta_archivo}"
+                else:
+                    AgentExecutor._actualizar_progreso(agente, 70, "Eliminando archivo...")
+                    os.remove(ruta_archivo)
+                    mensaje = f"Archivo eliminado: {ruta_archivo}"
+
+                AgentExecutor._actualizar_progreso(agente, 100, "Eliminado")
+                return True, mensaje, {"archivo": ruta_archivo, "eliminado": True}
+
+            else:
+                AgentExecutor._actualizar_progreso(agente, 100, f"Operación no soportada: {operacion}")
+                return False, f"Operación de archivo no soportada: {operacion}", {}
+
+        except PermissionError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "Permiso denegado")
+            return False, f"Permiso denegado para operación '{operacion}' en: {ruta_archivo} - {e}", {
+                'error': 'permission_denied',
+                'archivo': ruta_archivo,
+                'operacion': operacion
+            }
+        except OSError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Error: {str(e)[:50]}")
+            return False, f"Error en operación de archivo: {str(e)}", {
+                'error': 'os_error',
+                'archivo': ruta_archivo,
+                'operacion': operacion,
+                'detalle': str(e)
+            }
+        except Exception as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Error: {str(e)[:50]}")
+            return False, f"Error inesperado en operación de archivo: {str(e)}", {
+                'error': 'unexpected',
+                'archivo': ruta_archivo,
+                'operacion': operacion,
+                'detalle': str(e)
+            }
+
+    @staticmethod
+    def _aplicar_modo_salida_file(
+        resultado: Dict,
+        modo: str,
+        contenido_texto: str
+    ) -> Dict:
+        """
+        Ajusta el resultado devuelto por un agente File según el modo elegido
+        por el usuario. Controla qué "ve" el siguiente agente cuando consume
+        el resultado a través de la extracción inteligente.
+
+        Modos:
+        - "auto"      → comportamiento actual (heurística de extracción)
+        - "contenido" → solo expone `contenido` como string crudo
+        - "texto"     → alias de "contenido"
+        - "json"      → solo expone `json` (parseado); oculta `contenido`
+        """
+        modo = (modo or "auto").lower()
+
+        if modo == "auto":
+            return resultado
+
+        if modo in ("contenido", "texto"):
+            return {
+                "archivo": resultado.get("archivo", ""),
+                "tamaño": resultado.get("tamaño", len(contenido_texto)),
+                "contenido": contenido_texto,
+                "total_caracteres": len(contenido_texto),
+                "modo_salida": "contenido",
+            }
+
+        if modo == "json":
+            json_data = resultado.get("json")
+            if json_data is None:
+                try:
+                    json_data = json.loads(contenido_texto)
+                except (json.JSONDecodeError, ValueError):
+                    json_data = None
+
+            return {
+                "archivo": resultado.get("archivo", ""),
+                "tamaño": resultado.get("tamaño", len(contenido_texto)),
+                "json": json_data,
+                "modo_salida": "json",
+            }
+
+        return resultado
+    
+    # ============================================================
+    # 5. EJECUTOR LLM (DeepSeek) - CON CANCELACIÓN
+    # ============================================================
+    
+    @staticmethod
+    def _ejecutar_llm(
+        agente: Agente,
+        contexto: Dict,
+        cancellation_token: Optional['CancellationToken'] = None
+    ) -> Tuple[bool, str, Dict]:
+        """
+        Llama a la API de DeepSeek con el prompt del agente con soporte para cancelación.
+        
+        La cancelación es soportada durante la espera de respuesta de la API.
+        """
+        
+        # ── Verificar cancelación antes de ejecutar ──
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
+        
+        AgentExecutor._actualizar_progreso(agente, 20, "Preparando prompt LLM...")
+        
+        if not agente.prompt_llm:
+            AgentExecutor._actualizar_progreso(agente, 100, "Prompt vacío")
+            return False, "No hay prompt definido", {}
+        
+        try:
+            import openai
+        except ImportError:
+            AgentExecutor._actualizar_progreso(agente, 100, "openai no instalado")
+            return False, "openai no instalado. Ejecuta: pip install openai", {}
+        
+        # ── Sustituir variables en el prompt ──
+        variables = AgentExecutor._variables_disponibles(agente, contexto)
+        prompt_procesado = AgentExecutor._sustituir_variables(agente.prompt_llm, variables)
+        se_sustituyo_algo = prompt_procesado != agente.prompt_llm
+        
+        # ── Obtener API key y base_url desde LLMClient (lee archivos de config) ──
+        try:
+            from core.llm_client import LLMClient
+            _cliente_llm = LLMClient()
+            api_key = _cliente_llm.api_key
+            base_url = _cliente_llm.base_url
+        except Exception as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "Error cargando config LLM")
+            return False, (
+                f"No se pudo inicializar el cliente LLM: {e}\n"
+                f"Verifica la configuración de DEEPSEEK_API_KEY.\n"
+                f"Prueba: python main.py --check-env"
+            ), {'error': 'llm_client_init', 'detalle': str(e)}
+
+        if not api_key:
+            AgentExecutor._actualizar_progreso(agente, 100, "Falta DEEPSEEK_API_KEY")
+            return False, (
+                "No se encontró DEEPSEEK_API_KEY en ninguna fuente.\n"
+                "Prueba: python main.py --check-env"
+            ), {'error': 'missing_api_key'}
+
+        modelo = getattr(agente, 'modelo_llm', 'deepseek-v4-flash')
+
+        AgentExecutor._actualizar_progreso(agente, 40, f"Consultando {modelo}...")
+        
+        # ── Verificar cancelación antes de la llamada ──
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de llamar a la API", {'error': 'cancelled'}
+        
+        try:
+            # ── Rate limiting ──
+            rate_limiter = AgentExecutor._get_rate_limiter()
+            rate_limiter.wait()
+            
+            client = openai.OpenAI(api_key=api_key, base_url=base_url)
+            
+            messages = [
+                {"role": "system", "content": "Eres un asistente útil y preciso."},
+                {"role": "user", "content": prompt_procesado}
+            ]
+            
+            # Si no se sustituyeron variables, añadir contexto adicional
+            if contexto and not se_sustituyo_algo:
+                contexto_visible = {
+                    k: v for k, v in contexto.items()
+                    if k not in ('llm_base_url', 'llm_api_key', 'openai_api_key')
+                }
+                if contexto_visible:
+                    messages[1]["content"] += (
+                        "\n\nContexto adicional:\n" + 
+                        json.dumps(contexto_visible, indent=2, default=str, ensure_ascii=False)
+                    )
+            
+            AgentExecutor._actualizar_progreso(agente, 60, "Esperando respuesta...")
+            
+            start_time = time.time()
+            
+            # ── Ejecutar en hilo separado para soportar cancelación ──
+            import threading
+            response = None
+            error = None
+            completed = threading.Event()
+            
+            def hacer_llamada():
+                nonlocal response, error
+                try:
+                    response = client.chat.completions.create(
+                        model=modelo,
+                        messages=messages,
+                        temperature=agente.temperatura_llm,
+                        max_tokens=agente.max_tokens_llm,
+                        timeout=60
+                    )
+                except Exception as e:
+                    error = e
+                finally:
+                    completed.set()
+            
+            thread = threading.Thread(target=hacer_llamada, daemon=True)
+            thread.start()
+            
+            # ── Esperar con verificación de cancelación ──
+            timeout = 60  # Segundos
+            inicio = time.time()
+            while not completed.is_set():
+                # Verificar cancelación
+                if cancellation_token and cancellation_token.esta_cancelado():
+                    AgentExecutor._actualizar_progreso(agente, 100, "⛔ Cancelado por usuario")
+                    return False, "Cancelado por usuario durante la llamada LLM", {
+                        'error': 'cancelled',
+                        'modelo': modelo,
+                        'tiempo_espera': time.time() - inicio
+                    }
+                
+                # Verificar timeout global
+                if time.time() - inicio > timeout + 5:
+                    AgentExecutor._actualizar_progreso(agente, 100, "⏱️ Timeout")
+                    return False, f"Timeout en llamada LLM ({timeout}s)", {
+                        'error': 'timeout',
+                        'modelo': modelo,
+                        'tiempo_espera': timeout
+                    }
+                
+                completed.wait(0.1)
+            
+            # ── Si hubo error en el hilo ──
+            if error:
+                raise error
+            
+            # ── Si no hay respuesta ──
+            if response is None or not response.choices:
+                raise openai.APIError("No se recibió respuesta de la API")
+            
+            elapsed_time = time.time() - start_time
+            
+            respuesta = response.choices[0].message.content if response.choices else ""
+
+            # ✅ NUEVO: Validación robusta de la respuesta
+            if not respuesta or not respuesta.strip():
+                # Intentar con reasoning_content si existe
+                reasoning = getattr(response.choices[0].message, 'reasoning_content', None)
+                if reasoning:
+                    # El modelo devolvió solo el razonamiento, no la respuesta final
+                    tokens_info = {}
+                    if response.usage:
+                        tokens_info = {
+                            'prompt': response.usage.prompt_tokens,
+                            'completion': response.usage.completion_tokens,
+                            'total': response.usage.total_tokens
+                        }
+                    return False, (
+                        f"⚠️ LLM solo devolvió razonamiento (no respuesta final). "
+                        f"Aumenta max_tokens (actual: {agente.max_tokens_llm}). "
+                        f"Tokens usados: {tokens_info.get('total', '?')}"
+                    ), {
+                        'error': 'only_reasoning',
+                        'modelo': modelo,
+                        'razonamiento_preview': reasoning[:200],
+                        'tokens_uso': tokens_info
+                    }
+                else:
+                    return False, (
+                        f"LLM devolvió respuesta vacía (modelo: {modelo}, "
+                        f"tokens: {response.usage.total_tokens if response.usage else '?'})"
+                    ), {
+                        'error': 'empty_response',
+                        'modelo': modelo
+                    }
+
+            # ✅ NUEVO: Detectar respuesta sospechosamente corta (truncada)
+            # Si el prompt pide generar un texto y la respuesta tiene menos de 3
+            # caracteres, es casi seguro que el modelo cortó la respuesta por max_tokens.
+            prompt_lower = prompt_procesado.lower()
+            pide_generar = any(
+                kw in prompt_lower for kw in (
+                    "genera", "escribe", "redacta", "crea", "mensaje",
+                    "texto", "resumen", "explica", "describe", "elabora",
+                    "lista", "enumera", "traduce"
+                )
+            )
+
+            if pide_generar and len(respuesta.strip()) < 3:
+                tokens_usados = response.usage.total_tokens if response.usage else None
+                return False, (
+                    f"⚠️ El LLM devolvió una respuesta truncada: '{respuesta}'\n"
+                    f"Esto ocurre cuando max_tokens es demasiado bajo "
+                    f"(actual: {agente.max_tokens_llm}) o el modelo gastó tokens en razonamiento.\n"
+                    f"Sugerencia: aumenta max_tokens a 500 o más."
+                ), {
+                    'error': 'truncated_response',
+                    'modelo': modelo,
+                    'respuesta_truncada': respuesta,
+                    'max_tokens': agente.max_tokens_llm,
+                    'tokens_usados': tokens_usados
+                }
+
+            # ✅ NUEVO: Detectar respuestas "sospechosas" (razonamiento en inglés)
+            # Si la respuesta empieza con palabras típicas de "thinking" en inglés
+            palabras_thinking = [
+                "We need", "The user", "I need to", "Let me", "First,", 
+                "Okay,", "Alright,", "Hmm,", "So,", "Now,"
+            ]
+            respuesta_lower = respuesta.strip()[:50].lower()
+            es_razonamiento = any(respuesta_lower.startswith(p.lower()) for p in palabras_thinking)
+
+            # Solo advertir si el prompt original era en español (detección simple)
+            if es_razonamiento and len(respuesta) > 300:
+                logger.warning(
+                    f"⚠️ LLM parece haber devuelto razonamiento en lugar de respuesta. "
+                    f"Modelo: {modelo}, Longitud: {len(respuesta)}, "
+                    f"Inicio: {respuesta[:100]}"
+                )
+                # Igualmente lo devolvemos, pero con advertencia
+            
+            AgentExecutor._actualizar_progreso(agente, 90, "Procesando respuesta...")
+            
+            resultado = {
+                "modelo": modelo,
+                "prompt": prompt_procesado,
+                "respuesta": respuesta,
+                "tiempo_respuesta": elapsed_time,
+                "tokens_uso": {
+                    "prompt": response.usage.prompt_tokens,
+                    "completion": response.usage.completion_tokens,
+                    "total": response.usage.total_tokens
+                }
+            }
+            
+            AgentExecutor._actualizar_progreso(agente, 100, "LLM respondió")
+            return True, f"DeepSeek respondió: {respuesta[:200]}...", resultado
+        
+        except openai.APIError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Error API: {str(e)[:50]}")
+            return False, f"Error de API de DeepSeek: {str(e)}", {'error': 'api_error', 'detalle': str(e)}
+        except openai.APIConnectionError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "Error de conexión")
+            return False, f"Error de conexión con DeepSeek: {str(e)}", {'error': 'connection_error', 'detalle': str(e)}
+        except openai.APITimeoutError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "Timeout")
+            return False, f"Timeout en DeepSeek: {str(e)}", {'error': 'timeout', 'detalle': str(e)}
+        except openai.RateLimitError as e:
+            AgentExecutor._actualizar_progreso(agente, 100, "Rate limit")
+            return False, f"Rate limit excedido en DeepSeek: {str(e)}", {'error': 'rate_limit', 'detalle': str(e)}
+        except Exception as e:
+            AgentExecutor._actualizar_progreso(agente, 100, f"Error: {str(e)[:50]}")
+            return False, f"Error en DeepSeek: {str(e)}", {'error': 'unexpected', 'detalle': str(e)}
+    
+    # ============================================================
+    # 6. EJECUTOR LOOP - CON CANCELACIÓN
+    # ============================================================
+    
+    @staticmethod
+    def _ejecutar_loop(
+        agente: Agente,
+        contexto: Dict,
+        cancellation_token: Optional['CancellationToken'] = None
+    ) -> Tuple[bool, str, Dict]:
+        """
+        Ejecuta un bucle sobre una lista de items con soporte para cancelación.
+        
+        COMPORTAMIENTO:
+        - ✅ Si continuar_en_error=False, se DETIENE en el primer error
+        - ✅ Si continuar_en_error=True, continúa procesando todos los items
+        - ✅ Soporte para cancelación durante la ejecución
+        """
+        
+        # ── Verificar cancelación antes de ejecutar ──
+        if cancellation_token and cancellation_token.esta_cancelado():
+            return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
+        
+        AgentExecutor._actualizar_progreso(agente, 10, "Preparando loop...")
+        
+        # ── Validaciones iniciales ──
+        if not agente.fuente_items:
+            AgentExecutor._actualizar_progreso(agente, 100, "Fuente de items vacía")
+            return False, "Loop: 'fuente_items' no está configurado", {}
+        
+        if not agente.codigo_por_item or not agente.codigo_por_item.strip():
+            AgentExecutor._actualizar_progreso(agente, 100, "Código por item vacío")
+            return False, "Loop: 'codigo_por_item' está vacío", {}
+        
+        # ── Resolver la fuente de items ──
+        items = AgentExecutor._resolver_ruta_en_contexto(contexto, agente.fuente_items)
+        
+        if not AgentExecutor._es_lista_valida(items):
+            AgentExecutor._actualizar_progreso(agente, 100, "Fuente no es una lista")
+            return False, (
+                f"Loop: '{agente.fuente_items}' no resolvió a una lista válida "
+                f"(obtuve: {type(items).__name__})"
+            ), {"fuente": agente.fuente_items, "valor": items}
+        
+        total_items = len(items)
+        if total_items == 0:
+            AgentExecutor._actualizar_progreso(agente, 100, "Lista vacía")
+            return True, "Loop: La lista está vacía, no hay items que procesar", {
+                'total_items': 0,
+                'items_procesados': 0,
+                'exitos': 0,
+                'errores': 0,
+                'no_ejecutados': 0
+            }
+        
+        # ── Validar límites ──
+        if total_items > agente.max_iteraciones:
+            AgentExecutor._actualizar_progreso(agente, 100, "Excede máx. iteraciones")
+            return False, (
+                f"Loop: La lista tiene {total_items} items, "
+                f"excede el máximo de {agente.max_iteraciones}"
+            ), {"total_items": total_items, "max_iteraciones": agente.max_iteraciones}
+        
+        # ── Preparar ejecución ──
+        resultados = []
+        errores = 0
+        exitos = 0
+        tiempo_inicio = time.time()
+        timeout_total = agente.timeout_loop or 300
+        timeout_item = agente.timeout_python or 30
+        
+        AgentExecutor._actualizar_progreso(agente, 15, f"Procesando {total_items} items...")
+        
+        # ── BUCLE PRINCIPAL ──
+        for idx, item in enumerate(items):
+            # ── Verificar cancelación ──
+            if cancellation_token and cancellation_token.esta_cancelado():
+                AgentExecutor._actualizar_progreso(agente, 100, "⛔ Cancelado por usuario")
+                return False, f"Loop cancelado en item {idx+1}/{total_items}", {
+                    'error': 'cancelled',
+                    'items_procesados': idx,
+                    'total_items': total_items,
+                    'errores': errores,
+                    'exitos': exitos,
+                    'no_ejecutados': total_items - idx,
+                    'resultados_parciales': resultados
+                }
+            
+            # ── Verificar timeout global ──
+            elapsed = time.time() - tiempo_inicio
+            if elapsed > timeout_total:
+                AgentExecutor._actualizar_progreso(agente, 100, "Timeout global")
+                return False, (
+                    f"Loop: Timeout global excedido ({timeout_total}s) "
+                    f"después de {idx} items"
+                ), {
+                    "items_procesados": idx,
+                    "total_items": total_items,
+                    "errores": errores,
+                    "exitos": exitos,
+                    "no_ejecutados": total_items - idx,
+                    "resultados_parciales": resultados
+                }
+            
+            # ── Actualizar progreso ──
+            progreso_actual = 15 + int((idx / total_items) * 75)
+            AgentExecutor._actualizar_progreso(
+                agente,
+                progreso_actual,
+                f"Item {idx+1}/{total_items}: {str(item)[:30]}..."
+            )
+            
+            # ── Contexto para el item ──
+            ctx_item = dict(contexto)
+            ctx_item['item'] = item
+            ctx_item['indice'] = idx
+            ctx_item['total'] = total_items
+            
+            # ── Ejecutar el item (con token de cancelación) ──
+            try:
+                exito, msg, res = PythonSandbox.ejecutar(
+                    agente.codigo_por_item,
+                    ctx_item,
+                    timeout=timeout_item,
+                    cancellation_token=cancellation_token  # ← Pasar el token al sandbox
+                )
+                
+                resultados.append({
+                    'indice': idx,
+                    'item': item,
+                    'exito': exito,
+                    'mensaje': msg,
+                    'resultado': res
+                })
+                
+                if exito:
+                    exitos += 1
+                else:
+                    errores += 1
+                    if not agente.continuar_en_error:
+                        # DETENER EL LOOP
+                        duracion_total = time.time() - tiempo_inicio
+                        no_ejecutados = total_items - len(resultados)
+                        
+                        AgentExecutor._actualizar_progreso(agente, 100, f"⛔ Detenido en item {idx+1} por error")
+                        
+                        resultado_final = {
+                            'total_items': total_items,
+                            'items_procesados': len(resultados),
+                            'exitos': exitos,
+                            'errores': errores,
+                            'no_ejecutados': no_ejecutados,
+                            'duracion_total': duracion_total,
+                            'detenido_en_indice': idx,
+                            'detenido_por_error': True,
+                            'continuar_en_error': False,
+                            'mensaje_error': msg[:500],
+                            'items': resultados
+                        }
+                        
+                        return False, f"Loop detenido en item {idx+1} por error: {msg[:200]}", resultado_final
+                        
+            except Exception as e:
+                errores += 1
+                resultados.append({
+                    'indice': idx,
+                    'item': item,
+                    'exito': False,
+                    'mensaje': f"Error crítico: {str(e)}",
+                    'resultado': {'error': str(e)}
+                })
+                
+                if not agente.continuar_en_error:
+                    duracion_total = time.time() - tiempo_inicio
+                    no_ejecutados = total_items - len(resultados)
+                    
+                    AgentExecutor._actualizar_progreso(agente, 100, f"⛔ Detenido en item {idx+1} por error crítico")
+                    
+                    resultado_final = {
+                        'total_items': total_items,
+                        'items_procesados': len(resultados),
+                        'exitos': exitos,
+                        'errores': errores,
+                        'no_ejecutados': no_ejecutados,
+                        'duracion_total': duracion_total,
+                        'detenido_en_indice': idx,
+                        'detenido_por_error': True,
+                        'continuar_en_error': False,
+                        'mensaje_error': str(e)[:500],
+                        'items': resultados
+                    }
+                    
+                    return False, f"Loop detenido en item {idx+1} por error crítico: {e}", resultado_final
+        
+        # ── FIN DEL BUCLE ──
+        duracion_total = time.time() - tiempo_inicio
+        
+        resultado_final = {
+            'total_items': total_items,
+            'items_procesados': len(resultados),
+            'exitos': exitos,
+            'errores': errores,
+            'no_ejecutados': 0,
+            'duracion_total': duracion_total,
+            'detenido_por_error': False,
+            'continuar_en_error': agente.continuar_en_error,
+            'items': resultados
+        }
+        
+        mensaje = (
+            f"Loop completado: {total_items} items, "
+            f"{exitos} éxitos, {errores} errores, "
+            f"duración: {duracion_total:.2f}s"
+        )
+        
+        if errores > 0 and agente.continuar_en_error:
+            mensaje += " (continuar_en_error activo: se ignoraron los fallos individuales)"
+        
+        AgentExecutor._actualizar_progreso(agente, 100, "Loop completado")
+        
+        exito_general = errores == 0 or agente.continuar_en_error
+        return exito_general, mensaje, resultado_final
+    
+    # ============================================================
+    # 7. MÉTODO DE PRUEBA PARA LOOP
+    # ============================================================
+    
+    @staticmethod
+    def probar_loop(agente: Agente, items: List[Any]) -> Tuple[bool, str, Dict]:
+        """
+        Método de prueba para verificar la configuración de un agente LOOP.
+        
+        Args:
+            agente: Agente LOOP a probar
+            items: Lista de items de prueba
+            
+        Returns:
+            Tuple[bool, str, Dict]: (éxito, mensaje, resultado)
+        """
+        if agente.tipo != TipoAgente.LOOP:
+            return False, "El agente no es de tipo LOOP", {}
+        
+        es_valido, mensaje = agente.validar_configuracion()
+        if not es_valido:
+            return False, f"Configuración inválida: {mensaje}", {}
+        
+        # Construir contexto de prueba
+        partes = agente.fuente_items.split('.')
+        nombre_dep = partes[0]
+        clave_items = '.'.join(partes[1:]) if len(partes) > 1 else 'items'
+        
+        contexto = {}
+        dep_data = {}
+        dep_data[clave_items] = items
+        contexto[nombre_dep] = dep_data
+        contexto['items_prueba'] = items
+        
+        return AgentExecutor._ejecutar_loop(agente, contexto)
+    
+    # ============================================================
+    # 8. UTILIDADES ADICIONALES
+    # ============================================================
+    
+    @classmethod
+    def get_status(cls) -> Dict:
+        """Obtiene el estado del ejecutor."""
+        return {
+            'http_cache': cls.get_http_cache_stats(),
+            'rate_limiter': 'active',
+        }
+
+
+# ============================================================
+# LIMPIEZA AL FINALIZAR
+# ============================================================
+
+import atexit
+
+@atexit.register
+def _cleanup_executor():
+    """Limpia recursos al finalizar la aplicación."""
+    try:
+        AgentExecutor.clear_http_cache()
+        logger.debug("Executor resources cleaned up")
+    except Exception:
+        pass
