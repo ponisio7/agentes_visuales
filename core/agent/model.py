@@ -1,19 +1,6 @@
-# core/agent.py - VERSIÓN REFACTORIZADA Y COMPLETA
+# core/agent/model.py
 """
 Modelo de datos para agentes ejecutables.
-
-CARACTERÍSTICAS:
-- Tipos seguros con validación en tiempo de ejecución
-- Serialización/Deserialización robusta
-- Soporte completo para todos los tipos de agentes
-- Validación de configuración por tipo (CORREGIDA)
-- Métricas y estadísticas de ejecución
-- Clonación profunda
-- Comparación y hashing
-- Representación enriquecida para UI
-- Inmutabilidad de campos críticos
-- Logging integrado
-- CORRECCIONES: Validación de Loop sin dependencia de listas que se vacían
 """
 
 import uuid
@@ -21,258 +8,14 @@ import time
 import logging
 import json
 import hashlib
-import re
-from enum import Enum
 from dataclasses import dataclass, field, asdict, fields
 from typing import List, Optional, Dict, Any, Set, Tuple, Union
-from datetime import datetime
 from functools import total_ordering
 
-# Configurar logger
+from .enums import EstadoAgente, TipoAgente
+from .validator import AgenteValidator
+
 logger = logging.getLogger(__name__)
-
-
-# ============================================================
-# ENUMERACIONES
-# ============================================================
-
-class EstadoAgente(Enum):
-    """Estados posibles de un agente durante su ciclo de vida."""
-    
-        # ── Estados iniciales ──
-    PENDIENTE = "Pendiente"
-    EN_COLA = "En cola"              # ← NUEVO: Esperando turno para ejecutar
-    ESPERANDO = "Esperando dependencias"
-    
-    # ── Estados de ejecución ──
-    LISTO = "Listo para ejecutar"
-    EJECUTANDO = "Ejecutando"
-    REINTENTANDO = "Reintentando"    # ← NUEVO: En proceso de reintento
-    
-    # ── Estados terminales ──
-    COMPLETADO = "Completado"
-    ERROR = "Error"
-    TIMEOUT = "Timeout"              # ← NUEVO: Excedió tiempo límite
-    CANCELADO = "Cancelado"
-    SALTADO = "Saltado"              # ← NUEVO: Omitido por dependencia fallida
-    BLOQUEADO = "Bloqueado"
-    
-    @classmethod
-    def es_terminal(cls, estado: 'EstadoAgente') -> bool:
-        """Indica si el estado es terminal (no puede cambiar)."""
-        return estado in (
-            cls.COMPLETADO, cls.ERROR, cls.TIMEOUT,
-            cls.CANCELADO, cls.SALTADO, cls.BLOQUEADO
-        )
-    
-    @classmethod
-    def es_activo(cls, estado: 'EstadoAgente') -> bool:
-        """Indica si el agente está en ejecución activa."""
-        return estado in (cls.LISTO, cls.EJECUTANDO, cls.REINTENTANDO)
-    
-    @classmethod
-    def puede_ejecutarse(cls, estado: 'EstadoAgente') -> bool:
-        """Indica si el agente puede ser ejecutado."""
-        return estado in (cls.PENDIENTE, cls.EN_COLA, cls.REINTENTANDO)
-    
-    @classmethod
-    def color(cls, estado: 'EstadoAgente') -> str:
-        """Retorna el color asociado al estado para UI."""
-        colores = {
-            cls.PENDIENTE: "#6c757d",
-            cls.EN_COLA: "#6c757d",
-            cls.ESPERANDO: "#fd7e14",
-            cls.LISTO: "#28a745",
-            cls.EJECUTANDO: "#007bff",
-            cls.REINTENTANDO: "#ffc107",
-            cls.COMPLETADO: "#28a745",
-            cls.ERROR: "#dc3545",
-            cls.TIMEOUT: "#dc3545",
-            cls.CANCELADO: "#6c757d",
-            cls.SALTADO: "#6c757d",
-            cls.BLOQUEADO: "#8b0000",
-        }
-        return colores.get(estado, "#6c757d")
-    
-    @classmethod
-    def emoji(cls, estado: 'EstadoAgente') -> str:
-        """Retorna el emoji asociado al estado para UI."""
-        emojis = {
-            cls.PENDIENTE: "⏳",
-            cls.EN_COLA: "📋",
-            cls.ESPERANDO: "🔄",
-            cls.LISTO: "✅",
-            cls.EJECUTANDO: "⚡",
-            cls.REINTENTANDO: "🔄",
-            cls.COMPLETADO: "✅",
-            cls.ERROR: "❌",
-            cls.TIMEOUT: "⏱️",
-            cls.CANCELADO: "⛔",
-            cls.SALTADO: "⏭️",
-            cls.BLOQUEADO: "🚫",
-        }
-        return emojis.get(estado, "❓")
-
-
-class TipoAgente(Enum):
-    """Tipos de agentes soportados."""
-    
-    PYTHON = "Python"
-    SHELL = "Shell"
-    LLM = "LLM"
-    HTTP = "HTTP"
-    FILE = "File"
-    LOOP = "Loop"
-   
-    @classmethod
-    def categoria(cls, tipo: 'TipoAgente') -> str:
-        """Retorna la categoría del tipo de agente."""
-        categorias = {
-            cls.PYTHON: "Programación",
-            cls.SHELL: "Sistema",
-            cls.LLM: "IA",
-            cls.HTTP: "Red",
-            cls.FILE: "Archivos",
-            cls.LOOP: "Estructura",
-        }
-        return categorias.get(tipo, "Otro")
-    
-    @classmethod
-    def icono(cls, tipo: 'TipoAgente') -> str:
-        """Retorna el icono asociado al tipo para UI."""
-        iconos = {
-            cls.PYTHON: "🐍",
-            cls.SHELL: "💻",
-            cls.LLM: "🧠",
-            cls.HTTP: "🌐",
-            cls.FILE: "📄",
-            cls.LOOP: "🔄",
-        }
-        return iconos.get(tipo, "📦")
-    
-    @classmethod
-    def from_string(cls, value: str) -> 'TipoAgente':
-        """Convierte un string a TipoAgente de forma segura."""
-        try:
-            return cls(value)
-        except ValueError:
-            # Intentar buscar por nombre sin espacios
-            for member in cls:
-                if member.value.lower().replace(" ", "") == value.lower().replace(" ", ""):
-                    return member
-            return cls.PYTHON
-
-
-# ============================================================
-# VALIDADORES
-# ============================================================
-
-class AgenteValidator:
-    """Valida la configuración de agentes."""
-    
-    @staticmethod
-    def validar_nombre(nombre: str) -> Tuple[bool, str]:
-        """Valida el nombre del agente."""
-        if not nombre or not nombre.strip():
-            return False, "El nombre es obligatorio"
-        
-        nombre = nombre.strip()
-        if len(nombre) < 2:
-            return False, "El nombre debe tener al menos 2 caracteres"
-        if len(nombre) > 100:
-            return False, "El nombre no puede tener más de 100 caracteres"
-        
-        # Caracteres permitidos: letras, números, guiones, guiones bajos, espacios
-        if not re.match(r'^[A-Za-z0-9_\-\s]+$', nombre):
-            return False, "El nombre solo puede contener letras, números, guiones y espacios"
-        
-        return True, ""
-    
-    @staticmethod
-    def validar_codigo(codigo: str, max_length: int = 100000) -> Tuple[bool, str]:
-        """Valida código Python."""
-        if not codigo:
-            return True, ""  # Opcional
-        
-        if len(codigo) > max_length:
-            return False, f"El código excede el límite de {max_length} caracteres"
-        
-        # Verificar indentación básica
-        lines = codigo.split('\n')
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-            
-            # Verificar que la indentación sea consistente
-            if line.startswith(' '):
-                spaces = len(line) - len(line.lstrip(' '))
-                if spaces % 4 != 0:
-                    return False, "La indentación debe ser múltiplo de 4 espacios"
-        
-        return True, ""
-    
-    @staticmethod
-    def validar_url(url: str) -> Tuple[bool, str]:
-        """Valida una URL."""
-        if not url or not url.strip():
-            return False, "La URL es obligatoria"
-        
-        url = url.strip()
-        if not url.startswith(('http://', 'https://')):
-            return False, "La URL debe comenzar con http:// o https://"
-        
-        if ' ' in url:
-            return False, "La URL no puede contener espacios"
-        
-        # Verificar caracteres no permitidos
-        for c in url:
-            if ord(c) < 32:
-                return False, "La URL contiene caracteres de control"
-        
-        return True, ""
-    
-    @staticmethod
-    def validar_ruta(ruta: str) -> Tuple[bool, str]:
-        """Valida una ruta de archivo."""
-        if not ruta or not ruta.strip():
-            return False, "La ruta es obligatoria"
-        
-        ruta = ruta.strip()
-        if len(ruta) > 1000:
-            return False, "La ruta es demasiado larga"
-        
-        # Verificar path traversal
-        import os
-        normalized = os.path.normpath(ruta)
-        if normalized.startswith('..') or normalized.startswith('/') or normalized.startswith('\\'):
-            return False, "La ruta contiene intento de path traversal"
-        
-        # Verificar caracteres no permitidos
-        for c in ruta:
-            if ord(c) < 32:
-                return False, "La ruta contiene caracteres de control"
-        
-        return True, ""
-    
-    @staticmethod
-    def validar_dependencias(dependencias: List[str], agentes_existentes: Set[str] = None) -> Tuple[bool, str]:
-        """Valida dependencias."""
-        if not dependencias:
-            return True, ""
-        
-        for dep in dependencias:
-            if not dep or not dep.strip():
-                return False, "Dependencia vacía"
-            if len(dep) > 100:
-                return False, f"Dependencia '{dep}' es demasiado larga"
-        
-        if agentes_existentes is not None:
-            for dep in dependencias:
-                if dep not in agentes_existentes:
-                    return False, f"Dependencia '{dep}' no existe"
-        
-        return True, ""
 
 
 # ============================================================
@@ -343,7 +86,7 @@ class Agente:
     operacion_file: str = "leer"
     modo_salida_file: str = "auto"  # ✅ NUEVO: 'auto' | 'contenido' | 'json'
     
-        # ── LLM ──
+    # ── LLM ──
     prompt_llm: str = ""
     modelo_llm: str = "deepseek-v4-flash"
     temperatura_llm: float = 0.7
@@ -744,11 +487,8 @@ class Agente:
         """Retorna True si el agente es de tipo HTTP."""
         return self.tipo == TipoAgente.HTTP
     
-    # core/agent.py - MÉTODO es_python CORREGIDO
-
     def es_python(self) -> bool:
         """Retorna True si el agente es de tipo Python."""
-        # ✅ CORREGIDO: Comparación directa (no usar 'in' sobre un solo elemento)
         return self.tipo == TipoAgente.PYTHON
     
     def tiene_dependencias(self) -> bool:
@@ -1108,7 +848,7 @@ class Agente:
         Raises:
             ValueError: Si la transición no es válida según la máquina de estados
         """
-        from .scheduler import TRANSICIONES_VALIDAS
+        from core.scheduler import TRANSICIONES_VALIDAS
         
         estado_actual = self.estado
         
@@ -1152,91 +892,3 @@ class Agente:
     def esta_activo(self) -> bool:
         """Indica si el agente está en ejecución activa."""
         return EstadoAgente.es_activo(self.estado)
-
-
-# ============================================================
-# REGISTRO DE TIPOS DE AGENTES (para UI)
-# ============================================================
-
-# Mapeo de tipos de agentes a sus configuraciones por defecto
-TIPOS_AGENTES_CONFIG = {
-    TipoAgente.PYTHON: {
-        'descripcion': 'Ejecuta código Python en un sandbox aislado',
-        'icono': '🐍',
-        'categoria': 'Programación',
-        'campos_requeridos': ['codigo_python'],
-    },
-    TipoAgente.SHELL: {
-        'descripcion': 'Ejecuta comandos de shell del sistema',
-        'icono': '💻',
-        'categoria': 'Sistema',
-        'campos_requeridos': ['comando_shell'],
-    },
-    TipoAgente.LLM: {
-        'descripcion': 'Llama a modelos de lenguaje (DeepSeek)',
-        'icono': '🧠',
-        'categoria': 'IA',
-        'campos_requeridos': ['prompt_llm', 'modelo_llm'],
-        'campos_opcionales': [
-            'temperatura_llm',
-            'max_tokens_llm',
-            'reasoning_effort_llm',
-            'thinking_enabled_llm',
-        ],
-    },
-    TipoAgente.HTTP: {
-        'descripcion': 'Realiza peticiones HTTP/HTTPS',
-        'icono': '🌐',
-        'categoria': 'Red',
-        'campos_requeridos': ['url_http'],
-    },
-    TipoAgente.FILE: {
-        'descripcion': 'Operaciones con archivos del sistema',
-        'icono': '📄',
-        'categoria': 'Archivos',
-        'campos_requeridos': ['operacion_file'],
-    },
-    TipoAgente.LOOP: {
-        'descripcion': 'Itera sobre una lista de items',
-        'icono': '🔄',
-        'categoria': 'Estructura',
-        'campos_requeridos': ['fuente_items', 'codigo_por_item'],
-    },
-}
-
-
-def obtener_config_tipo(tipo: TipoAgente) -> dict:
-    """Obtiene la configuración por defecto para un tipo de agente."""
-    return TIPOS_AGENTES_CONFIG.get(tipo, {})
-
-
-def obtener_tipos_por_categoria(categoria: str) -> list:
-    """Obtiene los tipos de agente por categoría."""
-    return [
-        tipo for tipo, config in TIPOS_AGENTES_CONFIG.items()
-        if config.get('categoria') == categoria
-    ]
-
-
-def obtener_categorias() -> list:
-    """Obtiene todas las categorías de agentes disponibles."""
-    return sorted(set(
-        config.get('categoria', 'Otro')
-        for config in TIPOS_AGENTES_CONFIG.values()
-    ))
-
-
-# ============================================================
-# EXPORTACIONES EXPLÍCITAS
-# ============================================================
-
-__all__ = [
-    'Agente',
-    'EstadoAgente',
-    'TipoAgente',
-    'AgenteValidator',
-    'TIPOS_AGENTES_CONFIG',
-    'obtener_config_tipo',
-    'obtener_tipos_por_categoria',
-    'obtener_categorias',
-]
