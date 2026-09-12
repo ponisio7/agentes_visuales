@@ -2450,7 +2450,6 @@ resultado = {
         if agente_id:
             self._on_agent_updated(agente_id)
 
-
     def _on_agente_completado_bus(self, evento: Event):
         """Maneja evento de agente completado desde el bus."""
         datos = evento.datos

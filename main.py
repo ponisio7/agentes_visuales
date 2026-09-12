@@ -12,6 +12,11 @@ Uso:
 
 import sys
 import argparse
+# main.py
+import logging
+from core.logging_config import configurar_logging_thread_safe
+
+configurar_logging_thread_safe(level=logging.INFO)
 
 __version__ = "1.0.0"
 

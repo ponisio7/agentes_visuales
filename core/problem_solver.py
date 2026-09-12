@@ -1593,7 +1593,7 @@ class ProblemSolver:
 
         NOTA: NO se pasa 'contenido'. El contenido se obtiene
         automáticamente del resultado de la dependencia declarada
-        (ver AgentExecutor._ejecutar_file).
+        (ver FileExecutor.ejecutar).
         """
         kwargs['operacion_file'] = config.get('operacion', 'leer')
         kwargs['archivo_origen'] = config.get('archivo_origen', '') or ''

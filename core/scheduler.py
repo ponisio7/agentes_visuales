@@ -556,12 +556,10 @@ class Scheduler(QObject):
                     self._loops_activos.add(agente.id)
                     self._loop_items_procesados[agente.id] = 0
 
-            # ── DEBUG TEMPORAL ──
-            logger.warning(
-                f"DEBUG [{agente.nombre}] "
-                f"estado={agente.estado.value} "
-                f"deps_ids={agente.dependencias_ids} "
-                f"deps_nombres={agente.dependencias_nombres} "
+            # ── DEBUG (bajado a debug para no ensuciar la salida) ──
+            logger.debug(
+                f"[{agente.nombre}] estado={agente.estado.value} "
+                f"deps={agente.dependencias_ids} "
                 f"contexto_keys={list(contexto.keys())}"
             )
 

@@ -18,10 +18,43 @@ from typing import Dict, List, Callable, Any, Optional, Set
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from collections import defaultdict
+try:
+    from PyQt6.QtCore import QCoreApplication, QObject, pyqtSignal, pyqtSlot, Qt
+    from PyQt6.QtCore import QMetaObject, Q_ARG
+    _QT_DISPONIBLE = True
+except ImportError:
+    _QT_DISPONIBLE = False
 
 logger = logging.getLogger(__name__)
 
+if _QT_DISPONIBLE:
+    class _CallbackDispatcher(QObject):
+        """
+        Reemite callbacks en el hilo de Qt al que pertenece este QObject.
 
+        Se crea en el hilo principal (donde vive el QApplication). Cuando
+        se llama a `dispatch` desde otro hilo, `_emitir` se encola vía
+        QueuedConnection y se ejecuta en el hilo de Qt.
+        """
+        _emitir_signal = pyqtSignal(object, object)
+
+        def __init__(self):
+            super().__init__()
+            self._emitir_signal.connect(
+                self._ejecutar_callback,
+                Qt.ConnectionType.QueuedConnection,
+            )
+
+        def dispatch(self, callback, evento):
+            # Emitir es thread-safe. El slot se ejecuta en el hilo del QObject.
+            self._emitir_signal.emit(callback, evento)
+
+        @pyqtSlot(object, object)
+        def _ejecutar_callback(self, callback, evento):
+            try:
+                callback(evento)
+            except Exception as e:
+                logger.error(f"Error en callback {callback}: {e}", exc_info=True)
 # ============================================================
 # TIPOS DE EVENTOS
 # ============================================================
@@ -100,7 +133,6 @@ class EventBus:
     def __init__(self):
         if self._initialized:
             return
-        
         self._initialized = True
         self._suscriptores: Dict[EventType, List[Callable]] = defaultdict(list)
         self._suscriptores_todos: List[Callable] = []
@@ -108,7 +140,15 @@ class EventBus:
         self._historial: List[Event] = []
         self._max_historial = 1000
         self._activo = True
-        
+
+        # Dispatcher para entregar callbacks en el hilo de Qt
+        self._qt_dispatcher = None
+        if _QT_DISPONIBLE and QCoreApplication.instance() is not None:
+            try:
+                self._qt_dispatcher = _CallbackDispatcher()
+            except Exception as e:
+                logger.warning(f"No se pudo crear el dispatcher Qt: {e}")
+
         logger.info("EventBus inicializado")
     
     # ============================================================
@@ -190,43 +230,42 @@ class EventBus:
     # ============================================================
     
     def publicar(self, evento: Event) -> bool:
-        """
-        Publica un evento en el bus.
-        
-        Args:
-            evento: Evento a publicar
-            
-        Returns:
-            bool: True si se publicó correctamente
-        """
         if not self._activo:
-            logger.warning("EventBus inactivo, evento ignorado")
             return False
-        
+
         with self._lock:
-            # Guardar historial
             self._historial.append(evento)
             if len(self._historial) > self._max_historial:
                 self._historial = self._historial[-self._max_historial:]
-            
-            # Obtener suscriptores específicos
             suscriptores = self._suscriptores.get(evento.tipo, []).copy()
             suscriptores_todos = self._suscriptores_todos.copy()
-        
-        # Ejecutar callbacks (fuera del lock)
+
+        # Si hay dispatcher Qt y estamos en un hilo distinto al de Qt,
+        # encolamos los callbacks para que se ejecuten en el hilo correcto.
+        usar_dispatcher = (
+            self._qt_dispatcher is not None
+            and _QT_DISPONIBLE
+            and QCoreApplication.instance() is not None
+        )
+
         for callback in suscriptores:
-            try:
-                callback(evento)
-            except Exception as e:
-                logger.error(f"Error en callback {callback.__name__}: {e}")
-        
+            if usar_dispatcher:
+                self._qt_dispatcher.dispatch(callback, evento)
+            else:
+                try:
+                    callback(evento)
+                except Exception as e:
+                    logger.error(f"Error en callback {callback.__name__}: {e}")
+
         for callback in suscriptores_todos:
-            try:
-                callback(evento)
-            except Exception as e:
-                logger.error(f"Error en callback universal {callback.__name__}: {e}")
-        
-        logger.debug(f"Evento publicado: {evento.tipo.name} desde {evento.origen}")
+            if usar_dispatcher:
+                self._qt_dispatcher.dispatch(callback, evento)
+            else:
+                try:
+                    callback(evento)
+                except Exception as e:
+                    logger.error(f"Error en callback universal {callback.__name__}: {e}")
+
         return True
     
     # ============================================================
