@@ -190,20 +190,12 @@ class PlanRecovery:
                 reasoning_effort="low",
                 thinking_enabled=False,
             )
-            # ⬇️ TEMPORAL: ver qué devuelve el LLM (primeros 1000 chars)
-            logger.info(f"📄 RESPUESTA CRUDA (primeros 1000 chars):\n{respuesta[:1000]}")
-            logger.info(f"📄 RESPUESTA CRUDA (últimos 500 chars):\n{respuesta[-500:]}")
-            
-            plan_dict = self._parsear_respuesta_json(respuesta)
-            logger.info(
-                f"📄 plan_dict parseado: "
-                f"{type(plan_dict).__name__} "
-                f"claves={list(plan_dict.keys())[:8] if isinstance(plan_dict, dict) else 'N/A'}"
-            )
-
-            if not respuesta:
+            if not respuesta or not respuesta.strip():
                 logger.warning("PlanRecovery: LLM devolvió respuesta vacía")
                 return None
+
+            # Debug de la respuesta cruda (temporal, se puede quitar después)
+            logger.debug(f"📄 Respuesta cruda (primeros 1000 chars):\n{respuesta[:1000]}")
 
             # 5. Parsear la respuesta del LLM a dict (igual que hace ProblemSolver)
             plan_dict = self._parsear_respuesta_json(respuesta)
@@ -211,7 +203,11 @@ class PlanRecovery:
                 logger.warning("PlanRecovery: LLM no devolvió JSON válido")
                 return None
 
-                        # 6. Construir el ExecutionPlan
+            logger.info(
+                f"📄 Plan parseado: claves={list(plan_dict.keys())[:8] if isinstance(plan_dict, dict) else 'N/A'}"
+            )
+
+            # 6. Construir el ExecutionPlan
             plan_b = self.problem_solver._construir_plan(
                 problema_original, plan_dict
             )
@@ -236,7 +232,7 @@ class PlanRecovery:
                     )
                     return None
 
-                        # 8. Verificar que hay agentes
+            # 8. Verificar que hay agentes
             if not getattr(plan_b, "agentes_generados", None):
                 logger.warning(
                     "PlanRecovery: plan alternativo sin agentes tras generación"
@@ -247,27 +243,216 @@ class PlanRecovery:
             ok, errores = self._validar_sintaxis_agentes(plan_b)
             if not ok:
                 logger.warning(
-                    f"PlanRecovery: plan alternativo descartado por errores "
+                    f"PlanRecovery: primera versión del plan tiene errores "
                     f"de sintaxis en {len(errores)} agente(s):"
                 )
                 for err in errores[:5]:
                     logger.warning(f"   · {err}")
+
+                # ✅ NUEVO: reintentar UNA VEZ con instrucción correctiva
+                logger.info(
+                    "PlanRecovery: reintentando con instrucción correctiva..."
+                )
+                plan_b_corregido = self._reintentar_plan_b_con_correccion(
+                    problema_original=problema_original,
+                    plan_resumen=plan_resumen,
+                    agente_fallido=agente_fallido,
+                    tipo=tipo,
+                    nombre=nombre,
+                    error=error,
+                    errores_sintaxis=errores,
+                    lecciones=lecciones,
+                )
+
+                if plan_b_corregido is not None:
+                    logger.info(
+                        f"✅ PlanRecovery: segunda versión validada con "
+                        f"{len(plan_b_corregido.agentes_generados)} agentes"
+                    )
+                    return plan_b_corregido
+
+                logger.warning(
+                    "PlanRecovery: la segunda versión también falló. "
+                    "Descartando plan B."
+                )
                 return None
 
+            # 10. Plan válido a la primera
             logger.info(
-                f"✅ PlanRecovery: plan alternativo validado con "
-                f"{len(plan_b.agentes_generados)} agentes"
-            )
-            return plan_b
-
-            logger.info(
-                f"✅ PlanRecovery: plan alternativo con "
+                f"✅ PlanRecovery: plan alternativo válido con "
                 f"{len(plan_b.agentes_generados)} agentes"
             )
             return plan_b
 
         except Exception as e:
             logger.exception(f"PlanRecovery: error generando plan B: {e}")
+            return None
+
+    def _reintentar_plan_b_con_correccion(
+        self,
+        problema_original: str,
+        plan_resumen: str,
+        agente_fallido: Any,
+        tipo: str,
+        nombre: str,
+        error: str,
+        errores_sintaxis: list,
+        lecciones: str,
+    ) -> Optional[Any]:
+        """
+        Reintenta generar el plan B con una instrucción correctiva que
+        describe exactamente los errores de sintaxis detectados.
+
+        Estrategia:
+        - Temperatura baja (0.1) para que el LLM sea más determinista
+          en la generación de código.
+        - Prompt con los errores exactos y reglas explícitas de
+          corrección.
+        - Sin thinking para ir directo a la generación.
+
+        Returns:
+            ExecutionPlan corregido, o None si también falla.
+        """
+        # Formatear los errores como lista legible
+        lista_errores = "\n".join(
+            f"  - {e}" for e in errores_sintaxis[:5]
+        )
+
+        prompt_correccion = f"""
+=== CORRECCIÓN DE ERRORES DE SINTAXIS ===
+
+El plan anterior tenía los siguientes errores de sintaxis en código Python:
+
+{lista_errores}
+
+⚠️ INSTRUCCIONES PARA CORREGIR (MUY IMPORTANTE):
+
+1. **Definición de función vs llamada**:
+   - Un bloque `def nombre_funcion(...):` debe tener SOLO nombres de
+     parámetros entre paréntesis, NO llamadas a funciones ni expresiones.
+   - ❌ INCORRECTO: `def validar(contexto.get('API', {{}}).get('body')):`
+   - ✅ CORRECTO:
+     ```python
+     def validar(datos):
+         # aquí va el cuerpo
+         return ...
+
+     # Y LUEGO se llama:
+     resultado = validar(contexto.get('API', {{}}).get('body', ''))
+     ```
+   - NUNCA pongas `contexto.get(...)` dentro de los paréntesis de un `def`.
+
+2. **Cuerpo de funciones obligatorio**:
+   - Cada `def` DEBE tener al menos una línea de cuerpo indentada.
+
+3. **Bloques de control**:
+   - `if`, `for`, `while`, `try`, `except` terminan SIEMPRE con `:`.
+   - El cuerpo va indentado con 4 espacios.
+
+4. **Asignaciones**:
+   - `x = valor` (con `=`), NUNCA `x valor`.
+
+5. **Indentación uniforme**:
+   - 4 espacios por nivel. NO mezcles tabuladores con espacios.
+
+Genera el plan COMPLETO de nuevo, CORRIGIENDO todos estos errores.
+Mantén la misma estructura y lógica, solo corrige la sintaxis.
+
+Empieza directamente con {{. NO escribas explicaciones antes del JSON.
+"""
+
+        # Reconstruir el prompt completo del plan B + la corrección
+        prompt_completo = PROMPT_PLAN_B.format(
+            problema=problema_original,
+            plan_resumen=plan_resumen,
+            agente_fallido=nombre,
+            tipo_agente=tipo,
+            error=(error or "")[:500],
+            lecciones=lecciones or "(sin lecciones relevantes)",
+        ) + prompt_correccion
+
+        try:
+            respuesta = self.llm_client.chat(
+                prompt=prompt_completo,
+                system_prompt=(
+                    "Eres un planificador experto. Respondes SIEMPRE "
+                    "con JSON puro, sin razonamiento en texto. "
+                    "Generas código Python SINTÁCTICAMENTE CORRECTO."
+                ),
+                temperature=0.1,  # baja para más determinismo
+                max_tokens=4000,
+                reasoning_effort="low",
+                thinking_enabled=False,
+            )
+
+            if not respuesta or not respuesta.strip():
+                logger.warning(
+                    "PlanRecovery reintento: respuesta vacía del LLM"
+                )
+                return None
+
+            logger.info(
+                f"📄 PlanRecovery reintento: respuesta recibida "
+                f"({len(respuesta)} caracteres)"
+            )
+
+            # Parsear
+            plan_dict = self._parsear_respuesta_json(respuesta)
+            if plan_dict is None:
+                logger.warning(
+                    "PlanRecovery reintento: LLM no devolvió JSON válido"
+                )
+                return None
+
+            # Construir plan
+            plan_b = self.problem_solver._construir_plan(
+                problema_original, plan_dict
+            )
+            if plan_b is None:
+                logger.warning(
+                    "PlanRecovery reintento: _construir_plan devolvió None"
+                )
+                return None
+
+            # Generar agentes
+            if not getattr(plan_b, "agentes_generados", None):
+                try:
+                    plan_b.agentes_generados = (
+                        self.problem_solver._generar_agentes(plan_b)
+                    )
+                except Exception as e:
+                    logger.exception(
+                        f"PlanRecovery reintento: _generar_agentes falló: {e}"
+                    )
+                    return None
+
+            if not getattr(plan_b, "agentes_generados", None):
+                logger.warning(
+                    "PlanRecovery reintento: plan sin agentes tras generación"
+                )
+                return None
+
+            # Validar sintaxis DE NUEVO
+            ok, errores = self._validar_sintaxis_agentes(plan_b)
+            if not ok:
+                logger.warning(
+                    f"PlanRecovery reintento: la segunda versión también "
+                    f"tiene errores de sintaxis en {len(errores)} agente(s):"
+                )
+                for err in errores[:5]:
+                    logger.warning(f"   · {err}")
+                return None
+
+            logger.info(
+                f"✅ PlanRecovery reintento: segunda versión corregida "
+                f"y validada ({len(plan_b.agentes_generados)} agentes)"
+            )
+            return plan_b
+
+        except Exception as e:
+            logger.exception(
+                f"PlanRecovery reintento: error inesperado: {e}"
+            )
             return None
 
     @staticmethod
