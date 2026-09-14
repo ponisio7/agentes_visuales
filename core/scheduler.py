@@ -1323,11 +1323,23 @@ class Scheduler(QObject):
             self._verificar_terminado_internal()
 
     def limpiar(self):
-        """Limpia todo el estado sin eliminar los agentes."""
+        """
+        Limpia todo el estado Y elimina los agentes.
+
+        Se llama al inicio de cada ejecución desde la GUI para garantizar
+        que no se arrastran agentes de ejecuciones previas.
+        """
         if self.ejecutando or self.running:
             self.detener()
 
+        # Emitir actualización para cada agente ANTES de vaciar (la UI
+        # necesita saber que estos agentes ya no existen)
         with self._lock:
+            for agente_id in list(self.agentes.keys()):
+                self.agente_actualizado.emit(agente_id)
+
+        with self._lock:
+            self.agentes.clear()
             self.completed.clear()
             self.running.clear()
             self._cancelados.clear()
@@ -1335,18 +1347,13 @@ class Scheduler(QObject):
             self._loop_items_procesados.clear()
             self._terminado_notificado = False
             self._tiempo_inicio_ejecucion = None
+            self._plan_b_intentos = 0
+            self._plan_b_en_progreso = False
             self._invalidar_stats_cache()
-
-            for agente in self.agentes.values():
-                agente.resetear_estado()
-
-        # Emitir señales fuera del lock
-        for agente in self.agentes.values():
-            self.agente_actualizado.emit(agente.id)
 
         self.ejecutando = False
         self.pausado = False
-        self.log_mensaje.emit("🗑 Todo limpiado", "#6c757d")
+        self.log_mensaje.emit("🧹 Estado limpiado", "#6c757d")
         self.estado_cambiado.emit(False)
 
     # ============================================================
