@@ -235,13 +235,75 @@ def extraer_primer_comando(comando: str) -> Optional[str]:
 
 
 def comando_requiere_root(comando: str) -> bool:
-    """Detecta si un comando shell requiere privilegios de root."""
+    """
+    Detecta si un comando shell requiere privilegios de root.
+
+    En lugar de analizar solo el primer comando real (frágil con
+    estructuras de control como `if ... then ... fi`), busca CUALQUIER
+    comando privilegiado dentro del comando completo.
+
+    Esto es conservador: si hay alguna duda de si un comando requiere
+    root, devuelve True y se aplicará pkexec. Falso positivo: pide la
+    contraseña de más. Falso negativo: el comando falla por permisos.
+
+    Args:
+        comando: Comando shell (puede tener múltiples subcomandos).
+
+    Returns:
+        bool: True si algún subcomando requiere root.
+    """
     if not comando:
         return False
+
     comando_stripped = comando.strip()
+
+    # Si ya tiene elevación explícita, no hay que añadir pkexec
     if comando_stripped.startswith(('sudo ', 'pkexec ', 'doas ')):
         return False
-    primer_comando = extraer_primer_comando(comando_stripped)
-    if not primer_comando:
-        return False
-    return primer_comando in COMANDOS_PRIVILEGIADOS
+
+    # Parsear tokens
+    try:
+        tokens = shlex.split(comando_stripped)
+    except ValueError:
+        tokens = comando_stripped.split()
+
+    PALABRAS_RESERVADAS = frozenset({
+        'if', 'then', 'else', 'elif', 'fi',
+        'while', 'do', 'done', 'for', 'in',
+        'case', 'esac', 'function', 'return',
+        'command', 'builtin', 'type', 'which', 'hash',
+        'test', '[', ']', '[[', ']]',
+    })
+
+    for token in tokens:
+        if not token:
+            continue
+
+        # Saltar operadores de shell
+        if token in ('&&', '||', '|', ';', '&', '(', ')', '{', '}'):
+            continue
+
+        # Saltar flags (-y, --yes, etc.)
+        if token.startswith('-'):
+            continue
+
+        # Saltar redirecciones y tokens con caracteres especiales de shell
+        if any(c in token for c in ('>', '<', '`')):
+            continue
+
+        # Saltar asignaciones de variables de entorno (VAR=valor)
+        if '=' in token and not token.startswith('/'):
+            izq, _, _ = token.partition('=')
+            if izq.isidentifier():
+                continue
+
+        # Saltar palabras reservadas de shell
+        if token in PALABRAS_RESERVADAS:
+            continue
+
+        # ¿El token (sin path) es un comando privilegiado?
+        base = os.path.basename(token)
+        if base in COMANDOS_PRIVILEGIADOS:
+            return True
+
+    return False
