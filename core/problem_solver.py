@@ -29,6 +29,11 @@ from typing import Dict, List, Optional, Tuple, Any, Set
 from dataclasses import dataclass, field
 from enum import Enum
 
+from unittest.mock import Mock
+
+from core.agent import Agente, TipoAgente
+from core.plan_recovery import PlanRecovery
+
 from core.agent import Agente, TipoAgente
 from core.llm_client import LLMClient, LLMError
 from core.utils import extraer_json_de_llm
@@ -340,18 +345,18 @@ class PromptBuilder:
         "directamente en Python (caso excepcional), usa `reportlab` (ya "
         "instalada). NO uses `fpdf` ni `weasyprint` ni `pdfkit`: no están "
         "disponibles en este entorno.",
-        "**PARA .xlsx**: el contenido debe ser una **lista de dicts** "
-        "(una entrada por fila, con las claves como cabeceras) o una "
-        "**lista de listas** (la primera fila como cabeceras). NUNCA "
-        "un string CSV con comas y saltos de línea: el sistema no lo "
-        "parsea, lo escribirá todo en una única celda.",
-        "**EJEMPLO CORRECTO para nómina**:",
+        "**PARA .xlsx**: el resultado DEBE ser DIRECTAMENTE una lista de dicts "
+        "(una entrada por fila, claves = cabeceras) o una lista de listas "
+        "(primera fila = cabeceras). Ejemplo:",
         "```python",
-        "resultado = {'contenido': [",
-        "    {'Nombre': 'Ana García', 'Salario': 2450, 'Enero': 20, 'Febrero': 19},",
-        "    {'Nombre': 'Carlos Ruiz', 'Salario': 3120, 'Enero': 18, 'Febrero': 21},",
+        "resultado = {'filas': [",
+        "    {'Categoria': 'Vivienda', 'Monto': 850.0, 'Porcentaje': 34.69},",
+        "    {'Categoria': 'Alimentacion', 'Monto': 420.0, 'Porcentaje': 17.14},",
         "]}",
         "```",
+        "⚠️ IMPORTANTE: si envuelves la lista en un dict con la clave 'filas', "
+        "el sistema la expandirá automáticamente. NO serialices la lista a JSON string.",
+        
     ]
 
     @classmethod
@@ -788,7 +793,7 @@ class ProblemSolver:
     # Modelos a probar en orden (configurable)
     DEFAULT_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
     DEFAULT_TEMPERATURE = 0.1
-    DEFAULT_MAX_TOKENS = 3000
+    DEFAULT_MAX_TOKENS = 5000
     DEFAULT_REASONING_EFFORT = "low"
     DEFAULT_THINKING_ENABLED = False
 
