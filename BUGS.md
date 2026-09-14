@@ -54,3 +54,10 @@ Sigue apareciendo al inicio de cada ejecución. Es el scheduler.limpiar() que se
 - Log ruidoso de `httpx2`.
 - UX "⏹ Ejecución detenida".
 - `Database.close()` se llama dos veces.
+
+## Bug #2 — httpx2 ruidoso
+
+- **Estado**: ✅ Arreglado
+- **Fecha**: 2026-09-14
+- **Fix**: `logging.getLogger("httpx2").setLevel(logging.WARNING)` en `main.py::_configurar_logging`
+- **Verificado**: en la ejecución 305 no aparece ninguna línea `httpx2: HTTP Request`
