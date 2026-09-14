@@ -710,6 +710,26 @@ class FileExecutor:
                 )
                 contenido = filas_csv
 
+        # ── NUEVO: desempaquetar dicts con clave "de datos" ──
+        # El LLM a veces envuelve la lista en un dict como:
+        #     {'filas': [...], 'total': N}
+        # Si detectamos esa estructura, usamos directamente la lista interna
+        # para que se aplique el formateo de filas/columnas correcto.
+        CLAVES_DATOS = (
+            'filas', 'datos', 'items', 'rows', 'data',
+            'registros', 'values', 'registros_datos', 'resultados',
+        )
+        if isinstance(contenido, dict):
+            for clave in CLAVES_DATOS:
+                if clave in contenido and isinstance(contenido[clave], list):
+                    logger.info(
+                        f"File.escribir_xlsx: dict con clave '{clave}' "
+                        f"detectado ({len(contenido[clave])} items). "
+                        f"Expandiendo la lista interna."
+                    )
+                    contenido = contenido[clave]
+                    break
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Datos"
