@@ -1324,7 +1324,8 @@ class Scheduler(QObject):
 
     def limpiar(self):
         """Limpia todo el estado sin eliminar los agentes."""
-        self.detener()
+        if self.ejecutando or self.running:
+            self.detener()
 
         with self._lock:
             self.completed.clear()
