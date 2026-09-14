@@ -1,3 +1,0 @@
-﻿config.timeout,config.tipo,duracion,estado,id,nombre
-30,python,1.23,Completado,1,Agente A
-10,shell,0.5,Error,2,Agente B

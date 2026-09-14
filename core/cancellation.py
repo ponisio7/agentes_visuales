@@ -7,7 +7,6 @@ Permite cancelar workers de forma segura y coordinada.
 import threading
 import time
 import logging
-import token
 from typing import Optional, Set, Dict, Any, List, Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -151,8 +150,7 @@ class CancellationManager:
         with self._lock:
             self._tokens[token.id] = token
         
-        if self._logger.isEnabledFor(logging.DEBUG):
-            self._logger.debug(f"Token creado: {token.id}")
+        self._logger.debug(f"Token creado: {token.id}")
         return token
     
     def obtener_token(self, token_id: str) -> Optional[CancellationToken]:

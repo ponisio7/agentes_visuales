@@ -15,6 +15,8 @@ VERSIÓN FINAL (v3 - 2026-09):
 - ✅ Defensa en profundidad: prevención + corrección + fallback seguro
 - ✅ Helpers por tipo de agente (código mantenible)
 - ✅ Propaga advertencias al ExecutionPlan (visibles en la UI)
+- ✅ Regla anti "formato binario a mano" (PDF/DOCX/XLSX generados
+  concatenando bytes en Python) para evitar documentos corruptos
 """
 import json
 import re
@@ -30,6 +32,12 @@ from enum import Enum
 from core.agent import Agente, TipoAgente
 from core.llm_client import LLMClient, LLMError
 from core.utils import extraer_json_de_llm
+
+from core.plan_repairs import (
+    detectar_requisitos_no_cumplidos,
+    aplicar_parche,
+    construir_instruccion_regeneracion,
+)
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -90,6 +98,35 @@ class PromptBuilder:
     """
     Construye prompts para el LLM de forma modular y configurable.
     """
+    DOCX_IMAGE_RULES = [
+        "**REGLA OBLIGATORIA**: Si el usuario pide un documento con imágenes "
+        "(menciona 'imágenes', 'ilustraciones', 'con imágenes', 'con dibujos', "
+        "'con N imágenes', etc.), DEBES incluir en el plan TODOS estos pasos. "
+        "NO basta con generar solo el texto del documento.",
+
+        "**ESTRUCTURA OBLIGATORIA** para 'cuento con N imágenes':",
+        "  1. `GenerarCuento` (LLM): produce el cuento Y N descripciones de imágenes.",
+        "     `resultado = {'cuento': '...', 'descripciones_imagenes': ['desc1', 'desc2', ...]}`",
+        "  2. `GenerarURLs` (Python, depende de GenerarCuento): genera N URLs de imágenes.",
+        "     El código debe ser EXACTAMENTE:",
+        "     `resultado = {'urls': [f'https://picsum.photos/800/600?random={i}' for i in range(N)]}`",
+        "     (donde N es el número de imágenes que pidió el usuario).",
+        "  3. `PrepararDocumento` (Python, depende de GenerarCuento y GenerarURLs):",
+        "     combina el cuento con las URLs y descripciones.",
+        "     `resultado = {'titulo': '...', 'cuento': '...', 'imagenes': [{'url': u, 'descripcion': d} for u, d in zip(urls, descripciones)]}`",
+        "  4. `EscribirDOCX` (File, depende de PrepararDocumento): escribe el .docx.",
+        "     `configuracion = {'operacion': 'escribir', 'archivo_destino': '<nombre>.docx'}`",
+
+        "**PROHIBIDO USAR placehold.co**: genera imágenes grises de relleno. "
+        "Para imágenes reales usa `https://picsum.photos/800/600?random=N` (público, sin auth).",
+
+        "**NO HAGAS DESCARGA HTTP DENTRO DE UN AGENTE Python/Loop**: el sandbox no "
+        "tiene red fiable y los timeouts son cortos. El agente `File` de DOCX es "
+        "quien descarga las imágenes si le pasas URLs en 'imagenes'.",
+
+        "**NO INVENTES APIs CON AUTH**: no uses `api.unsplash.com` ni otras APIs "
+        "que requieren API key. Usa solo APIs públicas sin autenticación.",
+    ]
 
     # Reglas para generación de código Python
     PYTHON_RULES = [
@@ -279,6 +316,44 @@ class PromptBuilder:
         "automáticamente en tiempo de ejecución.",
     ]
 
+    # ✅ NUEVO: Reglas anti "formato binario a mano" (PDF, DOCX, XLSX, etc.)
+    # Evita que el LLM genere estos formatos concatenando bytes/strings en
+    # Python: un PDF tiene offsets de xref, longitudes de stream y checksums
+    # que el LLM no calcula bien, y el resultado es un archivo corrupto o
+    # un "doble PDF" cuando ese texto se pasa después a un agente File.
+    BINARY_FORMAT_RULES = [
+        "**NUNCA** generes un PDF, .docx o .xlsx 'a mano' concatenando bytes "
+        "o strings en un agente Python (ej: `contenido = '%PDF-1.4\\n...'`). "
+        "Es prácticamente imposible acertar con los offsets de xref, las "
+        "longitudes de stream y los checksums exactos que exige el formato.",
+        "**Patrón CORRECTO** para generar un documento (PDF, Word, etc.): "
+        "1) un agente Python o LLM genera el CONTENIDO como texto plano o "
+        "Markdown (`resultado = {'contenido': 'Hola mundo'}`); 2) un agente "
+        "File con `operacion: \"escribir\"` y `archivo_destino` con la "
+        "extensión correcta recibe ese texto: el sistema hace la conversión "
+        "real al formato binario según la extensión.",
+        "**NUNCA** pases a un agente File un contenido que YA es un PDF/DOCX "
+        "'a mano' (empieza por `%PDF-` o similar): el agente File lo tratará "
+        "como texto plano y lo envolverá en un documento nuevo, produciendo "
+        "un archivo corrupto o inútil.",
+        "**LIBRERÍAS DE PDF DISPONIBLES**: si necesitas generar un PDF "
+        "directamente en Python (caso excepcional), usa `reportlab` (ya "
+        "instalada). NO uses `fpdf` ni `weasyprint` ni `pdfkit`: no están "
+        "disponibles en este entorno.",
+        "**PARA .xlsx**: el contenido debe ser una **lista de dicts** "
+        "(una entrada por fila, con las claves como cabeceras) o una "
+        "**lista de listas** (la primera fila como cabeceras). NUNCA "
+        "un string CSV con comas y saltos de línea: el sistema no lo "
+        "parsea, lo escribirá todo en una única celda.",
+        "**EJEMPLO CORRECTO para nómina**:",
+        "```python",
+        "resultado = {'contenido': [",
+        "    {'Nombre': 'Ana García', 'Salario': 2450, 'Enero': 20, 'Febrero': 19},",
+        "    {'Nombre': 'Carlos Ruiz', 'Salario': 3120, 'Enero': 18, 'Febrero': 21},",
+        "]}",
+        "```",
+    ]
+
     @classmethod
     def build_system_prompt(cls) -> str:
         """
@@ -316,7 +391,10 @@ class PromptBuilder:
         field_rules = "\n".join(
             f"{i+1}. {rule}" for i, rule in enumerate(cls.FIELD_RULES)
         )
-
+        binary_format_rules = "\n".join(
+            f"  - {rule}" for rule in cls.BINARY_FORMAT_RULES
+        )
+        docx_image_rules = "\n".join(f"  - {rule}" for rule in cls.DOCX_IMAGE_RULES)
         # ── 4. Contratos de salida por tipo (claves exactas) ──
         contratos = cls._formatear_contratos()
 
@@ -361,6 +439,14 @@ Tu trabajo es analizar un problema complejo y descomponerlo en una orquestación
 ## ⚠️ REGLAS SOBRE CAMPOS DE 'configuracion' ⚠️
 
 {field_rules}
+
+## ⚠️ REGLA CRÍTICA SOBRE FORMATOS BINARIOS (PDF, DOCX, XLSX) ⚠️
+
+{binary_format_rules}
+
+## ⚠️ REGLAS CRÍTICAS PARA DOCUMENTOS CON IMÁGENES ⚠️
+
+{docx_image_rules}
 
 ## ⚠️ REGLAS CRÍTICAS PARA CÓDIGO PYTHON ⚠️
 
@@ -442,7 +528,16 @@ NIVEL DE DETALLE: {nivel_detalle}
         if contexto_extra:
             prompt += f"\nCONTEXTO ADICIONAL:\n{json.dumps(contexto_extra, indent=2, ensure_ascii=False)}\n"
 
-        prompt += "\nGenera el plan de ejecución en formato JSON. Responde ÚNICAMENTE con el JSON, sin texto adicional."
+        prompt += """
+            ANTES DE RESPONDER, verifica tu plan contra estos puntos:
+            1. ¿He incluido un paso para CADA requisito explícito del problema?
+            2. Si el usuario pidió "N imágenes", ¿hay un paso que genere exactamente N URLs?
+            3. ¿El paso final de File (si aplica) recibe un dict con las claves correctas?
+            4. ¿Las dependencias forman un DAG válido (sin ciclos, sin nombres inexistentes)?
+            5. ¿El JSON es válido y no tiene comas finales ni texto adicional?
+
+            Genera el plan de ejecución en formato JSON. Responde ÚNICAMENTE con el JSON, sin texto adicional.
+            """
         return prompt
 
     @classmethod
@@ -479,9 +574,9 @@ class PythonCodeCorrector:
             "description": "Variable 'respuesta' → contexto.get('Dep', {{}}).get('body', '{{}}')"
         },
         {
-            "pattern": r'data\s*=\s*(?!contexto)',
-            "template": "data = contexto.get('{dep}', {{}})  # ← CORREGIDO",
-            "description": "data = ... → data = contexto.get('Dep', {{}})"
+            "pattern": r'\bdata\s*=\s*["\']?[a-z_]+["\']?\s*$',  # solo líneas tipo `data = foo`
+            "template": "data = contexto.get('{dep}', {{}})",
+            "description": "data = variable_simple → data = contexto.get('Dep', {{}})"
         },
         {
             "pattern": r'\bresult\b(?![.]|\s*=)',
@@ -737,26 +832,22 @@ class ProblemSolver:
     # ============================================================
 
     def resolver_problema(
-        self,
-        problema: str,
-        contexto_extra: Optional[Dict] = None,
-        max_pasos: int = 10,
-        nivel_detalle: str = "normal"
-    ) -> ExecutionPlan:
+    self,
+    problema: str,
+    contexto_extra: Optional[Dict] = None,
+    max_pasos: int = 10,
+    nivel_detalle: str = "normal",
+    _es_regeneracion: bool = False,
+    _instruccion_extra: str = "",
+) -> ExecutionPlan:
         """
         Analiza un problema y genera un plan de ejecución completo.
 
-        Args:
-            problema: Descripción del problema en lenguaje natural
-            contexto_extra: Contexto adicional (agentes existentes, etc.)
-            max_pasos: Máximo de pasos a generar
-            nivel_detalle: 'simple', 'normal', 'detallado'
-
-        Returns:
-            ExecutionPlan: Plan generado
-
-        Raises:
-            ValueError: Si el problema está vacío o no se puede generar el plan
+        Si el plan no cumple un requisito explícito del problema (ej:
+        "con imágenes"), regenera el plan UNA VEZ con una instrucción
+        forzada. Si tras la regeneración sigue sin cumplirlo, aplica un
+        parche determinista aislado en `core.plan_repairs` y lo registra
+        en el LearningEngine.
         """
         if not problema or not problema.strip():
             raise ValueError("El problema no puede estar vacío")
@@ -769,7 +860,24 @@ class ProblemSolver:
             problema, contexto_extra, max_pasos, nivel_detalle
         )
 
-        # 2. Consultar al LLM (con reintentos y modelos alternativos)
+        # ✅ Lecciones aprendidas
+        try:
+            from learning import obtener_learning_engine
+            engine = obtener_learning_engine()
+            if engine is not None:
+                bloque_lecciones = engine.obtener_lecciones_para_prompt()
+                if bloque_lecciones:
+                    user_prompt = user_prompt + "\n\n" + bloque_lecciones
+                    self.logger.info("🧠 Lecciones aprendidas inyectadas en el prompt")
+        except Exception as e:
+            self.logger.debug(f"Learning no disponible: {e}")
+
+        # ✅ Instrucción extra (en regeneraciones)
+        if _instruccion_extra:
+            user_prompt = user_prompt + "\n\n" + _instruccion_extra
+            self.logger.info("🔁 Instrucción de regeneración añadida al prompt")
+
+        # 2. Consultar al LLM
         plan_dict = self._consultar_llm_con_reintentos(user_prompt)
 
         # 3. Normalizar nombres de archivos
@@ -778,25 +886,57 @@ class ProblemSolver:
         # 4. Construir ExecutionPlan
         plan = self._construir_plan(problema, plan_dict)
 
-        # ✅ 5. Guardar referencia antes de generar agentes, para que
-        #       _paso_a_agente pueda propagar advertencias al plan.
+        # ✅ 5. Guardar referencia (para que _validar_campos_configuracion
+        #       pueda propagar advertencias al plan).
         self._plan_actual = plan
 
         try:
-            # 6. Generar objetos Agente (con validación de campos)
+            # 6. Detectar requisitos no cumplidos
+            requisitos_faltantes = detectar_requisitos_no_cumplidos(problema, plan)
+
+            # 7. Si hay requisitos faltantes y NO estamos ya en regeneración,
+            #    regenerar UNA VEZ con instrucción forzada.
+            if requisitos_faltantes and not _es_regeneracion:
+                self.logger.warning(
+                    f"⚠️ Plan incompleto: faltan requisitos {requisitos_faltantes}. "
+                    f"Regenerando con instrucción forzada..."
+                )
+                self._plan_actual = None  # limpiar antes de recursión
+
+                instruccion = construir_instruccion_regeneracion(requisitos_faltantes)
+                return self.resolver_problema(
+                    problema=problema,
+                    contexto_extra=contexto_extra,
+                    max_pasos=max_pasos,
+                    nivel_detalle=nivel_detalle,
+                    _es_regeneracion=True,
+                    _instruccion_extra=instruccion,
+                )
+
+            # 8. Si seguimos con requisitos faltantes, aplicar parche (aislado)
+            if requisitos_faltantes:
+                for req in requisitos_faltantes:
+                    self.logger.warning(
+                        f"⚠️ Regeneración no resolvió '{req}'. Aplicando parche..."
+                    )
+                    parche_aplicado = aplicar_parche(problema, plan, req)
+                    if parche_aplicado:
+                        self.logger.warning(f"🔧 Parche aplicado: {parche_aplicado}")
+                        # Registrar en LearningEngine para reforzar la lección
+                        self._registrar_reparacion(problema, parche_aplicado)
+
+            # 9. Generar objetos Agente
             plan.agentes_generados = self._generar_agentes(plan)
 
-            # 7. Validar el plan
+            # 10. Validar
             es_valido, errores = self._validar_plan(plan)
             if not es_valido:
-                # Las advertencias de campos desconocidos ya están en
-                # plan.advertencias; añadimos los errores de validación.
                 plan.advertencias.extend(
                     e for e in errores if e not in plan.advertencias
                 )
                 self.logger.warning(f"⚠️ Plan con advertencias: {errores}")
 
-            # 8. Guardar en caché
+            # 11. Guardar en caché
             self._plan_cache[plan.id] = plan
 
             self.logger.info(
@@ -806,8 +946,17 @@ class ProblemSolver:
             return plan
 
         finally:
-            # ✅ Limpiar referencia siempre, incluso si hay excepción.
             self._plan_actual = None
+
+    def _registrar_reparacion(self, problema: str, tipo: str) -> None:
+        """Registra una reparación de plan en el LearningEngine."""
+        try:
+            from learning import obtener_learning_engine
+            engine = obtener_learning_engine()
+            if engine is not None:
+                engine.registrar_reparacion_plan(problema=problema, tipo=tipo)
+        except Exception as e:
+            self.logger.debug(f"No se pudo registrar reparación: {e}")
 
     def refinar_plan(self, plan: ExecutionPlan, instruccion: str) -> ExecutionPlan:
         """Refina un plan existente según una instrucción del usuario."""
@@ -838,6 +987,9 @@ class ProblemSolver:
                 temperature=0.2,
                 max_tokens=4000
             )
+            # ⬇️ TEMPORAL: ver qué devuelve el LLM
+            logger.info(f"📄 Respuesta cruda (primeros 500 chars):\n{respuesta[:500]}")
+
             plan_dict = self._parsear_respuesta(respuesta)
             plan_dict = self.file_normalizer.normalizar(plan_dict)
             nuevo_plan = self._construir_plan(plan.problema_original, plan_dict)
@@ -1199,6 +1351,8 @@ class ProblemSolver:
             plan.pasos.append(paso)
 
         return plan
+
+    
 
     def _validar_configuracion_paso(self, paso: StepPlan):
         """
@@ -1593,7 +1747,7 @@ class ProblemSolver:
 
         NOTA: NO se pasa 'contenido'. El contenido se obtiene
         automáticamente del resultado de la dependencia declarada
-        (ver FileExecutor.ejecutar).
+        (ver AgentExecutor._ejecutar_file).
         """
         kwargs['operacion_file'] = config.get('operacion', 'leer')
         kwargs['archivo_origen'] = config.get('archivo_origen', '') or ''
@@ -1823,17 +1977,6 @@ class ProblemSolver:
 # ============================================================
 # FUNCIONES DE AYUDA
 # ============================================================
-
-def resolver_problema(
-    problema: str,
-    api_key: Optional[str] = None,
-    max_pasos: int = 8
-) -> ExecutionPlan:
-    """Función rápida para resolver un problema."""
-    client = LLMClient(api_key=api_key)
-    solver = ProblemSolver(client)
-    return solver.resolver_problema(problema, max_pasos=max_pasos)
-
 
 def ejecutar_plan_prueba(plan: ExecutionPlan, mostrar_detalle: bool = True):
     """Ejecuta un plan generado para pruebas."""

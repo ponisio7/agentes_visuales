@@ -18,6 +18,10 @@ agent_history.db
 # logs y archivos de registro
 logs/
 *.log
+*.docx
+*.xlsx
+*.json
+*'pdf
 
 .env
 agentes_visuales 05092026.txt   

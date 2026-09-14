@@ -6,9 +6,28 @@ CARACTERÍSTICAS:
 - Suscripción/desuscripción de eventos
 - Publicación de eventos con datos
 - Soporte para múltiples suscriptores
-- Thread-safe
+- Thread-safe (lock en suscripción/publicación)
 - Logging de eventos
 - Filtrado por tipo de evento
+- Snapshot defensivo de payloads (anti race worker ↔ hilo principal)
+
+IMPORTANTE — THREADING / Qt:
+Los callbacks de suscribir() se ejecutan en el hilo del publicador.
+Si el publicador es un worker (ThreadPoolExecutor) y el callback toca
+widgets Qt (QTextEdit, labels, etc.), el suscriptor DEBE marshallar
+al hilo principal, por ejemplo:
+
+    self._invocar_en_hilo_principal = pyqtSignal(object)
+    self._invocar_en_hilo_principal.connect(lambda fn: fn(), Qt.QueuedConnection)
+
+    def _en_hilo_principal(handler):
+        def _wrapper(evento):
+            # Preferible: solo IDs; el handler consulta al scheduler
+            self._invocar_en_hilo_principal.emit(lambda: handler(evento))
+        return _wrapper
+
+Los métodos de conveniencia ya hacen snapshot superficial de dicts
+para reducir races sobre el payload.
 """
 
 import logging
@@ -18,43 +37,10 @@ from typing import Dict, List, Callable, Any, Optional, Set
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from collections import defaultdict
-try:
-    from PyQt6.QtCore import QCoreApplication, QObject, pyqtSignal, pyqtSlot, Qt
-    from PyQt6.QtCore import QMetaObject, Q_ARG
-    _QT_DISPONIBLE = True
-except ImportError:
-    _QT_DISPONIBLE = False
 
 logger = logging.getLogger(__name__)
 
-if _QT_DISPONIBLE:
-    class _CallbackDispatcher(QObject):
-        """
-        Reemite callbacks en el hilo de Qt al que pertenece este QObject.
 
-        Se crea en el hilo principal (donde vive el QApplication). Cuando
-        se llama a `dispatch` desde otro hilo, `_emitir` se encola vía
-        QueuedConnection y se ejecuta en el hilo de Qt.
-        """
-        _emitir_signal = pyqtSignal(object, object)
-
-        def __init__(self):
-            super().__init__()
-            self._emitir_signal.connect(
-                self._ejecutar_callback,
-                Qt.ConnectionType.QueuedConnection,
-            )
-
-        def dispatch(self, callback, evento):
-            # Emitir es thread-safe. El slot se ejecuta en el hilo del QObject.
-            self._emitir_signal.emit(callback, evento)
-
-        @pyqtSlot(object, object)
-        def _ejecutar_callback(self, callback, evento):
-            try:
-                callback(evento)
-            except Exception as e:
-                logger.error(f"Error en callback {callback}: {e}", exc_info=True)
 # ============================================================
 # TIPOS DE EVENTOS
 # ============================================================
@@ -133,6 +119,7 @@ class EventBus:
     def __init__(self):
         if self._initialized:
             return
+        
         self._initialized = True
         self._suscriptores: Dict[EventType, List[Callable]] = defaultdict(list)
         self._suscriptores_todos: List[Callable] = []
@@ -140,15 +127,7 @@ class EventBus:
         self._historial: List[Event] = []
         self._max_historial = 1000
         self._activo = True
-
-        # Dispatcher para entregar callbacks en el hilo de Qt
-        self._qt_dispatcher = None
-        if _QT_DISPONIBLE and QCoreApplication.instance() is not None:
-            try:
-                self._qt_dispatcher = _CallbackDispatcher()
-            except Exception as e:
-                logger.warning(f"No se pudo crear el dispatcher Qt: {e}")
-
+        
         logger.info("EventBus inicializado")
     
     # ============================================================
@@ -230,69 +209,141 @@ class EventBus:
     # ============================================================
     
     def publicar(self, evento: Event) -> bool:
+        """
+        Publica un evento en el bus.
+        
+        Args:
+            evento: Evento a publicar
+            
+        Returns:
+            bool: True si se publicó correctamente
+        """
         if not self._activo:
+            logger.warning("EventBus inactivo, evento ignorado")
             return False
-
+        
         with self._lock:
+            # Guardar historial
             self._historial.append(evento)
             if len(self._historial) > self._max_historial:
                 self._historial = self._historial[-self._max_historial:]
+            
+            # Obtener suscriptores específicos
             suscriptores = self._suscriptores.get(evento.tipo, []).copy()
             suscriptores_todos = self._suscriptores_todos.copy()
-
-        # Si hay dispatcher Qt y estamos en un hilo distinto al de Qt,
-        # encolamos los callbacks para que se ejecuten en el hilo correcto.
-        usar_dispatcher = (
-            self._qt_dispatcher is not None
-            and _QT_DISPONIBLE
-            and QCoreApplication.instance() is not None
-        )
-
+        
+        # Ejecutar callbacks (fuera del lock)
         for callback in suscriptores:
-            if usar_dispatcher:
-                self._qt_dispatcher.dispatch(callback, evento)
-            else:
-                try:
-                    callback(evento)
-                except Exception as e:
-                    logger.error(f"Error en callback {callback.__name__}: {e}")
-
+            try:
+                callback(evento)
+            except Exception as e:
+                logger.error(f"Error en callback {callback.__name__}: {e}")
+        
         for callback in suscriptores_todos:
-            if usar_dispatcher:
-                self._qt_dispatcher.dispatch(callback, evento)
-            else:
-                try:
-                    callback(evento)
-                except Exception as e:
-                    logger.error(f"Error en callback universal {callback.__name__}: {e}")
-
+            try:
+                callback(evento)
+            except Exception as e:
+                logger.error(f"Error en callback universal {callback.__name__}: {e}")
+        
+        logger.debug(f"Evento publicado: {evento.tipo.name} desde {evento.origen}")
         return True
     
+    # ============================================================
+    # HELPERS DE SNAPSHOT (anti race entre worker y hilo principal)
+    # ============================================================
+
+    @staticmethod
+    def _snapshot_datos(datos: Any, _profundidad: int = 0, _max: int = 4) -> Any:
+        """
+        Copia defensiva (recursiva con límite) de los datos del evento.
+
+        Evita que el hilo worker mute el dict después de publicar y que el
+        handler en el hilo principal lea un estado a medio escribir
+        (síntoma típico: QTextCursor out of range / corrupción de UI).
+
+        Profundidad máxima 4: suficiente para resultados HTTP/LLM/Loop
+        sin costar una deepcopy completa de estructuras enormes.
+        """
+        if datos is None or _profundidad > _max:
+            return datos
+        if isinstance(datos, (str, int, float, bool)):
+            return datos
+        if isinstance(datos, dict):
+            try:
+                return {
+                    k: EventBus._snapshot_datos(v, _profundidad + 1, _max)
+                    for k, v in datos.items()
+                }
+            except Exception:
+                try:
+                    return dict(datos)
+                except Exception:
+                    return datos
+        if isinstance(datos, list):
+            try:
+                return [
+                    EventBus._snapshot_datos(v, _profundidad + 1, _max)
+                    for v in datos
+                ]
+            except Exception:
+                try:
+                    return list(datos)
+                except Exception:
+                    return datos
+        # Otros tipos (objetos, etc.): pasar por referencia; no clonar
+        return datos
+
     # ============================================================
     # MÉTODOS DE CONVENIENCIA PARA PUBLICAR
     # ============================================================
     
     def publicar_agente_actualizado(self, agente_id: str, origen: str = ""):
-        """Publica evento de agente actualizado."""
+        """Publica evento de agente actualizado (solo ID — seguro para cross-thread)."""
         self.publicar(Event(
             tipo=EventType.AGENTE_ACTUALIZADO,
             datos={"agente_id": agente_id},
             origen=origen
         ))
     
-    def publicar_agente_completado(self, agente_id: str, nombre: str, resultado: Any, origen: str = ""):
-        """Publica evento de agente completado."""
+    def publicar_agente_completado(
+        self,
+        agente_id: str,
+        nombre: str,
+        resultado: Any = None,
+        origen: str = ""
+    ):
+        """
+        Publica evento de agente completado.
+
+        El `resultado` se snapshottea para que el handler del hilo principal
+        no vea mutaciones posteriores del worker. Preferible que el handler
+        use solo `agente_id` y consulte al scheduler.
+        """
         self.publicar(Event(
             tipo=EventType.AGENTE_COMPLETADO,
-            datos={"agente_id": agente_id, "nombre": nombre, "resultado": resultado},
+            datos=self._snapshot_datos({
+                "agente_id": agente_id,
+                "nombre": nombre,
+                "resultado": resultado,
+            }),
             origen=origen
         ))
     
-    def publicar_agente_error(self, agente_id: str, nombre: str, error: str, origen: str = ""):
+    def publicar_agente_error(
+        self,
+        agente_id: str,
+        nombre: str,
+        error: str,
+        origen: str = ""
+    ):
         """Publica evento de agente en error."""
         self.publicar(Event(
             tipo=EventType.AGENTE_ERROR,
-            datos={"agente_id": agente_id, "nombre": nombre, "error": error},
+            datos={
+                "agente_id": agente_id,
+                "nombre": nombre,
+                "error": str(error) if error is not None else "",
+            },
             origen=origen
         ))
     
@@ -300,15 +351,15 @@ class EventBus:
         """Publica evento de log."""
         self.publicar(Event(
             tipo=EventType.LOG_MENSAJE,
-            datos={"mensaje": mensaje, "color": color},
+            datos={"mensaje": str(mensaje), "color": color},
             origen=origen
         ))
     
     def publicar_ejecucion_terminada(self, stats: Dict, origen: str = ""):
-        """Publica evento de ejecución terminada."""
+        """Publica evento de ejecución terminada (stats snapshotteados)."""
         self.publicar(Event(
             tipo=EventType.EJECUCION_TERMINADA,
-            datos={"stats": stats},
+            datos={"stats": self._snapshot_datos(stats) or {}},
             origen=origen
         ))
     
@@ -316,7 +367,7 @@ class EventBus:
         """Publica evento de ejecución iniciada."""
         self.publicar(Event(
             tipo=EventType.EJECUCION_INICIADA,
-            datos={"total_agentes": total_agentes},
+            datos={"total_agentes": int(total_agentes)},
             origen=origen
         ))
     
@@ -340,7 +391,7 @@ class EventBus:
         """Publica evento de cambio de estado."""
         self.publicar(Event(
             tipo=EventType.ESTADO_CAMBIADO,
-            datos={"ejecutando": ejecutando},
+            datos={"ejecutando": bool(ejecutando)},
             origen=origen
         ))
     

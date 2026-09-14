@@ -1,29 +1,12 @@
 # ui/__init__.py
 """
 Paquete UI de Agentes Visuales.
-Contiene todos los widgets y diálogos de la interfaz de usuario.
+
+Solo exporta SimpleMainWindow. El resto de UIs antiguas viven en
+ui/_legacy/ y NO se importan automáticamente para evitar cargar
+matplotlib, plyer y demás dependencias pesadas.
 """
 
-from .main_window import MainWindow
-from .agent_widget import AgentWidget
-from .graph_view import GraphView
-from .metrics_dashboard import MetricsDashboard
-from .agent_config_dialog import AgentConfigDialog
-from .theme_manager import ThemeManager
-from .notification_manager import NotificationManager
-from .text_import_dialog import TextImportDialog
-from .ai_assistant_dialog import AIAssistantDialog
-from .problem_solver_dialog import ProblemSolverDialog
+from .simple_main_window import SimpleMainWindow
 
-__all__ = [
-    'MainWindow',
-    'AgentWidget',
-    'GraphView',
-    'MetricsDashboard',
-    'AgentConfigDialog',
-    'ThemeManager',
-    'NotificationManager',
-    'TextImportDialog',
-    'AIAssistantDialog',
-    'ProblemSolverDialog'
-]
+__all__ = ["SimpleMainWindow"]

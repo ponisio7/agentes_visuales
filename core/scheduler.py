@@ -105,7 +105,10 @@ class Scheduler(QObject):
     log_mensaje = pyqtSignal(str, str)             # mensaje, color
     ejecucion_terminada = pyqtSignal()             # Todos los agentes terminaron
     estado_cambiado = pyqtSignal(bool)             # ejecutando/pausado
-    _reintentar_agente = pyqtSignal(object, object)  # agente, contexto_extra
+    # ✅ FIX: solo ID + contexto (no el objeto Agente vivo). QueuedConnection
+    # no copia argumentos Python; pasar el Agente desde el worker provoca
+    # data race con el hilo principal en reintentos.
+    _reintentar_agente = pyqtSignal(str, object)  # agente_id, contexto_extra
 
     # ── Constantes ──
     _AGENT_TIMEOUT = 3600          # Timeout global por agente (1 hora)
@@ -114,6 +117,14 @@ class Scheduler(QObject):
 
     def __init__(self, max_concurrent: int = 4):
         super().__init__()
+
+        # ── Plan B (recuperación de fallos críticos) ──
+        self.recovery = None
+        self._plan_b_intentos = 0
+        self._plan_b_en_progreso = False
+        self._problema_original = ""
+        self._plan_original = None
+        self._max_intentos_plan_b = 2
 
         # ── Estado de agentes ──
         self.agentes: Dict[str, Agente] = {}
@@ -165,7 +176,15 @@ class Scheduler(QObject):
         self._gestor_cancelacion = obtener_gestor_cancelacion()
         self._tokens_activos: Dict[str, CancellationToken] = {}  # agente_id -> token
 
-        logger.info(f"Scheduler inicializado (max_concurrent={max_concurrent})")
+        #logger.debug(f"Scheduler inicializado (max_concurrent={max_concurrent})")
+
+    def set_contexto_plan_b(self, recovery, problema_original: str, plan_original):
+        self.recovery = recovery
+        self._problema_original = problema_original or ""
+        self._plan_original = plan_original
+        self._plan_b_intentos = 0
+        self._plan_b_en_progreso = False
+        logger.debug("Plan B contexto inyectado en Scheduler")  
 
     # ============================================================
     # CONEXIÓN DEL BRIDGE
@@ -556,12 +575,8 @@ class Scheduler(QObject):
                     self._loops_activos.add(agente.id)
                     self._loop_items_procesados[agente.id] = 0
 
-            # ── DEBUG (bajado a debug para no ensuciar la salida) ──
-            logger.debug(
-                f"[{agente.nombre}] estado={agente.estado.value} "
-                f"deps={agente.dependencias_ids} "
-                f"contexto_keys={list(contexto.keys())}"
-            )
+            # ── ✅ NUEVO: Aviso de riesgo basado en aprendizaje ──
+            self._avisar_riesgo_aprendizaje(agente)
 
             try:
                 
@@ -582,6 +597,7 @@ class Scheduler(QObject):
                 agente.tiempo_fin = tiempo_fin
                 agente.progreso = 80
                 agente.mensaje = "Procesando resultado..."
+                agente.duracion = duracion  # ← persistir duración real
 
                 # ── Log especial para loops ──
                 if agente.tipo == TipoAgente.LOOP:
@@ -694,7 +710,7 @@ class Scheduler(QObject):
                             )
                         except ValueError:
                             agente.estado = EstadoAgente.EN_COLA
-                        self._reintentar_agente.emit(agente, contexto_extra)
+                        self._reintentar_agente.emit(agente.id, contexto_extra)
                         self.agente_actualizado.emit(agente.id)
                         self._intentar_lanzar_internal()
                         return
@@ -747,13 +763,66 @@ class Scheduler(QObject):
             self._verificar_terminado_internal()
             self._intentar_lanzar_internal()
 
+    def _avisar_riesgo_aprendizaje(self, agente: Agente):
+        """
+        Consulta al LearningEngine si el agente tiene riesgo alto de fallo.
+        Solo AVISA en el log, no bloquea la ejecución.
+
+        Si el sistema de aprendizaje no está disponible, no hace nada.
+        """
+        try:
+            from learning import obtener_learning_engine
+
+            engine = obtener_learning_engine()
+            if engine is None:
+                return
+
+            riesgo = engine.predecir_riesgo_agente(agente)
+            logger.info(
+                f"🧠 [{agente.nombre}] riesgo: "
+                f"p={riesgo['probabilidad_exito']:.2f} "
+                f"conf={riesgo['confianza']} "
+                f"n={riesgo['n_muestras']}"
+            )
+
+            # Solo avisamos si el modelo tiene confianza suficiente
+            # y la probabilidad de éxito es baja.
+            if (
+                riesgo.get("confianza") in ("media", "alta") and
+                riesgo.get("probabilidad_exito", 1.0) < 0.4
+            ):
+                self.log_mensaje.emit(
+                    f"⚠️ [{agente.nombre}] Riesgo de fallo estimado: "
+                    f"{1 - riesgo['probabilidad_exito']:.0%} "
+                    f"(basado en {riesgo['n_muestras']} ejecuciones previas)",
+                    "#ffc107"
+                )
+                self._bus.publicar_log(
+                    f"⚠️ Riesgo alto para '{agente.nombre}'",
+                    "#ffc107",
+                    origen="scheduler.learning"
+                )
+        except Exception as e:
+            # Silencioso: el aprendizaje nunca debe romper la ejecución
+            logger.debug(f"Aviso de aprendizaje falló: {e}")
+
     # core/scheduler.py - MÉTODO _bloquear_dependientes COMPLETO
 
     def _bloquear_dependientes(self, agente_id: str, razon: str):
         """
         Bloquea a todos los agentes que dependen directamente del agente que falló.
         Incluye cancelación de tokens activos.
+        Intenta Plan B antes de bloquear si hay recovery inyectado.
         """
+        # ⬇ PARCHE PLAN B: intentar recuperación antes de bloquear
+        agente_fallido_pre = self.agentes.get(agente_id)
+        if (self.recovery is not None
+                and not self._plan_b_en_progreso
+                and self._plan_b_intentos < self._max_intentos_plan_b
+                and agente_fallido_pre is not None):
+            if self._intentar_plan_b(agente_fallido_pre, razon):
+                return  # Plan B lanzado con éxito, no bloquear nada
+
         with self._lock:
             dependientes_bloqueados = []
             agente_fallido = self.agentes.get(agente_id)
@@ -772,8 +841,13 @@ class Scheduler(QObject):
                         # Cancelar token si existe
                         if otro_agente.id in self._tokens_activos:
                             token = self._tokens_activos[otro_agente.id]
-                            if token.esta_activo():
-                                token.cancelar(f"Bloqueado por dependencia '{nombre_fallido}'")
+                            try:
+                                if hasattr(token, "esta_activo") and token.esta_activo():
+                                    token.cancelar(f"Bloqueado por dependencia '{nombre_fallido}'")
+                                elif hasattr(token, "cancel"):
+                                    token.cancel()
+                            except Exception:
+                                pass
                         
                         self.running.discard(otro_agente.id)
                         self.completed.add(otro_agente.id)
@@ -786,14 +860,115 @@ class Scheduler(QObject):
                     f"🚫 [{nombre_fallido}] Bloqueó a: {nombres}",
                     "#8b0000"
                 )
-                logger.info(
+                logger.warning(
                     f"Agente {nombre_fallido} bloqueó a {len(dependientes_bloqueados)} dependientes"
                 )
             else:
                 self.log_mensaje.emit(
-                    f"ℹ️ [{nombre_fallido}] No tiene dependientes activos",
+                    f"ℹ [{nombre_fallido}] No tiene dependientes activos",
                     "#6c757d"
                 )
+
+    def _intentar_plan_b(self, agente_fallido, razon: str) -> bool:
+        """
+        Intenta generar y ejecutar un plan alternativo.
+        Devuelve True si lo lanzó con éxito, False si hay que bloquear como antes.
+        """
+        try:
+            logger.info(
+                f"🔧 [Plan B #{self._plan_b_intentos + 1}] "
+                f"'{agente_fallido.nombre}' falló: {razon}"
+            )
+            self.log_mensaje.emit(
+                f"🔧 Plan B #{self._plan_b_intentos + 1}: "
+                f"'{agente_fallido.nombre}' falló. "
+                f"Consultando al LLM... (puede tardar ~20s)",
+                "#ffc107"
+            )
+
+            # Bloquear reentradas durante la generación
+            self._plan_b_en_progreso = True
+            self._plan_b_intentos += 1
+
+            # 1. Pedir plan B al LLM (bloqueante ~5-15s, es aceptable)
+            plan_b = self.recovery.generar_plan_b(
+                problema_original=self._problema_original,
+                plan_fallido=self._plan_original,
+                agente_fallido=agente_fallido,
+                error=razon,
+            )
+
+            if plan_b is None or not getattr(plan_b, "agentes_generados", None):
+                self.log_mensaje.emit(
+                    "⚠️ Plan B descartado: el LLM no devolvió un plan válido. "
+                    "Bloqueando dependientes.",
+                    "#ffc107"
+                )
+                logger.warning("Plan B no disponible, bloqueando como antes")
+                self._plan_b_en_progreso = False
+                # ⬇️ NUEVO: marcar todos los agentes no-terminales como BLOQUEADOS
+                # para que el recuento sea coherente y la ejecución termine.
+                with self._lock:
+                    for ag in self.agentes.values():
+                        if EstadoAgente.es_terminal(ag.estado):
+                            continue
+                        if ag.id in self.running:
+                            continue  # dejar que terminen los que están corriendo
+                        ag.estado = EstadoAgente.BLOQUEADO
+                        ag.mensaje = "🚫 Plan B agotado: no se pudo recuperar la ejecución"
+                        ag.progreso = 100
+                        self.completed.add(ag.id)
+                        self.agente_actualizado.emit(ag.id)
+                return False
+
+            # ⬇️ NUEVO: mensaje de éxito tras generar plan_b
+            self.log_mensaje.emit(
+                f"✅ Plan B #{self._plan_b_intentos}: "
+                f"{len(plan_b.agentes_generados)} agentes generados. "
+                f"Cargando y reiniciando ejecución...",
+                "#28a745"
+            )
+
+            # 2. Detener ejecución actual (cancela tokens, workers)
+            self.detener()
+
+            # 3. Limpiar TODO el estado
+            with self._lock:
+                self.agentes.clear()
+                self.completed.clear()
+                self.running.clear()
+                self._cancelados.clear()
+                self._loops_activos.clear()
+                self._loop_items_procesados.clear()
+                self._terminado_notificado = False
+                self._tiempo_inicio_ejecucion = None
+                self._invalidar_stats_cache()
+
+            # 4. Cargar los nuevos agentes
+            for agente in plan_b.agentes_generados:
+                self.agregar_agente(agente)
+            self.resolver_dependencias()
+
+            # 5. Actualizar el plan original para futuros Plan B
+            self._plan_original = plan_b
+
+            # 6. Notificar a la UI
+            self.log_mensaje.emit(
+                f"✅ Plan B #{self._plan_b_intentos}: "
+                f"{len(plan_b.agentes_generados)} agentes cargados. "
+                f"Reiniciando ejecución...",
+                "#28a745"
+            )
+
+            # 7. Arrancar el nuevo plan
+            self._plan_b_en_progreso = False
+            self.iniciar()
+            return True
+
+        except Exception as e:
+            logger.exception(f"Error en Plan B: {e}")
+            self._plan_b_en_progreso = False
+            return False
 
     # ============================================================
     # HELPERS PARA LOG DE RESULTADOS
@@ -999,13 +1174,17 @@ class Scheduler(QObject):
     # ============================================================
     # SLOT PARA REINTENTOS
     # ============================================================
-    @pyqtSlot(object, object)
-    def _on_reintentar_agente(self, agente: Agente, contexto_extra: Dict):
-        """Slot para reintentar un agente desde el hilo principal."""
+    @pyqtSlot(str, object)
+    def _on_reintentar_agente(self, agente_id: str, contexto_extra: Dict):
+        """
+        Slot para reintentar un agente desde el hilo principal.
+        Recibe solo el ID (no el objeto vivo) para evitar data race con el worker.
+        """
         with self._lock:
-            if agente.id not in self.agentes:
+            agente = self.agentes.get(agente_id)
+            if agente is None:
                 return
-            if not EstadoAgente.puede_ejecutarse(self.agentes[agente.id].estado):
+            if not EstadoAgente.puede_ejecutarse(agente.estado):
                 return
             self._executor.submit(self._ejecutar_agente, agente, contexto_extra)
 
@@ -1013,6 +1192,9 @@ class Scheduler(QObject):
     # VERIFICACIÓN DE TÉRMINO
     # ============================================================
     def _verificar_terminado_internal(self):
+        # ⬇️ PARCHE PLAN B: si hay un Plan B en progreso, no dar por terminado
+        if self._plan_b_en_progreso:
+            return
         stats = self._calcular_estadisticas_internal()
         total_terminados = stats['completados'] + stats['errores'] + stats['cancelados'] + stats.get('bloqueados', 0)  # ← AÑADIR
 
@@ -1021,6 +1203,8 @@ class Scheduler(QObject):
                 self.ejecutando = False
                 self.pausado = False
                 self._terminado_notificado = True
+                # ⬇️ PARCHE PLAN B: resetear contador al terminar la ejecución
+                self._plan_b_intentos = 0
                 self.ejecucion_terminada.emit()
                 self.estado_cambiado.emit(False)
 

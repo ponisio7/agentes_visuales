@@ -1,0 +1,82 @@
+"""
+learning/schema.py
+Extensiones de esquema SQLite para el módulo de aprendizaje.
+
+Se aplican sobre la MISMA base de datos que ya usa storage/database.py.
+No modifica ni toca las tablas existentes (ejecuciones, agentes_ejecucion):
+solo añade tablas nuevas, así que es seguro correrlo sobre una BD en uso,
+tantas veces como haga falta (todo es CREATE TABLE IF NOT EXISTS).
+
+⚠️ IMPORTANTE: aplicar_esquema_learning() NO hace commit() porque el
+llamador (Database._transaction) ya gestiona la transacción. Hacer commit
+aquí provocaría:
+    sqlite3.OperationalError: cannot commit - no transaction is active
+"""
+import sqlite3
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+SQL_CREAR_TABLAS = [
+    """
+    CREATE TABLE IF NOT EXISTS evaluaciones_llm (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ejecucion_id INTEGER NOT NULL,
+        agente_ejecucion_id INTEGER,
+        alcance TEXT NOT NULL DEFAULT 'agente',   -- 'agente' | 'plan'
+        score REAL NOT NULL,                      -- recompensa normalizada 0.0-1.0
+        justificacion TEXT DEFAULT '',
+        modelo_evaluador TEXT DEFAULT '',
+        fecha TEXT NOT NULL,
+        FOREIGN KEY (ejecucion_id) REFERENCES ejecuciones(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS feedback_usuario (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ejecucion_id INTEGER NOT NULL,
+        agente_ejecucion_id INTEGER,
+        alcance TEXT NOT NULL DEFAULT 'agente',
+        score REAL NOT NULL,               -- -1.0 a 1.0 (pulgar abajo/arriba o escala)
+        comentario TEXT DEFAULT '',
+        fecha TEXT NOT NULL,
+        FOREIGN KEY (ejecucion_id) REFERENCES ejecuciones(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS modelos_entrenados (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL,              -- 'predictor_fallos' | 'scorer_planes'
+        version INTEGER NOT NULL,
+        n_muestras_entrenamiento INTEGER DEFAULT 0,
+        metricas TEXT DEFAULT '{}',        -- JSON con métricas (accuracy, etc.)
+        ruta_archivo TEXT NOT NULL,
+        fecha TEXT NOT NULL,
+        activo INTEGER DEFAULT 1
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_eval_llm_ejecucion ON evaluaciones_llm(ejecucion_id)",
+    "CREATE INDEX IF NOT EXISTS idx_eval_llm_agente ON evaluaciones_llm(agente_ejecucion_id)",
+    "CREATE INDEX IF NOT EXISTS idx_feedback_ejecucion ON feedback_usuario(ejecucion_id)",
+    """
+    CREATE TABLE IF NOT EXISTS reparaciones_plan (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        problema TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        fecha TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_reparaciones_tipo ON reparaciones_plan(tipo)",
+]
+
+
+def aplicar_esquema_learning(conn: sqlite3.Connection) -> None:
+    """
+    Crea las tablas del módulo de aprendizaje si no existen. Idempotente.
+
+    ⚠️ NO hace commit() — el llamador (Database._transaction) lo hace.
+    """
+    for sql in SQL_CREAR_TABLAS:
+        conn.execute(sql)
+    logger.debug("Esquema de aprendizaje aplicado (sin commit)")

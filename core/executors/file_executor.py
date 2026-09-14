@@ -2,10 +2,16 @@
 """Ejecutor de agentes File."""
 
 import os
+import re
+import csv
+import io
+import tempfile
 import json
 import shutil
 import logging
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, Any, List
+
+import requests
 
 from core.agent import Agente
 from core.cancellation import CancellationToken
@@ -19,9 +25,53 @@ from .content_extractor import (
 
 logger = logging.getLogger(__name__)
 
+# ── Extensiones con formato de escritura especializado ──
+EXTENSIONES_ESCRITURA_ESPECIALIZADA = {".docx", ".xlsx", ".pdf", ".md", ".markdown"}
+
+
+def _escapar_xml(texto: str) -> str:
+    """Escapa caracteres especiales para el motor de markup de reportlab."""
+    return (
+        str(texto)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+    )
+
+
+def _celda_segura(valor: Any) -> Any:
+    """Convierte un valor arbitrario en algo que openpyxl pueda escribir en una celda."""
+    if valor is None:
+        return ""
+    if isinstance(valor, (str, int, float, bool)):
+        return valor
+    if isinstance(valor, (dict, list)):
+        return json.dumps(valor, ensure_ascii=False, default=str)
+    return str(valor)
+
+
+def _parece_csv(texto: str) -> bool:
+    """Heurística simple para detectar si un string es contenido CSV."""
+    lineas = [l for l in texto.strip().split("\n") if l.strip()]
+    if len(lineas) < 2:
+        return False
+    conteos = [linea.count(",") for linea in lineas[:5]]
+    return conteos[0] > 0 and len(set(conteos)) == 1
+
+
+def _parsear_csv_simple(texto: str) -> List[List[str]]:
+    """Parsea un string CSV a una lista de filas."""
+    reader = csv.reader(io.StringIO(texto))
+    return [fila for fila in reader]
+
 
 class FileExecutor:
     """Operaciones con archivos: leer, escribir, copiar, mover, eliminar."""
+
+    # ── Descarga de imágenes para inserción en .docx ──
+    _DOCX_IMAGE_DOWNLOAD_TIMEOUT = 15  # segundos
+    _DOCX_IMAGE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB por imagen
+    _DOCX_IMAGE_ALLOWED_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
     @staticmethod
     def actualizar_progreso(agente, progreso, mensaje=""):
@@ -185,6 +235,25 @@ class FileExecutor:
                         'contexto_claves': claves_contexto,
                         'contexto_preview': str(contexto)[:500] if contexto else '',
                     }
+
+                # ── Dispatch por extensión a formatos especializados ──
+                extension = os.path.splitext(ruta_archivo)[1].lower()
+                if extension == ".docx":
+                    return cls._file_escribir_docx(
+                        agente, ruta_archivo, contenido, contexto, cancellation_token
+                    )
+                elif extension == ".xlsx":
+                    return cls._file_escribir_xlsx(
+                        agente, ruta_archivo, contenido, contexto, cancellation_token
+                    )
+                elif extension == ".pdf":
+                    return cls._file_escribir_pdf(
+                        agente, ruta_archivo, contenido, contexto, cancellation_token
+                    )
+                elif extension in (".md", ".markdown"):
+                    return cls._file_escribir_markdown(
+                        agente, ruta_archivo, contenido, contexto, cancellation_token
+                    )
 
                 if isinstance(contenido, str):
                     contenido_str = contenido
@@ -358,3 +427,509 @@ class FileExecutor:
                 "modo_salida": "json",
             }
         return resultado
+
+    # ══════════════════════════════════════════════════════════════
+    # Formatos de escritura especializados (docx / xlsx / pdf / md)
+    # ══════════════════════════════════════════════════════════════
+
+    @staticmethod
+    def _extraer_titulo_y_contenido(contenido: Any):
+        """Si `contenido` es un dict, extrae 'titulo'/'title' y el cuerpo real."""
+        titulo = None
+        if isinstance(contenido, dict):
+            titulo = contenido.get("titulo") or contenido.get("title")
+            for clave in ("contenido", "texto", "respuesta_limpia", "respuesta"):
+                if clave in contenido:
+                    contenido = contenido[clave]
+                    break
+        return titulo, contenido
+
+    @classmethod
+    def _descargar_imagen_temporal(cls, url: str) -> Optional[str]:
+        """
+        Descarga una imagen desde una URL a un archivo temporal.
+        Devuelve la ruta del archivo o None si falla.
+        """
+        if not url or not isinstance(url, str):
+            return None
+        if not url.startswith(("http://", "https://")):
+            return None
+
+        try:
+            # Determinar extensión por URL o Content-Type
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            ext = os.path.splitext(parsed.path)[1].lower()
+            if ext not in cls._DOCX_IMAGE_ALLOWED_EXT:
+                ext = ".jpg"  # fallback
+
+            resp = requests.get(
+                url,
+                timeout=cls._DOCX_IMAGE_DOWNLOAD_TIMEOUT,
+                stream=True,
+                headers={"User-Agent": "Agentes-Visuales/1.0"},
+            )
+            resp.raise_for_status()
+
+            # Comprobar Content-Type
+            content_type = resp.headers.get("Content-Type", "").lower()
+            if content_type and not content_type.startswith("image/"):
+                logger.warning(f"URL {url} devolvió Content-Type no-imagen: {content_type}")
+                return None
+
+            # Leer con límite de tamaño
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=ext, delete=False, prefix="av_img_"
+            )
+            try:
+                total = 0
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > cls._DOCX_IMAGE_MAX_BYTES:
+                        tmp.close()
+                        os.unlink(tmp.name)
+                        logger.warning(f"Imagen demasiado grande: {url}")
+                        return None
+                    tmp.write(chunk)
+                tmp.close()
+                return tmp.name
+            except Exception:
+                try:
+                    tmp.close()
+                except Exception:
+                    pass
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+                raise
+
+        except Exception as e:
+            logger.warning(f"No se pudo descargar imagen {url}: {e}")
+            return None
+
+    @classmethod
+    def _file_escribir_docx(
+        cls,
+        agente: Agente,
+        ruta_archivo: str,
+        contenido: Any,
+        contexto: Dict,
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> Tuple[bool, str, Dict]:
+        try:
+            from docx import Document
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            from docx.shared import Inches
+        except ImportError:
+            return False, (
+                "python-docx no está instalado. Instálalo con: "
+                "pip install python-docx"
+            ), {"error": "missing_dependency", "dep": "python-docx"}
+
+        directorio = os.path.dirname(ruta_archivo)
+        if directorio:
+            os.makedirs(directorio, exist_ok=True)
+
+        cls.actualizar_progreso(agente, 70, "Escribiendo .docx...")
+
+        # 1. Extraer título, texto e imágenes por separado
+        titulo = None
+        imagenes = []
+
+        if isinstance(contenido, dict):
+            titulo = contenido.get("titulo") or contenido.get("title")
+            imagenes = contenido.get("imagenes") or contenido.get("images") or []
+
+            # El texto puede venir en varias claves
+            for clave in ("cuento", "texto", "contenido", "respuesta_limpia", "respuesta"):
+                if clave in contenido and contenido[clave]:
+                    contenido = contenido[clave]
+                    break
+            else:
+                # Si no hay texto explícito, serializar lo que quede
+                contenido = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
+
+        if isinstance(contenido, str):
+            texto = contenido
+        elif isinstance(contenido, (dict, list)):
+            texto = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
+        else:
+            texto = str(contenido)
+
+        if not texto.strip() and not imagenes:
+            return False, f"File.escribir_docx: contenido vacío para '{ruta_archivo}'", {
+                "error": "empty_content", "archivo": ruta_archivo
+            }
+
+        doc = Document()
+        if titulo:
+            h = doc.add_heading(str(titulo), level=1)
+            h.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        for linea in texto.split("\n"):
+            if cancellation_token and cancellation_token.esta_cancelado():
+                return False, "Cancelado durante .docx", {"error": "cancelled"}
+            stripped = linea.strip()
+            if not stripped:
+                doc.add_paragraph()
+                continue
+            if stripped.startswith("### "):
+                doc.add_heading(stripped[4:], level=3)
+            elif stripped.startswith("## "):
+                doc.add_heading(stripped[3:], level=2)
+            elif stripped.startswith("# "):
+                doc.add_heading(stripped[2:], level=1)
+            elif stripped.startswith(("- ", "* ")):
+                doc.add_paragraph(stripped[2:], style="List Bullet")
+            elif re.match(r"^\d+\.\s", stripped):
+                doc.add_paragraph(re.sub(r"^\d+\.\s", "", stripped), style="List Number")
+            else:
+                doc.add_paragraph(stripped)
+
+        # ── Procesar imágenes ──
+        temporales_a_limpiar = []
+        insertadas = 0
+        fallidas = []
+
+        for idx, img_item in enumerate(imagenes):
+            if cancellation_token and cancellation_token.esta_cancelado():
+                for t in temporales_a_limpiar:
+                    try:
+                        os.unlink(t)
+                    except Exception:
+                        pass
+                return False, "Cancelado durante descarga de imágenes", {"error": "cancelled"}
+
+            # Aceptar dict {"url": ..., "descripcion": ...} o string directo
+            if isinstance(img_item, dict):
+                url = img_item.get("url") or img_item.get("src") or ""
+                descripcion = img_item.get("descripcion") or img_item.get("alt") or ""
+            elif isinstance(img_item, str):
+                url = img_item
+                descripcion = ""
+            else:
+                fallidas.append(f"item {idx}: tipo no soportado {type(img_item).__name__}")
+                continue
+
+            # ¿Es una ruta local ya existente?
+            if os.path.exists(url):
+                ruta_local = url
+            else:
+                # Intentar descargar
+                ruta_local = cls._descargar_imagen_temporal(url)
+                if ruta_local:
+                    temporales_a_limpiar.append(ruta_local)
+
+            if not ruta_local:
+                fallidas.append(f"item {idx}: {url[:80]}")
+                continue
+
+            try:
+                doc.add_picture(ruta_local, width=Inches(4.5))
+                if descripcion:
+                    p = doc.add_paragraph(str(descripcion))
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                insertadas += 1
+            except Exception as e:
+                fallidas.append(f"item {idx}: error insertando {ruta_local}: {e}")
+
+        # Limpiar temporales SIEMPRE
+        for t in temporales_a_limpiar:
+            try:
+                os.unlink(t)
+            except Exception:
+                pass
+
+        try:
+            doc.save(ruta_archivo)
+        except OSError as e:
+            return False, f"File.escribir_docx: error al guardar: {e}", {
+                "error": "os_error", "archivo": ruta_archivo, "detalle": str(e)
+            }
+
+        if not os.path.exists(ruta_archivo) or os.path.getsize(ruta_archivo) == 0:
+            return False, f"File.escribir_docx: '{ruta_archivo}' no se creó", {
+                "error": "write_failed", "archivo": ruta_archivo
+            }
+
+        tamaño = os.path.getsize(ruta_archivo)
+
+        mensaje = f"Archivo .docx escrito: {ruta_archivo} ({tamaño} bytes)"
+        if insertadas:
+            mensaje += f" con {insertadas} imagen(es)"
+        if fallidas:
+            mensaje += f". Fallaron {len(fallidas)} imagen(es)"
+
+        cls.actualizar_progreso(agente, 100, "Archivo .docx escrito")
+
+        return True, mensaje, {
+            "archivo": ruta_archivo,
+            "ruta_absoluta": os.path.abspath(ruta_archivo),
+            "tamaño": tamaño,
+            "bytes_en_disco": tamaño,
+            "contenido": texto[:500],
+            "formato": "docx",
+            "imagenes_insertadas": insertadas,
+            "imagenes_fallidas": fallidas,
+        }
+
+    @classmethod
+    def _file_escribir_xlsx(
+        cls,
+        agente: Agente,
+        ruta_archivo: str,
+        contenido: Any,
+        contexto: Dict,
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> Tuple[bool, str, Dict]:
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, PatternFill
+        except ImportError:
+            return False, (
+                "openpyxl no está instalado. Instálalo con: pip install openpyxl"
+            ), {"error": "missing_dependency", "dep": "openpyxl"}
+
+        directorio = os.path.dirname(ruta_archivo)
+        if directorio:
+            os.makedirs(directorio, exist_ok=True)
+
+        cls.actualizar_progreso(agente, 70, "Escribiendo .xlsx...")
+
+        # ── autodetectar string CSV y parsearlo ──
+        if isinstance(contenido, str) and _parece_csv(contenido):
+            filas_csv = _parsear_csv_simple(contenido)
+            if filas_csv:
+                logger.info(
+                    f"File.escribir_xlsx: contenido era string CSV, "
+                    f"parseado a {len(filas_csv)} filas x "
+                    f"{max(len(f) for f in filas_csv)} columnas"
+                )
+                contenido = filas_csv
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Datos"
+
+        def _aplicar_estilo_cabecera(col_idx):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill(
+                start_color="4472C4", end_color="4472C4", fill_type="solid"
+            )
+            cell.alignment = Alignment(horizontal="center")
+
+        if isinstance(contenido, list) and contenido:
+            if isinstance(contenido[0], dict):
+                # Lista de dicts → una fila por dict, cabeceras = claves
+                headers = list(contenido[0].keys())
+                ws.append(headers)
+                for col_idx, _ in enumerate(headers, start=1):
+                    _aplicar_estilo_cabecera(col_idx)
+                for row in contenido:
+                    if cancellation_token and cancellation_token.esta_cancelado():
+                        return False, "Cancelado durante .xlsx", {
+                            "error": "cancelled", "archivo": ruta_archivo
+                        }
+                    ws.append([_celda_segura(row.get(h, "")) for h in headers])
+            elif isinstance(contenido[0], (list, tuple)):
+                # Lista de listas → la primera fila son las cabeceras
+                ws.append([_celda_segura(v) for v in contenido[0]])
+                for col_idx, _ in enumerate(contenido[0], start=1):
+                    _aplicar_estilo_cabecera(col_idx)
+                for row in contenido[1:]:
+                    if cancellation_token and cancellation_token.esta_cancelado():
+                        return False, "Cancelado durante .xlsx", {
+                            "error": "cancelled", "archivo": ruta_archivo
+                        }
+                    ws.append([_celda_segura(v) for v in row])
+            else:
+                # Lista plana de strings/números → una columna
+                for item in contenido:
+                    ws.append([_celda_segura(item)])
+        elif isinstance(contenido, dict):
+            # Dict → clave/valor en dos columnas
+            for k, v in contenido.items():
+                ws.append([str(k), _celda_segura(v)])
+        else:
+            # String plano sin comas / número / None → una celda
+            ws.append([_celda_segura(contenido)])
+
+        try:
+            wb.save(ruta_archivo)
+        except OSError as e:
+            return False, f"File.escribir_xlsx: error al guardar '{ruta_archivo}': {e}", {
+                "error": "os_error", "archivo": ruta_archivo, "detalle": str(e)
+            }
+
+        if not os.path.exists(ruta_archivo) or os.path.getsize(ruta_archivo) == 0:
+            return False, f"File.escribir_xlsx: '{ruta_archivo}' no se creó o está vacío", {
+                "error": "write_failed", "archivo": ruta_archivo
+            }
+
+        tamaño = os.path.getsize(ruta_archivo)
+        cls.actualizar_progreso(agente, 100, "Archivo .xlsx escrito")
+
+        return True, f"Archivo .xlsx escrito: {ruta_archivo} ({tamaño} bytes)", {
+            "archivo": ruta_archivo,
+            "ruta_absoluta": os.path.abspath(ruta_archivo),
+            "tamaño": tamaño,
+            "bytes_en_disco": tamaño,
+            "formato": "xlsx",
+        }
+
+    @classmethod
+    def _file_escribir_pdf(
+        cls,
+        agente: Agente,
+        ruta_archivo: str,
+        contenido: Any,
+        contexto: Dict,
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> Tuple[bool, str, Dict]:
+        try:
+            from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib.units import cm
+        except ImportError:
+            return False, (
+                "reportlab no está instalado. Instálalo con: pip install reportlab"
+            ), {"error": "missing_dependency", "dep": "reportlab"}
+
+        directorio = os.path.dirname(ruta_archivo)
+        if directorio:
+            os.makedirs(directorio, exist_ok=True)
+
+        cls.actualizar_progreso(agente, 70, "Escribiendo .pdf...")
+
+        titulo, contenido = cls._extraer_titulo_y_contenido(contenido)
+
+        if isinstance(contenido, str):
+            texto = contenido
+        elif isinstance(contenido, (dict, list)):
+            texto = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
+        else:
+            texto = str(contenido)
+
+        if not texto.strip():
+            return False, f"File.escribir_pdf: contenido vacío para '{ruta_archivo}'", {
+                "error": "empty_content", "archivo": ruta_archivo
+            }
+
+        doc = SimpleDocTemplate(
+            ruta_archivo,
+            leftMargin=2 * cm, rightMargin=2 * cm,
+            topMargin=2 * cm, bottomMargin=2 * cm,
+        )
+        styles = getSampleStyleSheet()
+        story = []
+
+        if titulo:
+            story.append(Paragraph(_escapar_xml(str(titulo)), styles["Title"]))
+            story.append(Spacer(1, 0.5 * cm))
+
+        for par in texto.split("\n"):
+            if cancellation_token and cancellation_token.esta_cancelado():
+                return False, "Cancelado durante generación de .pdf", {
+                    "error": "cancelled", "archivo": ruta_archivo
+                }
+            if not par.strip():
+                story.append(Spacer(1, 0.2 * cm))
+                continue
+            story.append(Paragraph(_escapar_xml(par), styles["Normal"]))
+
+        if not story:
+            story = [Paragraph("(documento vacío)", styles["Normal"])]
+
+        try:
+            doc.build(story)
+        except Exception as e:
+            return False, f"File.escribir_pdf: error al construir '{ruta_archivo}': {e}", {
+                "error": "pdf_build_error", "archivo": ruta_archivo, "detalle": str(e)
+            }
+
+        if not os.path.exists(ruta_archivo) or os.path.getsize(ruta_archivo) == 0:
+            return False, f"File.escribir_pdf: '{ruta_archivo}' no se creó o está vacío", {
+                "error": "write_failed", "archivo": ruta_archivo
+            }
+
+        tamaño = os.path.getsize(ruta_archivo)
+        cls.actualizar_progreso(agente, 100, "Archivo .pdf escrito")
+
+        return True, f"Archivo .pdf escrito: {ruta_archivo} ({tamaño} bytes)", {
+            "archivo": ruta_archivo,
+            "ruta_absoluta": os.path.abspath(ruta_archivo),
+            "tamaño": tamaño,
+            "bytes_en_disco": tamaño,
+            "formato": "pdf",
+        }
+
+    @classmethod
+    def _file_escribir_markdown(
+        cls,
+        agente: Agente,
+        ruta_archivo: str,
+        contenido: Any,
+        contexto: Dict,
+        cancellation_token: Optional[CancellationToken] = None,
+    ) -> Tuple[bool, str, Dict]:
+        """Escribe contenido como Markdown. A diferencia de 'escribir' plano,
+        antepone un título como cabecera '#' si viene en un dict."""
+        directorio = os.path.dirname(ruta_archivo)
+        if directorio:
+            os.makedirs(directorio, exist_ok=True)
+
+        cls.actualizar_progreso(agente, 70, "Escribiendo .md...")
+
+        titulo, contenido = cls._extraer_titulo_y_contenido(contenido)
+
+        if isinstance(contenido, str):
+            texto = contenido
+        elif isinstance(contenido, (dict, list)):
+            texto = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
+        else:
+            texto = str(contenido)
+
+        if titulo:
+            texto = f"# {titulo}\n\n{texto}"
+
+        if not texto.strip():
+            return False, f"File.escribir_markdown: contenido vacío para '{ruta_archivo}'", {
+                "error": "empty_content", "archivo": ruta_archivo
+            }
+
+        try:
+            chunk_size = 8192
+            with open(ruta_archivo, "w", encoding="utf-8") as f:
+                for i in range(0, len(texto), chunk_size):
+                    if cancellation_token and cancellation_token.esta_cancelado():
+                        return False, "Cancelado durante escritura de .md", {
+                            "error": "cancelled",
+                            "archivo": ruta_archivo,
+                            "caracteres_escritos": i,
+                        }
+                    f.write(texto[i:i + chunk_size])
+        except OSError as e:
+            return False, f"File.escribir_markdown: error al guardar '{ruta_archivo}': {e}", {
+                "error": "os_error", "archivo": ruta_archivo, "detalle": str(e)
+            }
+
+        if not os.path.exists(ruta_archivo) or os.path.getsize(ruta_archivo) == 0:
+            return False, f"File.escribir_markdown: '{ruta_archivo}' no se creó o está vacío", {
+                "error": "write_failed", "archivo": ruta_archivo
+            }
+
+        tamaño = os.path.getsize(ruta_archivo)
+        cls.actualizar_progreso(agente, 100, "Archivo .md escrito")
+
+        return True, f"Archivo .md escrito: {ruta_archivo} ({tamaño} bytes)", {
+            "archivo": ruta_archivo,
+            "ruta_absoluta": os.path.abspath(ruta_archivo),
+            "tamaño": tamaño,
+            "bytes_en_disco": tamaño,
+            "contenido_preview": texto[:500],
+            "formato": "md",
+        }

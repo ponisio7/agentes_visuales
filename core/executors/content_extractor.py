@@ -35,12 +35,22 @@ _CLAVES_CONTENIDO_PRIORITARIAS = (
     'data',
     'texto',
     'output',
+    'imagenes',
     '_av_json',
     '_av_respuesta_limpia',
     '_av_respuesta',
 )
 
 _MAX_PROFUNDIDAD_EXTRACCION = 5
+
+# Claves que indican "este dict es una estructura de documento completa".
+# Si alguna está presente, devolvemos el dict entero sin extraer una sola clave.
+_CLAVES_ESTRUCTURA_DOCUMENTO = (
+    'titulo', 'title',
+    'cuento', 'texto', 'contenido', 'informe', 'articulo',
+    'html', 'markdown', 'body',
+    'imagenes', 'images',
+)
 
 
 # ============================================================
@@ -69,12 +79,27 @@ def extraer_contenido_relevante(
     if not isinstance(valor, dict):
         return str(valor)
 
+    # Si el dict contiene una clave de "estructura de documento",
+    # NO extraemos una sola clave: devolvemos el dict entero.
+    if any(clave in valor for clave in _CLAVES_ESTRUCTURA_DOCUMENTO):
+        return valor
+
     if _visitados is None:
         _visitados = set()
     valor_id = id(valor)
     if valor_id in _visitados:
         return valor
     _visitados.add(valor_id)
+
+    # Si hay MÚLTIPLES claves prioritarias con contenido útil
+    # (por ejemplo {"cuento": ..., "imagenes": [...]}), no nos quedamos
+    # con una sola: devolvemos el dict ENTERO para no perder información.
+    claves_utiles = [
+        clave for clave in _CLAVES_CONTENIDO_PRIORITARIAS
+        if clave in valor and valor[clave] not in (None, '', [], {})
+    ]
+    if len(claves_utiles) >= 2:
+        return valor
 
     for clave in _CLAVES_CONTENIDO_PRIORITARIAS:
         if clave not in valor:
