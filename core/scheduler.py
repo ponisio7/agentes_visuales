@@ -595,9 +595,9 @@ class Scheduler(QObject):
 
             with self._lock:
                 agente.tiempo_fin = tiempo_fin
+                agente.duracion = duracion  # ← persistir duración real
                 agente.progreso = 80
                 agente.mensaje = "Procesando resultado..."
-                agente.duracion = duracion  # ← persistir duración real
 
                 # ── Log especial para loops ──
                 if agente.tipo == TipoAgente.LOOP:
