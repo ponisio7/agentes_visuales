@@ -182,6 +182,7 @@ class Database:
         self._local = threading.local()
         self._lock = threading.RLock()
         self._initialized = False
+        self._closed = False    # ← AÑADIR
 
         try:
             # ----------------------------------------------------------
@@ -1738,6 +1739,7 @@ class Database:
             import shutil
             shutil.copy2(ruta, self.db_path)
             self._initialized = False
+            self._closed = False    # ← AÑADIR: permitir reabrir tras restore
             self._init_db()
             logger.info(f"Backup restaurado desde {ruta}")
             return True
@@ -1781,7 +1783,11 @@ class Database:
     # LIMPIEZA FINAL
     # ============================================================
     def close(self):
-        """Cierra las conexiones a la base de datos."""
+        """Cierra las conexiones a la base de datos (idempotente)."""
+        if self._closed:
+            return
+        self._closed = True
+
         try:
             self._close_connection()
             logger.info("Conexiones a base de datos cerradas")
