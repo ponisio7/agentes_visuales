@@ -50,3 +50,15 @@ tmp/
 productos10.txt
 *.txt
 logs/
+
+# Artefactos generados por las ejecuciones de la app
+*.pdf
+*.svg
+*.docx
+*.xlsx
+agentes_faltantes.md
+cuento.txt
+manual_*.pdf
+recetario_*.pdf
+libro_*.pdf
+estrella.svg
