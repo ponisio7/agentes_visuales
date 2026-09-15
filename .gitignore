@@ -62,3 +62,6 @@ manual_*.pdf
 recetario_*.pdf
 libro_*.pdf
 estrella.svg
+
+# Modelos entrenados (se regeneran con el uso de la app)
+learning_models/
