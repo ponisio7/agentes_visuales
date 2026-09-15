@@ -825,8 +825,13 @@ class Agente:
         """
         Representación del agente para historial de ejecuciones.
         Incluye solo información relevante para el historial.
+
+        ✅ FASE 1 (feedback): para agentes LLM se persiste también el
+        prompt real que se usó (ya con el endurecimiento aplicado). Es la
+        materia prima que el FeedbackProcessor reescribirá cuando el usuario
+        deje un comentario negativo.
         """
-        return {
+        data = {
             "id": self.id,
             "nombre": self.nombre,
             "tipo": self.tipo.value,
@@ -841,6 +846,15 @@ class Agente:
             "error": self.error[:500] if self.error else "",
             "tiempo_ejecucion": (self.tiempo_fin - self.tiempo_inicio) if (self.tiempo_inicio and self.tiempo_fin) else 0
         }
+
+        # ✅ FASE 1: persistir el prompt del agente LLM.
+        # Truncado a 4000 chars para no inflar la BD si el LLM generó un
+        # prompt gigante. El FeedbackProcessor trabajará con este texto tal
+        # cual; si se truncara más agresivamente se perdería contexto útil.
+        if self.tipo == TipoAgente.LLM:
+            data["prompt_usado"] = (self.prompt_llm or "")[:4000]
+
+        return data
     
     def to_json(self) -> str:
         """Serializa a JSON."""

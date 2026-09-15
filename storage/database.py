@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 4  # ✅ Incrementado por nuevas columnas verificadas
+DB_VERSION = 5  # ✅ FASE 1: nueva columna prompt_usado en agentes_ejecucion
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -84,6 +84,7 @@ SCHEMA_DEFINITION = {
         "error": "TEXT DEFAULT ''",
         "orden": "INTEGER DEFAULT 0",
         "progreso": "INTEGER DEFAULT 0",
+        "prompt_usado": "TEXT DEFAULT ''",     # ✅ FASE 1
     },
     "auditoria": {
         "timestamp": "TEXT NOT NULL",
@@ -755,6 +756,22 @@ class Database:
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 3→4: {e}")
 
+                # ✅ Migración 4 → 5: columna prompt_usado en agentes_ejecucion
+                #    (Fase 1 del sistema de feedback: persistir el prompt real que usó
+                #    cada agente LLM para poder reescribirlo a partir del feedback del
+                #    usuario en fases posteriores).
+                if current_version < 5:
+                    try:
+                        columnas_agentes = self._obtener_columnas(conn, 'agentes_ejecucion')
+                        if 'prompt_usado' not in columnas_agentes:
+                            cursor.execute(
+                                "ALTER TABLE agentes_ejecucion "
+                                "ADD COLUMN prompt_usado TEXT DEFAULT ''"
+                            )
+                            logger.info("✅ Migración 4→5: columna 'prompt_usado' añadida")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 4→5: {e}")
+
                 # Actualizar versión
                 cursor.execute("DELETE FROM version")
                 cursor.execute(
@@ -1100,55 +1117,60 @@ class Database:
         conn: sqlite3.Connection,
         ejecucion_id: int,
         agentes: List[Dict]
-    ):
-        """Inserta múltiples agentes de una ejecución."""
-        cursor = conn.cursor()
-        datos = []
+        ):
+            """Inserta múltiples agentes de una ejecución."""
+            cursor = conn.cursor()
+            datos = []
 
-        for orden, agente in enumerate(agentes):
-            # Procesar dependencias
-            dependencias = agente.get('dependencias', [])
-            if isinstance(dependencias, str):
-                try:
-                    dependencias = json.loads(dependencias)
-                except (json.JSONDecodeError, ValueError):
+            for orden, agente in enumerate(agentes):
+                # Procesar dependencias
+                dependencias = agente.get('dependencias', [])
+                if isinstance(dependencias, str):
+                    try:
+                        dependencias = json.loads(dependencias)
+                    except (json.JSONDecodeError, ValueError):
+                        dependencias = []
+                if not isinstance(dependencias, list):
                     dependencias = []
-            if not isinstance(dependencias, list):
-                dependencias = []
 
-            # Procesar resultado
-            resultado = agente.get('resultado', {})
-            if isinstance(resultado, dict):
-                resultado_str = self._comprimir_json(resultado)
-            elif resultado is None:
-                resultado_str = ''
-            else:
-                resultado_str = self._comprimir_json({'resultado': str(resultado)})
+                # Procesar resultado
+                resultado = agente.get('resultado', {})
+                if isinstance(resultado, dict):
+                    resultado_str = self._comprimir_json(resultado)
+                elif resultado is None:
+                    resultado_str = ''
+                else:
+                    resultado_str = self._comprimir_json({'resultado': str(resultado)})
 
-            # ✅ Normalizar estado antes de guardar
-            estado = self._normalizar_estado(agente.get('estado', 'Pendiente'))
+                # ✅ Normalizar estado antes de guardar
+                estado = self._normalizar_estado(agente.get('estado', 'Pendiente'))
 
-            datos.append((
-                ejecucion_id,
-                str(agente.get('id', '')),
-                str(agente.get('nombre', '')),
-                str(agente.get('tipo', 'Desconocido')),
-                estado,
-                float(agente.get('duracion', 0.0) or 0.0),
-                json.dumps(dependencias, ensure_ascii=False),
-                resultado_str,
-                str(agente.get('error', '') or ''),
-                orden,
-                int(agente.get('progreso', 0) or 0)
-            ))
+                # ✅ FASE 1: prompt del agente LLM (vacío si no aplica)
+                prompt_usado = str(agente.get('prompt_usado', '') or '')[:4000]
 
-        if datos:
-            cursor.executemany('''
-                INSERT INTO agentes_ejecucion (
-                    ejecucion_id, agente_id, nombre, tipo, estado,
-                    duracion, dependencias, resultado, error, orden, progreso
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', datos)
+                datos.append((
+                    ejecucion_id,
+                    str(agente.get('id', '')),
+                    str(agente.get('nombre', '')),
+                    str(agente.get('tipo', 'Desconocido')),
+                    estado,
+                    float(agente.get('duracion', 0.0) or 0.0),
+                    json.dumps(dependencias, ensure_ascii=False),
+                    resultado_str,
+                    str(agente.get('error', '') or ''),
+                    orden,
+                    int(agente.get('progreso', 0) or 0),
+                    prompt_usado,                        # ✅ FASE 1
+                ))
+
+            if datos:
+                cursor.executemany('''
+                    INSERT INTO agentes_ejecucion (
+                        ejecucion_id, agente_id, nombre, tipo, estado,
+                        duracion, dependencias, resultado, error, orden, progreso,
+                        prompt_usado
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', datos)
 
     def _comprimir_json(self, data: Any) -> str:
         """Comprime JSON si supera el umbral."""

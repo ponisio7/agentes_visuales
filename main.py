@@ -12,6 +12,8 @@ Uso:
 import sys
 import argparse
 import logging
+from logging.handlers import RotatingFileHandler
+import os
 
 __version__ = "1.1.0"
 
@@ -88,6 +90,18 @@ def _arrancar_gui() -> int:
 
 
 def _configurar_logging():
+    os.makedirs("logs", exist_ok=True)
+    file_handler = RotatingFileHandler(
+        "logs/agentes_visuales.log",
+        maxBytes=10 * 1024 * 1024,  # 10 MB
+        backupCount=5,
+        encoding="utf-8",
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+    ))
+    logging.getLogger().addHandler(file_handler)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

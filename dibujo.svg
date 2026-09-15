@@ -1,0 +1,4 @@
+{
+  "titulo": "Sol",
+  "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"400\" height=\"400\" viewBox=\"0 0 400 400\"><rect width=\"400\" height=\"400\" fill=\"#87CEEB\" /><circle cx=\"200\" cy=\"200\" r=\"80\" fill=\"#FFD700\" /><line x1=\"200\" y1=\"100\" x2=\"200\" y2=\"40\" stroke=\"#FFD700\" stroke-width=\"6\" /><line x1=\"200\" y1=\"300\" x2=\"200\" y2=\"360\" stroke=\"#FFD700\" stroke-width=\"6\" /><line x1=\"100\" y1=\"200\" x2=\"40\" y2=\"200\" stroke=\"#FFD700\" stroke-width=\"6\" /><line x1=\"300\" y1=\"200\" x2=\"360\" y2=\"200\" stroke=\"#FFD700\" stroke-width=\"6\" /><line x1=\"129\" y1=\"129\" x2=\"86\" y2=\"86\" stroke=\"#FFD700\" stroke-width=\"6\" /><line x1=\"271\" y1=\"271\" x2=\"314\" y2=\"314\" stroke=\"#FFD700\" stroke-width=\"6\" /><line x1=\"129\" y1=\"271\" x2=\"86\" y2=\"314\" stroke=\"#FFD700\" stroke-width=\"6\" /><line x1=\"271\" y1=\"129\" x2=\"314\" y2=\"86\" stroke=\"#FFD700\" stroke-width=\"6\" /></svg>"
+}

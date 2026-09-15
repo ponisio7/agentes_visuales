@@ -61,3 +61,16 @@ Sigue apareciendo al inicio de cada ejecución. Es el scheduler.limpiar() que se
 - **Fecha**: 2026-09-14
 - **Fix**: `logging.getLogger("httpx2").setLevel(logging.WARNING)` en `main.py::_configurar_logging`
 - **Verificado**: en la ejecución 305 no aparece ninguna línea `httpx2: HTTP Request`
+
+## Bug #9 — Plan B con error de sintaxis no se reintenta
+
+- **Detectado**: 2026-09-14 13:13 (ejecución ID 314)
+- **Severidad**: 🟡 Robustez (no hay Plan C)
+- **Síntoma**: 
+  - El LLM propuso un plan B con `def f(contexto.get(...)):`, que es sintaxis inválida.
+  - `_validar_sintaxis_agentes` lo descartó correctamente.
+  - Pero no hubo reintento con instrucción correctiva.
+  - El sistema bloqueó sin más opciones.
+- **Fix propuesto**: reintentar UNA VEZ con instrucción que describe
+  exactamente el error de sintaxis y cómo corregirlo.
+- **Estado**: en análisis

@@ -9,8 +9,6 @@ import tempfile
 import json
 import shutil
 import logging
-from io import BytesIO
-from PIL import Image as PILImage
 from typing import Dict, Tuple, Optional, Any, List
 
 import requests
@@ -39,7 +37,6 @@ def _escapar_xml(texto: str) -> str:
         .replace("<", "&lt;")
         .replace(">", "&gt;")
     )
-
 
 
 def _celda_segura(valor: Any) -> Any:
@@ -451,27 +448,15 @@ class FileExecutor:
     def _descargar_imagen_temporal(cls, url: str) -> Optional[str]:
         """
         Descarga una imagen desde una URL a un archivo temporal.
-        Devuelve la ruta del archivo o None si falla o no es una imagen válida.
+        Devuelve la ruta del archivo o None si falla.
         """
         if not url or not isinstance(url, str):
             return None
         if not url.startswith(("http://", "https://")):
             return None
 
-        tmp_path = cls._descargar_a_temporal(url)
-        if tmp_path is None:
-            return None
-
-        if not cls._validar_imagen_descargada(tmp_path, url):
-            cls._borrar_temporal_silencioso(tmp_path)
-            return None
-
-        return tmp_path
-
-    @classmethod
-    def _descargar_a_temporal(cls, url: str) -> Optional[str]:
-        """Descarga la URL a un archivo temporal, respetando el límite de tamaño."""
         try:
+            # Determinar extensión por URL o Content-Type
             from urllib.parse import urlparse
             parsed = urlparse(url)
             ext = os.path.splitext(parsed.path)[1].lower()
@@ -486,12 +471,16 @@ class FileExecutor:
             )
             resp.raise_for_status()
 
+            # Comprobar Content-Type
             content_type = resp.headers.get("Content-Type", "").lower()
             if content_type and not content_type.startswith("image/"):
                 logger.warning(f"URL {url} devolvió Content-Type no-imagen: {content_type}")
                 return None
 
-            tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False, prefix="av_img_")
+            # Leer con límite de tamaño
+            tmp = tempfile.NamedTemporaryFile(
+                suffix=ext, delete=False, prefix="av_img_"
+            )
             try:
                 total = 0
                 for chunk in resp.iter_content(chunk_size=8192):
@@ -511,48 +500,15 @@ class FileExecutor:
                     tmp.close()
                 except Exception:
                     pass
-                cls._borrar_temporal_silencioso(tmp.name)
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
                 raise
 
         except Exception as e:
             logger.warning(f"No se pudo descargar imagen {url}: {e}")
             return None
-
-    @classmethod
-    def _validar_imagen_descargada(cls, tmp_path: str, url: str) -> bool:
-        """
-        Comprueba que el archivo descargado no esté vacío/truncado y que,
-        si Pillow está disponible, sea una imagen legible.
-        """
-        tamaño_final = os.path.getsize(tmp_path)
-        if tamaño_final < 100:
-            logger.warning(
-                f"Imagen descargada vacía o corrupta: {url} "
-                f"({tamaño_final} bytes). Se descarta."
-            )
-            return False
-
-        try:
-            from PIL import Image as PILImage
-        except ImportError:
-            return True  # Pillow no instalado: nos conformamos con la validación de tamaño
-
-        try:
-            with PILImage.open(tmp_path) as im:
-                im.verify()
-        except Exception as e:
-            logger.warning(f"Imagen descargada no es válida: {url} ({e}). Se descarta.")
-            return False
-
-        return True
-
-    @classmethod
-    def _borrar_temporal_silencioso(cls, path: str) -> None:
-        """Borra un archivo temporal ignorando errores (archivo ya borrado, permisos, etc.)."""
-        try:
-            os.unlink(path)
-        except Exception:
-            pass
 
     @classmethod
     def _file_escribir_docx(
@@ -854,31 +810,15 @@ class FileExecutor:
         contexto: Dict,
         cancellation_token: Optional[CancellationToken] = None,
     ) -> Tuple[bool, str, Dict]:
-        """
-        Escribe un PDF con reportlab, incluyendo texto E imágenes.
-
-        FIX v2:
-          - Las imágenes se cargan en memoria (BytesIO) antes de doc.build(),
-            así no dependen de que el archivo temporal siga existiendo.
-          - El cleanup de temporales se hace DESPUÉS de doc.build().
-        """
         try:
             from reportlab.platypus import (
-                SimpleDocTemplate, Paragraph, Spacer,
-                Image as RLImage,
+                SimpleDocTemplate, Paragraph, Spacer, Image as RLImage,
             )
             from reportlab.lib.styles import getSampleStyleSheet
             from reportlab.lib.units import cm
+            from reportlab.lib.utils import ImageReader
         except ImportError:
-            return False, (
-                "reportlab no está instalado. Instálalo con: pip install reportlab"
-            ), {"error": "missing_dependency", "dep": "reportlab"}
-
-        from io import BytesIO
-        try:
-            from PIL import Image as PILImage
-        except ImportError:
-            PILImage = None
+            return False, "reportlab no está instalado...", {...}
 
         directorio = os.path.dirname(ruta_archivo)
         if directorio:
@@ -889,39 +829,25 @@ class FileExecutor:
         # ── 1. Extraer título, texto e imágenes ──
         titulo = None
         imagenes = []
-
         if isinstance(contenido, dict):
             titulo = contenido.get("titulo") or contenido.get("title")
-            imagenes = (
-                contenido.get("imagenes")
-                or contenido.get("images")
-                or []
-            )
-            for clave in (
-                "cuento", "texto", "contenido",
-                "respuesta_limpia", "respuesta",
-            ):
+            imagenes = contenido.get("imagenes") or contenido.get("images") or []
+            for clave in ("cuento", "contenido", "texto", "respuesta_limpia", "respuesta"):
                 if clave in contenido and contenido[clave]:
                     contenido = contenido[clave]
                     break
             else:
-                contenido = json.dumps(
-                    contenido, indent=2, ensure_ascii=False, default=str
-                )
+                contenido = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
 
         if isinstance(contenido, str):
             texto = contenido
         elif isinstance(contenido, (dict, list)):
-            texto = json.dumps(
-                contenido, indent=2, ensure_ascii=False, default=str
-            )
+            texto = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
         else:
             texto = str(contenido)
 
         if not texto.strip() and not imagenes:
-            return False, (
-                f"File.escribir_pdf: contenido vacío para '{ruta_archivo}'"
-            ), {"error": "empty_content", "archivo": ruta_archivo}
+            return False, f"File.escribir_pdf: contenido vacío...", {...}
 
         doc = SimpleDocTemplate(
             ruta_archivo,
@@ -937,15 +863,13 @@ class FileExecutor:
 
         for par in texto.split("\n"):
             if cancellation_token and cancellation_token.esta_cancelado():
-                return False, "Cancelado durante generación de .pdf", {
-                    "error": "cancelled", "archivo": ruta_archivo
-                }
+                return False, "Cancelado durante generación de .pdf", {...}
             if not par.strip():
                 story.append(Spacer(1, 0.2 * cm))
                 continue
             story.append(Paragraph(_escapar_xml(par), styles["Normal"]))
 
-        # ── 2. Procesar imágenes y cargarlas EN MEMORIA ──
+        # ── 2. Procesar imágenes (MISMO PATRÓN QUE EL DOCX) ──
         temporales_a_limpiar = []
         insertadas = 0
         fallidas = []
@@ -953,28 +877,18 @@ class FileExecutor:
         for idx, img_item in enumerate(imagenes):
             if cancellation_token and cancellation_token.esta_cancelado():
                 for t in temporales_a_limpiar:
-                    try:
-                        os.unlink(t)
-                    except Exception:
-                        pass
-                return False, "Cancelado durante descarga de imágenes", {
-                    "error": "cancelled", "archivo": ruta_archivo
-                }
+                    try: os.unlink(t)
+                    except Exception: pass
+                return False, "Cancelado durante descarga de imágenes", {...}
 
             if isinstance(img_item, dict):
                 url = img_item.get("url") or img_item.get("src") or ""
-                descripcion = (
-                    img_item.get("descripcion")
-                    or img_item.get("alt")
-                    or ""
-                )
+                descripcion = img_item.get("descripcion") or img_item.get("alt") or ""
             elif isinstance(img_item, str):
                 url = img_item
                 descripcion = ""
             else:
-                fallidas.append(
-                    f"item {idx}: tipo no soportado {type(img_item).__name__}"
-                )
+                fallidas.append(f"item {idx}: tipo no soportado {type(img_item).__name__}")
                 continue
 
             if os.path.exists(url):
@@ -989,30 +903,11 @@ class FileExecutor:
                 continue
 
             try:
-                # ── Cargar la imagen en memoria (independiente del archivo) ──
-                if PILImage is not None:
-                    with PILImage.open(ruta_local) as pil_img:
-                        buffer = BytesIO()
-                        fmt = pil_img.format or "JPEG"
-                        if pil_img.mode in ("RGBA", "P", "LA"):
-                            pil_img = pil_img.convert("RGB")
-                            fmt = "JPEG"
-                        pil_img.save(buffer, format=fmt)
-                        buffer.seek(0)
-                    img_source = buffer
-                else:
-                    # Fallback: si no hay Pillow, usar la ruta (menos robusto)
-                    img_source = ruta_local
-
-                img = RLImage(img_source)
-
+                # Escalar proporcionalmente a un ancho máximo de 12 cm
+                img = RLImage(ruta_local)
                 max_w = 12 * cm
                 max_h = 9 * cm
-                ratio = min(
-                    max_w / img.imageWidth,
-                    max_h / img.imageHeight,
-                    1.0,
-                )
+                ratio = min(max_w / img.imageWidth, max_h / img.imageHeight, 1.0)
                 img.drawWidth = img.imageWidth * ratio
                 img.drawHeight = img.imageHeight * ratio
                 img.hAlign = "CENTER"
@@ -1024,47 +919,29 @@ class FileExecutor:
                         f"<i>{_escapar_xml(str(descripcion))}</i>",
                         styles["Italic"],
                     )
-                    p.alignment = 1
+                    p.alignment = 1  # centrado
                     story.append(p)
                 story.append(Spacer(1, 0.3 * cm))
                 insertadas += 1
             except Exception as e:
-                fallidas.append(
-                    f"item {idx}: error insertando {ruta_local}: {e}"
-                )
+                fallidas.append(f"item {idx}: error insertando {ruta_local}: {e}")
 
-        # ── 3. Construir el PDF (ANTES de borrar los temporales) ──
+        for t in temporales_a_limpiar:
+            try: os.unlink(t)
+            except Exception: pass
+
         if not story:
             story = [Paragraph("(documento vacío)", styles["Normal"])]
 
         try:
             doc.build(story)
         except Exception as e:
-            # Limpiar temporales incluso si falla
-            for t in temporales_a_limpiar:
-                try:
-                    os.unlink(t)
-                except Exception:
-                    pass
-            return False, (
-                f"File.escribir_pdf: error al construir '{ruta_archivo}': {e}"
-            ), {
-                "error": "pdf_build_error",
-                "archivo": ruta_archivo,
-                "detalle": str(e),
+            return False, f"File.escribir_pdf: error al construir: {e}", {
+                "error": "pdf_build_error", "archivo": ruta_archivo, "detalle": str(e)
             }
 
-        # ── 4. AHORA SÍ: limpiar temporales ──
-        for t in temporales_a_limpiar:
-            try:
-                os.unlink(t)
-            except Exception:
-                pass
-
         if not os.path.exists(ruta_archivo) or os.path.getsize(ruta_archivo) == 0:
-            return False, (
-                f"File.escribir_pdf: '{ruta_archivo}' no se creó o está vacío"
-            ), {"error": "write_failed", "archivo": ruta_archivo}
+            return False, f"File.escribir_pdf: '{ruta_archivo}' no se creó", {...}
 
         tamaño = os.path.getsize(ruta_archivo)
         cls.actualizar_progreso(agente, 100, "Archivo .pdf escrito")

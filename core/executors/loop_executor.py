@@ -50,13 +50,29 @@ class LoopExecutor:
             return False, "Loop: 'codigo_por_item' está vacío", {}
 
         items = resolver_ruta_en_contexto(contexto, agente.fuente_items)
-
         if not es_lista_valida(items):
-            cls.actualizar_progreso(agente, 100, "Fuente no es una lista")
-            return False, (
+            # Enriquecer el mensaje con las claves disponibles en la dependencia raíz
+            nombre_dep = agente.obtener_nombre_dependencia() or "(desconocida)"
+            claves_disponibles = []
+            if nombre_dep in contexto:
+                dep_resultado = contexto[nombre_dep]
+                if isinstance(dep_resultado, dict):
+                    claves_disponibles = list(dep_resultado.keys())[:10]
+
+            msg = (
                 f"Loop: '{agente.fuente_items}' no resolvió a una lista válida "
-                f"(obtuve: {type(items).__name__})"
-            ), {"fuente": agente.fuente_items, "valor": items}
+                f"(obtuve: {type(items).__name__})."
+            )
+            if claves_disponibles:
+                msg += (
+                    f" El agente '{nombre_dep}' produjo las claves: "
+                    f"{claves_disponibles}."
+                )
+            return False, msg, {
+                "fuente": agente.fuente_items,
+                "valor": items,
+                "claves_disponibles": claves_disponibles,
+            }
 
         total_items = len(items)
         if total_items == 0:

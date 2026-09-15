@@ -170,6 +170,17 @@ def variables_disponibles(agente: Agente, contexto: Dict) -> Dict[str, str]:
         else:
             variables[clave] = str(valor_extraido)
 
+        # ✅ NUEVO: aplanar claves anidadas
+        if isinstance(valor, dict):
+            for subclave, subvalor in valor.items():
+                clave_compuesta = f"{clave}.{subclave}"
+                if isinstance(subvalor, str):
+                    variables[clave_compuesta] = subvalor
+                else:
+                    variables[clave_compuesta] = json.dumps(
+                        subvalor, default=str, ensure_ascii=False
+                    )
+
     return variables
 
 

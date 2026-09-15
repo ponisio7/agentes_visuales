@@ -10,6 +10,16 @@ Flujo:
 
 Estética: terminal retro (fósforo verde).
 """
+import os
+import sys
+
+# Si se ejecuta como script suelto (python ui/simple_main_window.py),
+# añadir la raíz del proyecto al sys.path para que resuelvan
+# los imports storage.*, core.*, learning.*
+if __package__ in (None, ""):
+    _raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if _raiz not in sys.path:
+        sys.path.insert(0, _raiz)
 import logging
 import random
 import string
@@ -215,6 +225,7 @@ class _PlanGenerator(QObject):
     def run(self):
         try:
             if self._cancelado:
+                self.error.emit("generación de plan cancelada")
                 return
             self.progreso.emit("consultando al LLM...", 10)
 
@@ -223,6 +234,7 @@ class _PlanGenerator(QObject):
             )
 
             if self._cancelado:
+                self.error.emit("generación de plan cancelada")
                 return
 
             self.progreso.emit(
@@ -493,6 +505,11 @@ class SimpleMainWindow(QMainWindow):
 
     # ── Ejecución ───────────────────────────────────────────────
     def _on_ejecutar(self):
+        logger.info(
+        f"[EJECUTAR] llamado | _ejecutando={self._ejecutando} | "
+        f"solver={'OK' if self.solver else 'None'} | "
+        f"boton_enabled={self.btn_ejecutar.isEnabled()}"
+    )
         if self._ejecutando:
             return
 
@@ -504,23 +521,58 @@ class SimpleMainWindow(QMainWindow):
             QMessageBox.warning(self, "IA no disponible", "Configura DEEPSEEK_API_KEY.")
             return
 
+        # ── 1. Desconectar y detener scheduler ANTERIOR ──
+        self._desconectar_scheduler()
+        if getattr(self, 'scheduler', None):
+            try:
+                self.scheduler.detener()
+                self.scheduler.limpiar()
+            except Exception:
+                pass
+
+        # ── 2. Cancelar worker de plan anterior si quedó colgado ──
+        if self._worker_plan is not None:
+            try:
+                self._worker_plan.cancelar()
+            except RuntimeError:
+                pass
+
+        if self._hilo_plan is not None:
+            try:
+                if self._hilo_plan.isRunning():
+                    self._hilo_plan.quit()
+                    self._hilo_plan.wait(1000)
+            except RuntimeError:
+                # El objeto C++ ya fue destruido; limpiamos la referencia Python
+                self._hilo_plan = None
+
+        # ── 3. Limpiar EventBus (singleton, acumula eventos) ──
+        try:
+            from core.event_bus import obtener_bus
+            obtener_bus().limpiar_historial()
+        except Exception:
+            pass
+
+        # ── 4. Estado limpio para la NUEVA ejecución ──
         self._ejecutando = True
         self._ultimo_problema = problema
+        self._ultimo_plan = None
         self._tiempo_inicio_ejecucion = time.time()
 
         self.btn_ejecutar.setEnabled(False)
         self.btn_detener.setEnabled(True)
         self.progress.setValue(0)
         self.log.clear()
+
         self._set_status("generando plan...", CYAN_INFO)
         resumen = problema[:80] + ("..." if len(problema) > 80 else "")
         self._log(f"> {resumen}", CYAN_INFO)
 
-        try:
-            self.scheduler.limpiar()
-        except Exception:
-            pass
+        # ── 5. Scheduler NUEVO (instancia aislada) ──
+        self.scheduler = Scheduler(max_concurrent=4)
+        self._conectar_scheduler()
 
+        # ── 6. Lanzar generación de plan ──
         self._hilo_plan = QThread()
         self._worker_plan = _PlanGenerator(self.solver, problema, max_pasos=6)
         self._worker_plan.moveToThread(self._hilo_plan)
@@ -531,19 +583,31 @@ class SimpleMainWindow(QMainWindow):
         self._worker_plan.error.connect(self._on_error_plan)
         self._worker_plan.plan_listo.connect(self._hilo_plan.quit)
         self._worker_plan.error.connect(self._hilo_plan.quit)
-        self._hilo_plan.finished.connect(self._hilo_plan.deleteLater)
+        self._hilo_plan.finished.connect(self._on_hilo_plan_terminado)
 
         self._hilo_plan.start()
 
     def _on_detener(self):
-        if self._worker_plan:
-            self._worker_plan.cancelar()
+        if self._worker_plan is not None:
+            try:
+                self._worker_plan.cancelar()
+            except RuntimeError:
+                pass
         try:
             self.scheduler.detener()
         except Exception:
             pass
         self._log("señal de aborto enviada", RED_ERR)
         self._set_status("deteniendo...", RED_ERR)
+
+        # Reset forzado por si el scheduler no emite señal a tiempo
+        QTimer.singleShot(1500, self._forzar_reset_si_sigue_ejecutando)
+
+
+    def _forzar_reset_si_sigue_ejecutando(self):
+        if self._ejecutando:
+            self._log("ejecución abortada (timeout de cierre)", RED_ERR)
+            self._reset_estado_ejecucion()
 
     @pyqtSlot(str, int)
     def _on_progreso_plan(self, mensaje: str, pct: int):
@@ -577,7 +641,7 @@ class SimpleMainWindow(QMainWindow):
     @pyqtSlot(str)
     def _on_error_plan(self, error: str):
         self._ejecutando = False
-        self.btn_ejecutar.setEnabled(True)
+        self.btn_ejecutar.setEnabled(bool(self.solver))
         self.btn_detener.setEnabled(False)
         self._set_status("✗ error", RED_ERR)
         self._log(f"✗ {error}", RED_ERR)
@@ -624,6 +688,18 @@ class SimpleMainWindow(QMainWindow):
         self._log(mensaje, color or GREEN)
 
     @pyqtSlot()
+    def _on_hilo_plan_terminado(self):
+        """Limpia la referencia al QThread cuando termina."""
+        # El QThread ya terminó; soltamos la referencia Python.
+        # No usamos deleteLater porque queremos controlar cuándo se destruye.
+        self._worker_plan = None
+        if self._hilo_plan is not None:
+            # Programamos el borrado del C++ pero NO guardamos más la referencia
+            hilo = self._hilo_plan
+            self._hilo_plan = None
+            hilo.deleteLater()
+
+    @pyqtSlot()
     def _on_ejecucion_terminada(self):
         self._ejecutando = False
         self.btn_ejecutar.setEnabled(True)
@@ -662,20 +738,60 @@ class SimpleMainWindow(QMainWindow):
     # ── Cierre ──────────────────────────────────────────────────
     def closeEvent(self, event):
         try:
-            if self._worker_plan:
-                self._worker_plan.cancelar()
-            if self._hilo_plan and self._hilo_plan.isRunning():
-                self._hilo_plan.quit()
-                self._hilo_plan.wait(2000)
-            self.scheduler.detener()
+            if self._worker_plan is not None:
+                try:
+                    self._worker_plan.cancelar()
+                except RuntimeError:
+                    pass
+
+            if self._hilo_plan is not None:
+                try:
+                    if self._hilo_plan.isRunning():
+                        self._hilo_plan.quit()
+                        self._hilo_plan.wait(2000)
+                except RuntimeError:
+                    pass
+
+            self._desconectar_scheduler()
+            if getattr(self, 'scheduler', None):
+                try:
+                    self.scheduler.detener()
+                except Exception:
+                    pass
+
             self.db.close()
         except Exception:
-            pass
+            logger.exception("Error en closeEvent")
         event.accept()
+
+    def _reset_estado_ejecucion(self):
+        """Deja la UI lista para una nueva ejecución."""
+        self._ejecutando = False
+        self._tiempo_inicio_ejecucion = None
+        self.btn_ejecutar.setEnabled(bool(self.solver))
+        self.btn_detener.setEnabled(False)
+        self.progress.setValue(0)
+        self._set_status("listo", GREEN_DIM)
+
+
+    def _desconectar_scheduler(self):
+        """Desconecta las señales del scheduler actual (si existe)."""
+        if not getattr(self, 'scheduler', None):
+            return
+        for signal, slot in (
+            (self.scheduler.agente_actualizado, self._on_agente_actualizado),
+            (self.scheduler.log_mensaje, self._on_log_scheduler),
+            (self.scheduler.ejecucion_terminada, self._on_ejecucion_terminada),
+        ):
+            try:
+                signal.disconnect(slot)
+            except TypeError:
+                # Ya estaba desconectada
+                pass
 
 
 if __name__ == "__main__":
-    import sys
+    
     logging.basicConfig(level=logging.INFO)
     app = QApplication(sys.argv)
     w = SimpleMainWindow()
