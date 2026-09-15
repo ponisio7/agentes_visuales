@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 6  # ✅ FASE 2
+DB_VERSION = 7  # ✅ FASE 4a: A/B testing de reescrituras
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -789,6 +789,61 @@ class Database:
                             logger.info("✅ Migración 5→6: columna 'descripcion' añadida")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 5→6: {e}")
+
+                # ✅ Migración 6 → 7: A/B testing de reescrituras de prompt.
+                #    - Añade columnas `estado` y `n_usos` a prompts_reescritos.
+                #    - Crea tabla prompt_reescrito_usos para atribuir ejecuciones
+                #      a versiones de prompt y calcular scores medios.
+                if current_version < 7:
+                    try:
+                        # Columnas en prompts_reescritos
+                        tablas = self._obtener_tablas(conn)
+                        if 'prompts_reescritos' in tablas:
+                            cols = self._obtener_columnas(conn, 'prompts_reescritos')
+                            if 'estado' not in cols:
+                                cursor.execute(
+                                    "ALTER TABLE prompts_reescritos "
+                                    "ADD COLUMN estado TEXT DEFAULT 'candidato'"
+                                )
+                                logger.info("✅ Migración 6→7: columna 'estado' añadida")
+                            if 'n_usos' not in cols:
+                                cursor.execute(
+                                    "ALTER TABLE prompts_reescritos "
+                                    "ADD COLUMN n_usos INTEGER DEFAULT 0"
+                                )
+                                logger.info("✅ Migración 6→7: columna 'n_usos' añadida")
+
+                            # Backfill: los que estaban 'activo=1' pasan a estado='activo'
+                            cursor.execute(
+                                "UPDATE prompts_reescritos SET estado='activo' "
+                                "WHERE activo=1 AND (estado IS NULL OR estado='candidato')"
+                            )
+
+                        # Tabla de usos
+                        if 'prompt_reescrito_usos' not in tablas:
+                            cursor.execute('''
+                                CREATE TABLE prompt_reescrito_usos (
+                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                    prompt_reescrito_id INTEGER NOT NULL,
+                                    ejecucion_id INTEGER NOT NULL,
+                                    score REAL,
+                                    fecha TEXT NOT NULL,
+                                    FOREIGN KEY (prompt_reescrito_id)
+                                        REFERENCES prompts_reescritos(id)
+                                        ON DELETE CASCADE
+                                )
+                            ''')
+                            cursor.execute(
+                                "CREATE INDEX IF NOT EXISTS idx_prompt_reescrito_usos_pr "
+                                "ON prompt_reescrito_usos(prompt_reescrito_id)"
+                            )
+                            cursor.execute(
+                                "CREATE INDEX IF NOT EXISTS idx_prompt_reescrito_usos_ej "
+                                "ON prompt_reescrito_usos(ejecucion_id)"
+                            )
+                            logger.info("✅ Migración 6→7: tabla 'prompt_reescrito_usos' creada")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 6→7: {e}")
 
                 # Actualizar versión
                 cursor.execute("DELETE FROM version")

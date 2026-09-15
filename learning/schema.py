@@ -68,7 +68,7 @@ SQL_CREAR_TABLAS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_reparaciones_tipo ON reparaciones_plan(tipo)",
-        """
+            """
     CREATE TABLE IF NOT EXISTS prompts_reescritos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         firma TEXT NOT NULL,
@@ -77,12 +77,33 @@ SQL_CREAR_TABLAS = [
         feedback_id INTEGER NOT NULL,
         razon TEXT DEFAULT '',
         fecha TEXT NOT NULL,
-        activo INTEGER DEFAULT 1,
+        activo INTEGER DEFAULT 1,           -- legacy, mantenido por compatibilidad
+        estado TEXT DEFAULT 'candidato',    -- 'candidato' | 'activo' | 'descartado'
+        n_usos INTEGER DEFAULT 0,           -- cuántas veces se ha usado esta versión
         FOREIGN KEY (feedback_id) REFERENCES feedback_usuario(id) ON DELETE CASCADE
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_prompts_reescritos_firma "
     "ON prompts_reescritos(firma, activo)",
+    "CREATE INDEX IF NOT EXISTS idx_prompts_reescritos_estado "
+    "ON prompts_reescritos(firma, estado)",
+    # ✅ FASE 4a: tabla de usos para A/B testing
+    """
+    CREATE TABLE IF NOT EXISTS prompt_reescrito_usos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        prompt_reescrito_id INTEGER NOT NULL,
+        ejecucion_id INTEGER NOT NULL,
+        score REAL,                          -- relleno después por el aprendizaje
+        fecha TEXT NOT NULL,
+        FOREIGN KEY (prompt_reescrito_id)
+            REFERENCES prompts_reescritos(id)
+            ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_prompt_reescrito_usos_pr "
+    "ON prompt_reescrito_usos(prompt_reescrito_id)",
+    "CREATE INDEX IF NOT EXISTS idx_prompt_reescrito_usos_ej "
+    "ON prompt_reescrito_usos(ejecucion_id)",
 ]
 
 

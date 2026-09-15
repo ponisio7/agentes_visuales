@@ -281,28 +281,31 @@ class FeedbackProcessor:
             return None
 
     def _guardar_reescritura(
-        self,
-        prompt_original: str,
-        prompt_nuevo: str,
-        razon: str,
-        feedback_id: int,
-    ) -> Optional[int]:
+    self,
+    prompt_original: str,
+    prompt_nuevo: str,
+    razon: str,
+    feedback_id: int,
+) -> Optional[int]:
         try:
             firma = self._firmar(prompt_original)
             with sqlite3.connect(self.db_path, timeout=10) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 # Desactivar versiones anteriores de la misma firma.
+                # Mantenemos `activo` por compatibilidad y añadimos `estado`.
                 conn.execute(
-                    "UPDATE prompts_reescritos SET activo = 0 WHERE firma = ?",
+                    "UPDATE prompts_reescritos "
+                    "SET activo = 0, estado = 'descartado' "
+                    "WHERE firma = ?",
                     (firma,),
                 )
                 cur = conn.execute(
                     """INSERT INTO prompts_reescritos
-                       (firma, prompt_original, prompt_nuevo, feedback_id,
-                        razon, fecha, activo)
-                       VALUES (?, ?, ?, ?, ?, ?, 1)""",
                     (firma, prompt_original, prompt_nuevo, feedback_id,
-                     razon[:500], datetime.now().isoformat()),
+                        razon, fecha, activo, estado, n_usos)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, 'candidato', 0)""",
+                    (firma, prompt_original, prompt_nuevo, feedback_id,
+                    razon[:500], datetime.now().isoformat()),
                 )
                 conn.commit()
                 return cur.lastrowid
