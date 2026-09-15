@@ -20,7 +20,7 @@ logs/
 *.docx
 *.xlsx
 *.json
-*'pdf
+*.pdf
 
 .env
 agentes_visuales 05092026.txt   
@@ -39,7 +39,6 @@ saludo.txt
 lista.txt
 test_del_programa.txt
 tiempo.txt
-os
 
 # Archivos generados por agentes
 *.html
