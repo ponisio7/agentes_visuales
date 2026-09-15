@@ -7,6 +7,8 @@ import csv
 import io
 import tempfile
 import json
+import markdown as md_lib  # nuevo
+import weasyprint  # nuevo
 import shutil
 import logging
 from io import BytesIO
@@ -845,6 +847,67 @@ class FileExecutor:
             "formato": "xlsx",
         }
 
+        # ── CSS embebido para WeasyPrint ──
+    _PDF_CSS = """
+    @page {
+        size: A4;
+        margin: 2cm 2cm 2cm 2cm;
+        @bottom-center {
+            content: counter(page) " / " counter(pages);
+            font-size: 9pt;
+            color: #888;
+        }
+    }
+    body {
+        font-family: "DejaVu Sans", "Liberation Sans", sans-serif;
+        font-size: 11pt;
+        line-height: 1.5;
+        color: #222;
+    }
+    h1 { font-size: 22pt; margin-top: 0; border-bottom: 2px solid #333; padding-bottom: 6px; }
+    h2 { font-size: 16pt; margin-top: 18pt; color: #1a1a1a; }
+    h3 { font-size: 13pt; margin-top: 14pt; color: #333; }
+    h4 { font-size: 11pt; margin-top: 10pt; color: #444; }
+    p { margin: 6pt 0; }
+    ul, ol { margin: 6pt 0 6pt 20pt; }
+    li { margin: 3pt 0; }
+    code {
+        font-family: "DejaVu Sans Mono", monospace;
+        background: #f4f4f4;
+        padding: 1px 4px;
+        border-radius: 3px;
+        font-size: 10pt;
+    }
+    pre {
+        background: #f4f4f4;
+        padding: 8pt;
+        border-radius: 4px;
+        overflow-x: auto;
+        font-size: 9pt;
+    }
+    pre code { background: none; padding: 0; }
+    blockquote {
+        border-left: 3px solid #ccc;
+        margin-left: 0;
+        padding-left: 12pt;
+        color: #555;
+    }
+    table {
+        border-collapse: collapse;
+        width: 100%;
+        margin: 8pt 0;
+        font-size: 10pt;
+    }
+    th, td {
+        border: 1px solid #ccc;
+        padding: 5pt 8pt;
+        text-align: left;
+    }
+    th { background: #f0f0f0; font-weight: bold; }
+    img { max-width: 100%; height: auto; }
+    hr { border: none; border-top: 1px solid #ddd; margin: 12pt 0; }
+    """
+
     @classmethod
     def _file_escribir_pdf(
         cls,
@@ -855,52 +918,22 @@ class FileExecutor:
         cancellation_token: Optional[CancellationToken] = None,
     ) -> Tuple[bool, str, Dict]:
         """
-        Escribe un PDF con reportlab, incluyendo texto E imágenes.
+        Escribe un PDF a partir de contenido Markdown o texto.
 
-        FIX v2:
-          - Las imágenes se cargan en memoria (BytesIO) antes de doc.build(),
-            así no dependen de que el archivo temporal siga existiendo.
-          - El cleanup de temporales se hace DESPUÉS de doc.build().
+        Pipeline: Markdown → HTML (librería `markdown`) → PDF (WeasyPrint).
+
+        Si el contenido es un dict, se extrae el texto útil antes de
+        convertirlo. Si es texto plano sin Markdown, WeasyPrint lo
+        renderiza igual (los `\n` se convierten en párrafos).
         """
-        try:
-            from reportlab.platypus import (
-                SimpleDocTemplate, Paragraph, Spacer,
-                Image as RLImage,
-            )
-            from reportlab.lib.styles import getSampleStyleSheet
-            from reportlab.lib.units import cm
-        except ImportError:
-            return False, (
-                "reportlab no está instalado. Instálalo con: pip install reportlab"
-            ), {"error": "missing_dependency", "dep": "reportlab"}
-
-        from io import BytesIO
-        try:
-            from PIL import Image as PILImage
-        except ImportError:
-            PILImage = None
-
-        directorio = os.path.dirname(ruta_archivo)
-        if directorio:
-            os.makedirs(directorio, exist_ok=True)
-
-        cls.actualizar_progreso(agente, 70, "Escribiendo .pdf...")
-
-        # ── 1. Extraer título, texto e imágenes ──
+        # ── 1. Extraer el texto útil del contenido ──
         titulo = None
         imagenes = []
-
         if isinstance(contenido, dict):
             titulo = contenido.get("titulo") or contenido.get("title")
-            imagenes = (
-                contenido.get("imagenes")
-                or contenido.get("images")
-                or []
-            )
-            for clave in (
-                "cuento", "texto", "contenido",
-                "respuesta_limpia", "respuesta",
-            ):
+            imagenes = contenido.get("imagenes") or contenido.get("images") or []
+            for clave in ("cuento", "texto", "contenido", "markdown",
+                          "respuesta_limpia", "respuesta"):
                 if clave in contenido and contenido[clave]:
                     contenido = contenido[clave]
                     break
@@ -912,9 +945,7 @@ class FileExecutor:
         if isinstance(contenido, str):
             texto = contenido
         elif isinstance(contenido, (dict, list)):
-            texto = json.dumps(
-                contenido, indent=2, ensure_ascii=False, default=str
-            )
+            texto = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
         else:
             texto = str(contenido)
 
@@ -923,143 +954,68 @@ class FileExecutor:
                 f"File.escribir_pdf: contenido vacío para '{ruta_archivo}'"
             ), {"error": "empty_content", "archivo": ruta_archivo}
 
-        doc = SimpleDocTemplate(
-            ruta_archivo,
-            leftMargin=2 * cm, rightMargin=2 * cm,
-            topMargin=2 * cm, bottomMargin=2 * cm,
-        )
-        styles = getSampleStyleSheet()
-        story = []
+        directorio = os.path.dirname(ruta_archivo)
+        if directorio:
+            os.makedirs(directorio, exist_ok=True)
 
-        if titulo:
-            story.append(Paragraph(_escapar_xml(str(titulo)), styles["Title"]))
-            story.append(Spacer(1, 0.5 * cm))
+        cls.actualizar_progreso(agente, 60, "Convirtiendo Markdown a HTML...")
 
-        for par in texto.split("\n"):
-            if cancellation_token and cancellation_token.esta_cancelado():
-                return False, "Cancelado durante generación de .pdf", {
-                    "error": "cancelled", "archivo": ruta_archivo
-                }
-            if not par.strip():
-                story.append(Spacer(1, 0.2 * cm))
-                continue
-            story.append(Paragraph(_escapar_xml(par), styles["Normal"]))
-
-        # ── 2. Procesar imágenes y cargarlas EN MEMORIA ──
-        temporales_a_limpiar = []
-        insertadas = 0
-        fallidas = []
-
-        for idx, img_item in enumerate(imagenes):
-            if cancellation_token and cancellation_token.esta_cancelado():
-                for t in temporales_a_limpiar:
-                    try:
-                        os.unlink(t)
-                    except Exception:
-                        pass
-                return False, "Cancelado durante descarga de imágenes", {
-                    "error": "cancelled", "archivo": ruta_archivo
-                }
-
-            if isinstance(img_item, dict):
-                url = img_item.get("url") or img_item.get("src") or ""
-                descripcion = (
-                    img_item.get("descripcion")
-                    or img_item.get("alt")
-                    or ""
-                )
-            elif isinstance(img_item, str):
-                url = img_item
-                descripcion = ""
-            else:
-                fallidas.append(
-                    f"item {idx}: tipo no soportado {type(img_item).__name__}"
-                )
-                continue
-
-            if os.path.exists(url):
-                ruta_local = url
-            else:
-                ruta_local = cls._descargar_imagen_temporal(url)
-                if ruta_local:
-                    temporales_a_limpiar.append(ruta_local)
-
-            if not ruta_local:
-                fallidas.append(f"item {idx}: {url[:80]}")
-                continue
-
-            try:
-                # ── Cargar la imagen en memoria (independiente del archivo) ──
-                if PILImage is not None:
-                    with PILImage.open(ruta_local) as pil_img:
-                        buffer = BytesIO()
-                        fmt = pil_img.format or "JPEG"
-                        if pil_img.mode in ("RGBA", "P", "LA"):
-                            pil_img = pil_img.convert("RGB")
-                            fmt = "JPEG"
-                        pil_img.save(buffer, format=fmt)
-                        buffer.seek(0)
-                    img_source = buffer
-                else:
-                    # Fallback: si no hay Pillow, usar la ruta (menos robusto)
-                    img_source = ruta_local
-
-                img = RLImage(img_source)
-
-                max_w = 12 * cm
-                max_h = 9 * cm
-                ratio = min(
-                    max_w / img.imageWidth,
-                    max_h / img.imageHeight,
-                    1.0,
-                )
-                img.drawWidth = img.imageWidth * ratio
-                img.drawHeight = img.imageHeight * ratio
-                img.hAlign = "CENTER"
-
-                story.append(Spacer(1, 0.3 * cm))
-                story.append(img)
-                if descripcion:
-                    p = Paragraph(
-                        f"<i>{_escapar_xml(str(descripcion))}</i>",
-                        styles["Italic"],
-                    )
-                    p.alignment = 1
-                    story.append(p)
-                story.append(Spacer(1, 0.3 * cm))
-                insertadas += 1
-            except Exception as e:
-                fallidas.append(
-                    f"item {idx}: error insertando {ruta_local}: {e}"
-                )
-
-        # ── 3. Construir el PDF (ANTES de borrar los temporales) ──
-        if not story:
-            story = [Paragraph("(documento vacío)", styles["Normal"])]
-
+        # ── 2. Markdown → HTML ──
         try:
-            doc.build(story)
+            html_cuerpo = md_lib.markdown(
+                texto,
+                extensions=["extra", "tables", "fenced_code", "codehilite",
+                            "sane_lists", "nl2br"],
+            )
         except Exception as e:
-            # Limpiar temporales incluso si falla
-            for t in temporales_a_limpiar:
-                try:
-                    os.unlink(t)
-                except Exception:
-                    pass
-            return False, (
-                f"File.escribir_pdf: error al construir '{ruta_archivo}': {e}"
-            ), {
-                "error": "pdf_build_error",
+            return False, f"File.escribir_pdf: error Markdown→HTML: {e}", {
+                "error": "markdown_error", "archivo": ruta_archivo, "detalle": str(e)
+            }
+
+        # ── 3. Insertar imágenes locales o URLs en el HTML ──
+        # (si vienen en `imagenes`, se añaden al final del HTML)
+        if imagenes:
+            partes_img = ['<h2>Imágenes</h2>']
+            for idx, img_item in enumerate(imagenes):
+                if isinstance(img_item, dict):
+                    url = img_item.get("url") or img_item.get("src") or ""
+                    desc = img_item.get("descripcion") or img_item.get("alt") or ""
+                elif isinstance(img_item, str):
+                    url = img_item
+                    desc = ""
+                else:
+                    continue
+                if not url:
+                    continue
+                # Si es un archivo local, referenciarlo por file://
+                src = url
+                if os.path.exists(url):
+                    src = "file://" + os.path.abspath(url)
+                partes_img.append(
+                    f'<p><img src="{src}" alt="{desc}" />'
+                    + (f'<br/><em>{desc}</em>' if desc else '')
+                    + '</p>'
+                )
+            html_cuerpo += "\n" + "\n".join(partes_img)
+
+        html_completo = (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            f"<style>{cls._PDF_CSS}</style></head><body>"
+            f"{html_cuerpo}"
+            "</body></html>"
+        )
+
+        cls.actualizar_progreso(agente, 80, "Renderizando PDF (WeasyPrint)...")
+
+        # ── 4. HTML → PDF ──
+        try:
+            weasyprint.HTML(string=html_completo).write_pdf(ruta_archivo)
+        except Exception as e:
+            return False, f"File.escribir_pdf: error WeasyPrint: {e}", {
+                "error": "weasyprint_error",
                 "archivo": ruta_archivo,
                 "detalle": str(e),
             }
-
-        # ── 4. AHORA SÍ: limpiar temporales ──
-        for t in temporales_a_limpiar:
-            try:
-                os.unlink(t)
-            except Exception:
-                pass
 
         if not os.path.exists(ruta_archivo) or os.path.getsize(ruta_archivo) == 0:
             return False, (
@@ -1067,22 +1023,17 @@ class FileExecutor:
             ), {"error": "write_failed", "archivo": ruta_archivo}
 
         tamaño = os.path.getsize(ruta_archivo)
-        cls.actualizar_progreso(agente, 100, "Archivo .pdf escrito")
+        cls.actualizar_progreso(agente, 100, "PDF generado")
 
         mensaje = f"Archivo .pdf escrito: {ruta_archivo} ({tamaño} bytes)"
-        if insertadas:
-            mensaje += f" con {insertadas} imagen(es)"
-        if fallidas:
-            mensaje += f". Fallaron {len(fallidas)} imagen(es)"
-
         return True, mensaje, {
             "archivo": ruta_archivo,
             "ruta_absoluta": os.path.abspath(ruta_archivo),
             "tamaño": tamaño,
             "bytes_en_disco": tamaño,
             "formato": "pdf",
-            "imagenes_insertadas": insertadas,
-            "imagenes_fallidas": fallidas,
+            "motor": "weasyprint",
+            "imagenes_insertadas": len(imagenes),
         }
 
     @classmethod
