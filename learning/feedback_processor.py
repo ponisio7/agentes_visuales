@@ -335,16 +335,62 @@ class FeedbackProcessor:
     @staticmethod
     def _firmar(prompt: str) -> str:
         """
-        Firma semántica simple: normaliza espaciado, quita acentos y
-        hashea las primeras 200 chars. Estable ante cambios triviales
-        de formato. Para producción, considera un embedding.
+        Firma semántica agresiva: normaliza, quita stopwords, toma las
+        primeras N palabras significativas, y hashea.
+
+        Motivación: el LLM genera prompts ligeramente distintos para la
+        misma tarea en cada ejecución ('Escribe un cuento corto original
+        sobre un dragón' vs 'Escribe un cuento corto en español sobre un
+        dragón'). Con una firma de hash exacto, esos prompts nunca
+        coinciden y el A/B no acumula usos.
+
+        Con esta firma, ambos colisionan porque comparten las primeras
+        palabras significativas (escribe, cuento, corto, ...).
+
+        ⚠️ Invalida todas las firmas existentes. Requiere re-ejecutar
+        el recálculo de firmas sobre prompts_reescritos tras el cambio.
         """
         if not prompt:
             return ""
+        import unicodedata
+        import re
+
+        # Normalizar: minúsculas, sin acentos
         t = unicodedata.normalize("NFKD", prompt.lower())
         t = "".join(c for c in t if not unicodedata.combining(c))
-        t = re.sub(r"\s+", " ", t).strip()[:200]
-        return hashlib.sha256(t.encode("utf-8")).hexdigest()
+
+        # Extraer palabras alfanuméricas
+        palabras = re.findall(r"[a-z0-9]+", t)
+
+        # Quitar stopwords y palabras muy cortas
+        stopwords = frozenset({
+            # artículos, preposiciones, conjunciones
+            "de", "la", "el", "los", "las", "un", "una", "unos", "unas",
+            "y", "o", "u", "e", "a", "en", "con", "por", "para",
+            "que", "es", "son", "al", "del", "se", "su", "sus",
+            "lo", "le", "les", "tu", "tus", "mi", "mis", "si", "no",
+            "the", "of", "and", "or", "to", "in", "on", "at", "by",
+            "for", "with", "from", "as", "is", "are", "be", "been",
+            # verbos genéricos de instrucción (los quitamos porque
+            # varían entre ejecuciones)
+            "escribe", "genera", "crea", "redacta", "elabora",
+            "produce", "construye", "haz",
+            # instrucciones meta comunes
+            "devuelve", "responde", "usa", "utiliza", "incluye",
+            "asegurate", "verifica", "no", "solo", "unicamente",
+        })
+
+        significativas = [
+            p for p in palabras
+            if p not in stopwords and len(p) > 2
+        ][:2]  # primeras 3 palabras significativas
+
+        if not significativas:
+            # Fallback: si todo son stopwords, usar las primeras palabras
+            significativas = palabras[:6]
+
+        clave = " ".join(significativas)
+        return hashlib.sha256(clave.encode("utf-8")).hexdigest()
 
     def _asegurar_tabla(self):
         """
