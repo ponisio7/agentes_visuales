@@ -263,11 +263,18 @@ class PlanBuilder:
         2. Endurece el prompt con instrucciones anti-alucinación de IDs.
         3. Propaga reasoning_effort y thinking_enabled al Agente.
 
-        ✅ FASE 4c: A/B testing. En lugar de aplicar siempre la última
-        reescritura, consulta las dos versiones vigentes (activo y
-        candidato) y elige una con `PromptABEvaluator.elegir_variante`.
-        El id elegido se propaga al Agente para que `execution_recorder`
-        pueda registrar el uso.
+        ✅ FASE 4c/4d: A/B testing.
+        - La FIRMA se calcula sobre el prompt CRUDO (sin endurecer),
+          porque el endurecimiento es idéntico para todos los agentes
+          LLM y, si se incluyera en la firma, todas las tareas
+          compartirían firma.
+        - Se consultan las dos versiones vigentes (activo y candidato)
+          y `PromptABEvaluator.elegir_variante` elige una.
+        - El id elegido se propaga al Agente para que
+          `execution_recorder` pueda registrar el uso.
+        - El prompt que se asigna al Agente SÍ lleva el endurecimiento
+          (se aplica después de la elección, para que la variante
+          reescrita también lo tenga).
         """
         MIN_TOKENS_SEGUROS = 4000
 
@@ -289,22 +296,18 @@ class PlanBuilder:
         kwargs['reasoning_effort_llm'] = config.get('reasoning_effort', 'low')
         kwargs['thinking_enabled_llm'] = bool(config.get('thinking_enabled', False))
 
-        # 1. Endurecer primero (idempotente).
-        prompt_endurecido = self._endurecer_prompt_llm(prompt_original)
-
-        # 2. ✅ FASE 4c: A/B testing.
-        #    - La firma se calcula sobre el prompt endurecido (es lo que
-        #      persiste en prompts_reescritos).
-        #    - consultar_versiones devuelve la activa y la candidata.
-        #    - elegir_variante decide con probabilidad (20% candidato).
-        prompt_final = prompt_endurecido
+        # 1. ✅ FASE 4d: firma sobre el prompt CRUDO (sin endurecer).
+        # El endurecimiento es idéntico para todos los agentes LLM; si lo
+        # incluyéramos, todas las firmas serían iguales y el A/B no
+        # distinguiría entre tareas.
+        prompt_final = prompt_original
         prompt_id_elegido = 0
         try:
             from learning.prompt_ab_evaluator import PromptABEvaluator
             from learning.feedback_processor import FeedbackProcessor
 
             db_path = "agent_history.db"
-            firma = FeedbackProcessor._firmar(prompt_endurecido)
+            firma = FeedbackProcessor._firmar(prompt_original)
             versiones = PromptABEvaluator.consultar_versiones(db_path, firma)
 
             activo = versiones.get("activo")
@@ -320,14 +323,20 @@ class PlanBuilder:
                 if prompt_elegido:
                     prompt_final = prompt_elegido
                     self.logger.info(
-                    f"✨ AB: '{paso.nombre}' usa prompt id={prompt_id_elegido} "
-                    f"(activo={'sí' if activo else 'no'}, "
-                    f"candidato={'sí' if candidato else 'no'})"
+                        f"✨ AB: '{paso.nombre}' usa prompt id={prompt_id_elegido} "
+                        f"(activo={'sí' if activo else 'no'}, "
+                        f"candidato={'sí' if candidato else 'no'})"
                     )
         except Exception as e:
             self.logger.debug(f"AB no disponible: {e}")
 
-        kwargs['prompt_llm'] = prompt_final
+        # 2. Endurecer AL FINAL (idempotente).
+        # Se endurece tanto el prompt crudo como el reescrito. Si el
+        # reescrito ya trae el preámbulo (porque el FeedbackProcessor lo
+        # copió del original), `_endurecer_prompt_llm` no lo duplica.
+        prompt_endurecido = self._endurecer_prompt_llm(prompt_final)
+
+        kwargs['prompt_llm'] = prompt_endurecido
         kwargs['prompt_reescrito_id'] = int(prompt_id_elegido or 0)
 
     def _endurecer_prompt_llm(self, prompt_original: str) -> str:

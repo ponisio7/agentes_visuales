@@ -112,6 +112,13 @@ class FeedbackProcessor:
 
         No lanza excepciones: si algo falla, devuelve
         {'procesado': False, 'error'|'razon': ...}.
+
+        ✅ FASE 4d: antes de calcular la firma, se quita el endurecimiento
+        del prompt_usado (si lo tiene). Esto es imprescindible para que
+        la firma coincida con la que calcula el builder sobre el prompt
+        crudo. Sin esto, todos los prompts de agentes LLM comparten la
+        misma firma (el endurecimiento ocupa más de 200 chars) y el A/B
+        no puede distinguir entre tareas.
         """
         try:
             with sqlite3.connect(self.db_path, timeout=10) as conn:
@@ -141,6 +148,18 @@ class FeedbackProcessor:
                         "procesado": False,
                         "razon": "agente sin prompt_usado guardado",
                     }
+
+                # ✅ FASE 4d: quitar endurecimiento antes de firmar.
+                # El prompt_usado es el endurecido (con INSTRUCCIONES CRÍTICAS).
+                # El builder calcula la firma sobre el prompt CRUDO.
+                # Para que coincidan, aquí también firmamos el crudo.
+                PREFIJO_ENDURECIDO = "INSTRUCCIONES CRÍTICAS:"
+                if prompt_original.startswith(PREFIJO_ENDURECIDO):
+                    idx = prompt_original.find("TAREA:\n")
+                    if idx > 0:
+                        prompt_original = prompt_original[
+                            idx + len("TAREA:\n"):
+                        ].lstrip()
         except Exception as e:
             logger.warning(f"FeedbackProcessor: lectura falló: {e}")
             return {"procesado": False, "error": str(e)}
@@ -149,7 +168,7 @@ class FeedbackProcessor:
         reescritura = self._reescribir_con_llm(
             prompt_original=prompt_original,
             comentario=fb["comentario"],
-            agente_row=agente,
+            agente=agente,
         )
         if not reescritura:
             return {"procesado": False, "razon": "LLM no respondió"}
