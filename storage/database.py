@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 5  # ✅ FASE 1: nueva columna prompt_usado en agentes_ejecucion
+DB_VERSION = 6  # ✅ FASE 2
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -76,6 +76,7 @@ SCHEMA_DEFINITION = {
         "ejecucion_id": "INTEGER NOT NULL",
         "agente_id": "TEXT NOT NULL",
         "nombre": "TEXT NOT NULL",
+        "descripcion": "TEXT DEFAULT ''",
         "tipo": "TEXT NOT NULL",
         "estado": "TEXT NOT NULL",
         "duracion": "REAL DEFAULT 0",
@@ -348,6 +349,7 @@ class Database:
                 ejecucion_id INTEGER NOT NULL,
                 agente_id TEXT NOT NULL,
                 nombre TEXT NOT NULL,
+                descripcion TEXT DEFAULT '',
                 tipo TEXT NOT NULL,
                 estado TEXT NOT NULL,
                 duracion REAL DEFAULT 0,
@@ -356,6 +358,7 @@ class Database:
                 error TEXT DEFAULT '',
                 orden INTEGER DEFAULT 0,
                 progreso INTEGER DEFAULT 0,
+                prompt_usado TEXT DEFAULT '',
                 FOREIGN KEY (ejecucion_id) REFERENCES ejecuciones(id) ON DELETE CASCADE
             )
         ''')
@@ -632,6 +635,7 @@ class Database:
                         ejecucion_id INTEGER NOT NULL,
                         agente_id TEXT NOT NULL,
                         nombre TEXT NOT NULL,
+                        descripcion TEXT DEFAULT '',
                         tipo TEXT NOT NULL,
                         estado TEXT NOT NULL,
                         duracion REAL DEFAULT 0,
@@ -640,6 +644,7 @@ class Database:
                         error TEXT DEFAULT '',
                         orden INTEGER DEFAULT 0,
                         progreso INTEGER DEFAULT 0,
+                        prompt_usado TEXT DEFAULT '',
                         FOREIGN KEY (ejecucion_id)
                             REFERENCES ejecuciones(id)
                             ON DELETE CASCADE
@@ -771,6 +776,19 @@ class Database:
                             logger.info("✅ Migración 4→5: columna 'prompt_usado' añadida")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 4→5: {e}")
+
+                # ✅ Migración 5 → 6: columna descripcion en agentes_ejecucion
+                if current_version < 6:
+                    try:
+                        columnas_agentes = self._obtener_columnas(conn, 'agentes_ejecucion')
+                        if 'descripcion' not in columnas_agentes:
+                            cursor.execute(
+                                "ALTER TABLE agentes_ejecucion "
+                                "ADD COLUMN descripcion TEXT DEFAULT ''"
+                            )
+                            logger.info("✅ Migración 5→6: columna 'descripcion' añadida")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 5→6: {e}")
 
                 # Actualizar versión
                 cursor.execute("DELETE FROM version")
@@ -1145,6 +1163,9 @@ class Database:
                 # ✅ Normalizar estado antes de guardar
                 estado = self._normalizar_estado(agente.get('estado', 'Pendiente'))
 
+                # ✅ Descripción del agente
+                descripcion = str(agente.get('descripcion', '') or '')
+
                 # ✅ FASE 1: prompt del agente LLM (vacío si no aplica)
                 prompt_usado = str(agente.get('prompt_usado', '') or '')[:4000]
 
@@ -1152,6 +1173,7 @@ class Database:
                     ejecucion_id,
                     str(agente.get('id', '')),
                     str(agente.get('nombre', '')),
+                    str(agente.get('descripcion', '') or '')[:1000],
                     str(agente.get('tipo', 'Desconocido')),
                     estado,
                     float(agente.get('duracion', 0.0) or 0.0),
@@ -1166,10 +1188,10 @@ class Database:
             if datos:
                 cursor.executemany('''
                     INSERT INTO agentes_ejecucion (
-                        ejecucion_id, agente_id, nombre, tipo, estado,
+                        ejecucion_id, agente_id, nombre, descripcion, tipo, estado,
                         duracion, dependencias, resultado, error, orden, progreso,
                         prompt_usado
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', datos)
 
     def _comprimir_json(self, data: Any) -> str:

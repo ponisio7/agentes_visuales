@@ -33,8 +33,9 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTextEdit, QPushButton, QLabel, QFrame, QMessageBox,
     QGraphicsDropShadowEffect,
+    QDialog, QDialogButtonBox,  # ✅ FASE 2c
 )
-
+from typing import Dict, List, Optional, Tuple
 from storage.database import Database
 from core.llm_client import obtener_llm_client_compartido
 from core.scheduler import Scheduler
@@ -119,6 +120,7 @@ class _MatrixRainHeader(QWidget):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(90)
+        
 
     def resizeEvent(self, event):
         step = 14
@@ -202,6 +204,153 @@ class AsciiProgressBar(QWidget):
         bar = "█" * filled + "░" * (self._chars - filled)
         self.label.setText(f"[{bar}] {self._value:3d}%")
 
+# ─────────────────────────────────────────────────────────────────
+# FASE 2c: Diálogo de feedback del usuario
+# ─────────────────────────────────────────────────────────────────
+class FeedbackDialog(QDialog):
+    """
+    Diálogo modal que pide al usuario una valoración tras una ejecución.
+
+    Decisión de diseño (confirmada):
+      · Excelente → score = +1.0, se guarda, NO dispara reescritura.
+      · OK        → score =  0.0, se guarda. Con comentario, la LLM
+                    decide si merece reescritura.
+      · Mal       → score = -1.0, se guarda. Con comentario, dispara
+                    reescritura (FeedbackProcessor).
+
+    Si el usuario cierra sin elegir, devuelve None y no se guarda nada.
+    """
+
+    SCORE_MAP = {
+        "excelente": 1.0,
+        "ok": 0.0,
+        "mal": -1.0,
+    }
+
+    def __init__(self, parent=None, resumen: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("¿Cómo fue esta ejecución?")
+        self.setMinimumWidth(520)
+        self._score: Optional[float] = None
+        self._comentario: str = ""
+
+        # Estilo consistente con la ventana principal (terminal verde).
+        self.setStyleSheet(f"""
+            QDialog {{ background: {BG}; color: {GREEN}; }}
+            QLabel {{ color: {GREEN_DIM}; }}
+            QTextEdit {{
+                background: #050a08; color: {GREEN};
+                border: 1px solid {GREEN_FAINT}; border-radius: 4px;
+                padding: 8px; selection-background-color: {GREEN_DIM};
+            }}
+            QTextEdit:focus {{ border: 1px solid {GREEN}; }}
+            QPushButton {{
+                background: transparent; color: {GREEN};
+                border: 1px solid {GREEN_DIM}; border-radius: 4px;
+                padding: 10px 16px; font-weight: 700;
+            }}
+            QPushButton:hover {{ background: {GREEN_FAINT}; border: 1px solid {GREEN}; }}
+            QPushButton:pressed {{ background: {GREEN_DIM}; color: {BG}; }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 18)
+        layout.setSpacing(12)
+
+        titulo = QLabel("La ejecución ha terminado. ¿Cómo fue?")
+        titulo.setFont(_mono_font(11, bold=True))
+        titulo.setStyleSheet(f"color: {CYAN_INFO};")
+        layout.addWidget(titulo)
+
+        if resumen:
+            resumen_lbl = QLabel(resumen[:300])
+            resumen_lbl.setFont(_mono_font(9))
+            resumen_lbl.setWordWrap(True)
+            resumen_lbl.setStyleSheet(f"color: {TXT_MUTED};")
+            layout.addWidget(resumen_lbl)
+
+        # Botones de valoración
+        botones = QHBoxLayout()
+        self.btn_excelente = QPushButton("Excelente")
+        self.btn_ok = QPushButton("OK")
+        self.btn_mal = QPushButton("Mal")
+        for b, key in (
+            (self.btn_excelente, "excelente"),
+            (self.btn_ok, "ok"),
+            (self.btn_mal, "mal"),
+        ):
+            b.setFont(_mono_font(10, bold=True))
+            b.clicked.connect(lambda _checked=False, k=key: self._elegir(k))
+            botones.addWidget(b)
+        layout.addLayout(botones)
+
+        # Comentario libre
+        lbl_com = QLabel("Comentario (opcional, pero ayuda a mejorar):")
+        lbl_com.setFont(_mono_font(9))
+        lbl_com.setStyleSheet(f"color: {TXT_MUTED};")
+        layout.addWidget(lbl_com)
+
+        self.comentario = QTextEdit()
+        self.comentario.setFont(_mono_font(10))
+        self.comentario.setPlaceholderText(
+            "> _ qué estuvo bien, qué falló, qué esperabas..."
+        )
+        self.comentario.setFixedHeight(90)
+        layout.addWidget(self.comentario)
+
+        # Botones de acción
+        caja = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        caja.button(QDialogButtonBox.StandardButton.Ok).setText("Enviar")
+        caja.button(QDialogButtonBox.StandardButton.Cancel).setText("Cancelar")
+        caja.accepted.connect(self._on_aceptar)
+        caja.rejected.connect(self.reject)
+        layout.addWidget(caja)
+
+        self._valoracion_elegida: Optional[str] = None
+
+    def _elegir(self, key: str):
+        """Marca visualmente el botón elegido."""
+        self._valoracion_elegida = key
+        for b, k in (
+            (self.btn_excelente, "excelente"),
+            (self.btn_ok, "ok"),
+            (self.btn_mal, "mal"),
+        ):
+            if k == key:
+                b.setStyleSheet(
+                    f"background: {GREEN_DIM}; color: {BG}; "
+                    f"border: 1px solid {GREEN}; border-radius: 4px; "
+                    f"padding: 10px 16px; font-weight: 700;"
+                )
+            else:
+                b.setStyleSheet("")
+
+    def _on_aceptar(self):
+        """Valida que se haya elegido una valoración."""
+        if self._valoracion_elegida is None:
+            QMessageBox.warning(
+                self,
+                "Falta valoración",
+                "Elige Excelente, OK o Mal antes de enviar. "
+                "Si no quieres opinar, pulsa Cancelar.",
+            )
+            return
+        self._score = self.SCORE_MAP[self._valoracion_elegida]
+        self._comentario = self.comentario.toPlainText().strip()
+        self.accept()
+
+    def obtener_resultado(self) -> Optional[Dict]:
+        """
+        Devuelve {'score': float, 'comentario': str} o None si el usuario
+        canceló. La distinción score=None vs score=0.0 es importante:
+        None = no hay señal, 0.0 = OK.
+        """
+        if self._score is None:
+            return None
+        return {"score": self._score, "comentario": self._comentario}
 
 # ─────────────────────────────────────────────────────────────────
 # Worker: genera el plan en un hilo aparte
@@ -253,6 +402,9 @@ class _PlanGenerator(QObject):
 # ─────────────────────────────────────────────────────────────────
 class SimpleMainWindow(QMainWindow):
 
+    # ✅ Signal para log desde hilos worker.
+    _log_desde_worker = pyqtSignal(str, str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("SOLVER://terminal")
@@ -296,9 +448,11 @@ class SimpleMainWindow(QMainWindow):
         self._tiempo_inicio_ejecucion: Optional[float] = None
         self._cursor_on = True
         self._status_base = "listo"
+        self._ultima_ejecucion_id: int = 0
 
         # UI
         self._init_ui()
+        self._log_desde_worker.connect(self._log, Qt.ConnectionType.QueuedConnection)
         self._conectar_scheduler()
         self._iniciar_cursor_parpadeante()
         self._iniciar_boot_sequence()
@@ -730,10 +884,126 @@ class SimpleMainWindow(QMainWindow):
                 problema=self._ultimo_problema,
                 duracion_total=duracion_total,
             )
+            self._ultima_ejecucion_id = ejecucion_id or 0
             if ejecucion_id:
                 self._log(f"💾 ejecución guardada (ID: {ejecucion_id})", TXT_MUTED)
                 self._log("🧠 aprendizaje lanzado en background", TXT_MUTED)
             self._tiempo_inicio_ejecucion = None
+
+        # ✅ FASE 2c: feedback (fuera del if, para que se dispare siempre
+        # que haya una ejecución completa con id asignado).
+        if self._ultima_ejecucion_id:
+            self._quizas_pedir_feedback()
+
+        # ── FASE 2c: feedback del usuario ────────────────────────────
+    def _quizas_pedir_feedback(self):
+        """
+        Decide si pedir feedback (1 de cada 3 ejecuciones) y, si toca,
+        abre el diálogo. El feedback se guarda en `feedback_usuario` y,
+        si procede, se procesa en un hilo de background para reescribir
+        el prompt del agente LLM relevante.
+        """
+        import random
+        if random.random() >= 1 / 3:
+            return
+
+        if not self._ultimo_plan:
+            return
+
+        # Resumen para el diálogo
+        stats = self.scheduler.obtener_estadisticas() if self.scheduler else {}
+        completados = stats.get("completados", 0)
+        errores = stats.get("errores", 0)
+        total = stats.get("total", 0)
+        resumen = (
+            f"Plan: {self._ultimo_plan.titulo} | "
+            f"{total} agentes: ✅{completados} ❌{errores}"
+        )
+
+        dialog = FeedbackDialog(self, resumen=resumen)
+        resultado = dialog.exec()
+
+        if resultado != QDialog.DialogCode.Accepted:
+            self._log("feedback omitido", TXT_MUTED)
+            return
+
+        datos = dialog.obtener_resultado()
+        if not datos:
+            return
+
+        self._guardar_y_procesar_feedback(datos)
+
+    def _guardar_y_procesar_feedback(self, datos: Dict):
+        """
+        Guarda el feedback en `feedback_usuario` y lanza el procesamiento
+        en un hilo de background (no bloquea la UI).
+
+        Si el feedback es positivo (Excelente), no se procesa: el prompt
+        funciona, no se toca.
+        """
+        score = datos["score"]
+        comentario = datos["comentario"]
+
+        try:
+            import sqlite3
+            with sqlite3.connect(self.db.db_path, timeout=10) as conn:
+                conn.execute("PRAGMA busy_timeout=10000")
+                cur = conn.execute(
+                    """INSERT INTO feedback_usuario
+                       (ejecucion_id, agente_ejecucion_id, alcance,
+                        score, comentario, fecha)
+                       VALUES (?, NULL, 'plan', ?, ?, ?)""",
+                    (
+                        self._ultima_ejecucion_id or 0,
+                        score,
+                        comentario,
+                        datetime.now().isoformat(),
+                    ),
+                )
+                feedback_id = cur.lastrowid
+                conn.commit()
+        except Exception as e:
+            self._log(f"⚠ no se pudo guardar el feedback: {e}", AMBER_WARN)
+            return
+
+        self._log(
+            f"💬 feedback guardado (id={feedback_id}, score={score:+.1f})",
+            TXT_MUTED,
+        )
+
+        # Solo procesamos si hay señal negativa o tibia con comentario.
+        if score > 0:
+            return
+        if not comentario:
+            return
+
+        self._log("🧠 procesando feedback para reescribir prompt...", CYAN_INFO)
+        self._lanzar_procesamiento_feedback(feedback_id)
+
+    def _lanzar_procesamiento_feedback(self, feedback_id: int):
+        """Lanza el FeedbackProcessor en un hilo daemon y reporta por signal."""
+        import threading
+
+        def worker():
+            try:
+                from learning.feedback_processor import FeedbackProcessor
+                from core.llm_client import obtener_llm_client_compartido
+                proc = FeedbackProcessor(
+                    self.db.db_path, obtener_llm_client_compartido()
+                )
+                res = proc.procesar_feedback(feedback_id)
+                msg = (
+                    f"✅ prompt reescrito (id={res.get('prompt_id')})"
+                    if res.get("procesado")
+                    else f"ℹ no se reescribió: {res.get('razon', '?')}"
+                )
+                self._log_desde_worker.emit(msg, TXT_MUTED)
+            except Exception as e:
+                self._log_desde_worker.emit(f"⚠ feedback falló: {e}", AMBER_WARN)
+
+        threading.Thread(
+            target=worker, name=f"feedback-{feedback_id}", daemon=True
+        ).start()
 
     # ── Cierre ──────────────────────────────────────────────────
     def closeEvent(self, event):

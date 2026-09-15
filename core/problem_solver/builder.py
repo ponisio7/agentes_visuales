@@ -255,19 +255,30 @@ class PlanBuilder:
         kwargs['timeout_http'] = int(config.get('timeout', 30))
 
     def _kwargs_llm(self, paso: StepPlan, config: Dict, kwargs: Dict):
-        """
-        Configura kwargs para un agente LLM.
-
-        Aplica tres protecciones clave:
-        1. Sube max_tokens a un mínimo seguro (4000) si viene bajo.
-        2. Endurece el prompt con instrucciones anti-alucinación de IDs.
-        3. Propaga reasoning_effort y thinking_enabled al Agente.
-        """
         MIN_TOKENS_SEGUROS = 4000
 
         prompt_original = config.get('prompt', '')
         kwargs['modelo_llm'] = config.get('modelo', 'deepseek-v4-flash')
         kwargs['temperatura_llm'] = float(config.get('temperatura', 0.7))
+
+        # ✅ FASE 2d: consultar si hay una reescritura aprendida del feedback
+        # del usuario. Si existe, se usa en lugar del prompt original.
+        # La consulta es rápida (SQLite indexado por firma) y nunca lanza:
+        # si falla, se sigue con el prompt original.
+        prompt_final = prompt_original
+        try:
+            from learning.feedback_processor import FeedbackProcessor
+            reescrito = FeedbackProcessor.consultar_reescritura(
+                "agent_history.db", prompt_original
+            )
+            if reescrito:
+                self.logger.info(
+                    f"✨ PromptOptimizer: usando reescritura aprendida para "
+                    f"'{paso.nombre}'"
+                )
+                prompt_final = reescrito
+        except Exception as e:
+            self.logger.debug(f"consultar_reescritura no disponible: {e}")
 
         # ✅ Blindaje: thinking mode consume tokens del presupuesto
         max_tokens = int(config.get('max_tokens', MIN_TOKENS_SEGUROS) or MIN_TOKENS_SEGUROS)
@@ -285,7 +296,8 @@ class PlanBuilder:
         kwargs['thinking_enabled_llm'] = bool(config.get('thinking_enabled', False))
 
         # ✅ Endurecer prompt contra alucinación de IDs
-        prompt_endurecido = self._endurecer_prompt_llm(prompt_original)
+        # ⚠️ Se endurece el prompt FINAL (original o reescrito).
+        prompt_endurecido = self._endurecer_prompt_llm(prompt_final)
         kwargs['prompt_llm'] = prompt_endurecido
 
     def _endurecer_prompt_llm(self, prompt_original: str) -> str:

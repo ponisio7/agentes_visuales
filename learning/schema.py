@@ -68,6 +68,21 @@ SQL_CREAR_TABLAS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_reparaciones_tipo ON reparaciones_plan(tipo)",
+        """
+    CREATE TABLE IF NOT EXISTS prompts_reescritos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        firma TEXT NOT NULL,
+        prompt_original TEXT NOT NULL,
+        prompt_nuevo TEXT NOT NULL,
+        feedback_id INTEGER NOT NULL,
+        razon TEXT DEFAULT '',
+        fecha TEXT NOT NULL,
+        activo INTEGER DEFAULT 1,
+        FOREIGN KEY (feedback_id) REFERENCES feedback_usuario(id) ON DELETE CASCADE
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_prompts_reescritos_firma "
+    "ON prompts_reescritos(firma, activo)",
 ]
 
 
