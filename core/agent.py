@@ -349,7 +349,8 @@ class Agente:
     temperatura_llm: float = 0.7
     max_tokens_llm: int = 4000                  # ← default subido de 2000 a 4000
     reasoning_effort_llm: str = "low"
-    thinking_enabled_llm: bool = False          # ← NUEVO
+    thinking_enabled_llm: bool = False          
+    prompt_reescrito_id: int = 0        # ✅ FASE 4c: ID de la versión reescrita usada
     
     # ── Loop ──
     fuente_items: str = ""

@@ -255,30 +255,25 @@ class PlanBuilder:
         kwargs['timeout_http'] = int(config.get('timeout', 30))
 
     def _kwargs_llm(self, paso: StepPlan, config: Dict, kwargs: Dict):
+        """
+        Configura kwargs para un agente LLM.
+
+        Aplica tres protecciones clave:
+        1. Sube max_tokens a un mínimo seguro (4000) si viene bajo.
+        2. Endurece el prompt con instrucciones anti-alucinación de IDs.
+        3. Propaga reasoning_effort y thinking_enabled al Agente.
+
+        ✅ FASE 4c: A/B testing. En lugar de aplicar siempre la última
+        reescritura, consulta las dos versiones vigentes (activo y
+        candidato) y elige una con `PromptABEvaluator.elegir_variante`.
+        El id elegido se propaga al Agente para que `execution_recorder`
+        pueda registrar el uso.
+        """
         MIN_TOKENS_SEGUROS = 4000
 
         prompt_original = config.get('prompt', '')
         kwargs['modelo_llm'] = config.get('modelo', 'deepseek-v4-flash')
         kwargs['temperatura_llm'] = float(config.get('temperatura', 0.7))
-
-        # ✅ FASE 2d: consultar si hay una reescritura aprendida del feedback
-        # del usuario. Si existe, se usa en lugar del prompt original.
-        # La consulta es rápida (SQLite indexado por firma) y nunca lanza:
-        # si falla, se sigue con el prompt original.
-        prompt_final = prompt_original
-        try:
-            from learning.feedback_processor import FeedbackProcessor
-            reescrito = FeedbackProcessor.consultar_reescritura(
-                "agent_history.db", prompt_original
-            )
-            if reescrito:
-                self.logger.info(
-                    f"✨ PromptOptimizer: usando reescritura aprendida para "
-                    f"'{paso.nombre}'"
-                )
-                prompt_final = reescrito
-        except Exception as e:
-            self.logger.debug(f"consultar_reescritura no disponible: {e}")
 
         # ✅ Blindaje: thinking mode consume tokens del presupuesto
         max_tokens = int(config.get('max_tokens', MIN_TOKENS_SEGUROS) or MIN_TOKENS_SEGUROS)
@@ -291,14 +286,49 @@ class PlanBuilder:
             max_tokens = MIN_TOKENS_SEGUROS
         kwargs['max_tokens_llm'] = max_tokens
 
-        # ✅ Propagar reasoning y thinking al Agente
         kwargs['reasoning_effort_llm'] = config.get('reasoning_effort', 'low')
         kwargs['thinking_enabled_llm'] = bool(config.get('thinking_enabled', False))
 
-        # ✅ Endurecer prompt contra alucinación de IDs
-        # ⚠️ Se endurece el prompt FINAL (original o reescrito).
-        prompt_endurecido = self._endurecer_prompt_llm(prompt_final)
-        kwargs['prompt_llm'] = prompt_endurecido
+        # 1. Endurecer primero (idempotente).
+        prompt_endurecido = self._endurecer_prompt_llm(prompt_original)
+
+        # 2. ✅ FASE 4c: A/B testing.
+        #    - La firma se calcula sobre el prompt endurecido (es lo que
+        #      persiste en prompts_reescritos).
+        #    - consultar_versiones devuelve la activa y la candidata.
+        #    - elegir_variante decide con probabilidad (20% candidato).
+        prompt_final = prompt_endurecido
+        prompt_id_elegido = 0
+        try:
+            from learning.prompt_ab_evaluator import PromptABEvaluator
+            from learning.feedback_processor import FeedbackProcessor
+
+            db_path = "agent_history.db"
+            firma = FeedbackProcessor._firmar(prompt_endurecido)
+            versiones = PromptABEvaluator.consultar_versiones(db_path, firma)
+
+            activo = versiones.get("activo")
+            candidato = versiones.get("candidato")
+
+            if activo or candidato:
+                prompt_elegido, prompt_id_elegido = PromptABEvaluator.elegir_variante(
+                    prompt_activo=(activo or {}).get("prompt"),
+                    prompt_id_activo=(activo or {}).get("id"),
+                    prompt_candidato=(candidato or {}).get("prompt"),
+                    prompt_id_candidato=(candidato or {}).get("id"),
+                )
+                if prompt_elegido:
+                    prompt_final = prompt_elegido
+                    self.logger.info(
+                    f"✨ AB: '{paso.nombre}' usa prompt id={prompt_id_elegido} "
+                    f"(activo={'sí' if activo else 'no'}, "
+                    f"candidato={'sí' if candidato else 'no'})"
+                    )
+        except Exception as e:
+            self.logger.debug(f"AB no disponible: {e}")
+
+        kwargs['prompt_llm'] = prompt_final
+        kwargs['prompt_reescrito_id'] = int(prompt_id_elegido or 0)
 
     def _endurecer_prompt_llm(self, prompt_original: str) -> str:
         """
