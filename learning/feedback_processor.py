@@ -168,7 +168,7 @@ class FeedbackProcessor:
         reescritura = self._reescribir_con_llm(
             prompt_original=prompt_original,
             comentario=fb["comentario"],
-            agente=agente,
+            agente_row=agente,
         )
         if not reescritura:
             return {"procesado": False, "razon": "LLM no respondió"}
