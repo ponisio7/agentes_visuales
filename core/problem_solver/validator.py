@@ -115,7 +115,7 @@ class PlanValidator:
                     "}\n"
                 )
             if 'timeout' not in config:
-                config['timeout'] = 30
+                config['timeout'] = 60
 
         elif tipo == 'Shell':
             if 'comando' not in config or not config['comando']:

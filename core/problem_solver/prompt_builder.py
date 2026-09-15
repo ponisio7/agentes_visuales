@@ -261,7 +261,7 @@ class PromptBuilder:
     TYPE_CONFIGS = {
         "Python": {
             "codigo": "código Python que asigna la variable 'resultado'",
-            "timeout": 30,
+            "timeout": 60,
         },
         "Shell": {
             "comando": "comando shell",
@@ -308,10 +308,19 @@ class PromptBuilder:
         "**APIs Reales**: Usa URLs reales de APIs públicas (ej: Open-Meteo, GitHub API, JSONPlaceholder).",
         "**Prompts Claros**: Para LLM, escribe prompts específicos con formato de salida.",
         "**Justificación**: Explica brevemente POR QUÉ cada paso es necesario.",
-            # ✅ NUEVO: anti-repetición
         "**Sin Repeticiones**: NUNCA repitas la misma sección, lista o párrafo dos veces. "
         "Si el contenido generado no llega a la extensión pedida, AMPLÍA con nuevo material, "
         "no recicles el anterior. Un documento con secciones duplicadas es un documento roto.",
+        # ✅ NUEVO: evitar pasos masivos
+        "**Paso atómico, no masivo**: Un solo agente Python NO debe procesar "
+        "decenas de archivos a la vez si cada uno requiere IO pesado. "
+        "Divide en: (1) un paso que lista, (2) un Loop que procesa cada item, "
+        "o (3) limita el número de archivos a un máximo razonable (10-20). "
+        "El sandbox tiene timeout por paso; un paso que hace demasiado falla.",
+        "**Loop para IO pesado**: Si vas a leer/analizar N archivos o "
+        "hacer N peticiones HTTP, usa un agente Loop con `continuar_en_error=true` "
+        "y un timeout por item. NO hagas un bucle implícito dentro de un "
+        "agente Python: bloqueará el sandbox.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'
