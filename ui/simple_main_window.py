@@ -25,7 +25,6 @@ import random
 import string
 import time
 from datetime import datetime
-from typing import Optional
 
 from PyQt6.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QTextCursor, QFont, QPainter, QColor, QPen
@@ -35,7 +34,7 @@ from PyQt6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QDialog, QDialogButtonBox,  # ✅ FASE 2c
 )
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Optional
 from storage.database import Database
 from core.llm_client import obtener_llm_client_compartido
 from core.scheduler import Scheduler
@@ -660,10 +659,10 @@ class SimpleMainWindow(QMainWindow):
     # ── Ejecución ───────────────────────────────────────────────
     def _on_ejecutar(self):
         logger.info(
-        f"[EJECUTAR] llamado | _ejecutando={self._ejecutando} | "
-        f"solver={'OK' if self.solver else 'None'} | "
-        f"boton_enabled={self.btn_ejecutar.isEnabled()}"
-    )
+            f"[EJECUTAR] llamado | _ejecutando={self._ejecutando} | "
+            f"solver={'OK' if self.solver else 'None'} | "
+            f"boton_enabled={self.btn_ejecutar.isEnabled()}"
+        )
         if self._ejecutando:
             return
 
@@ -895,7 +894,7 @@ class SimpleMainWindow(QMainWindow):
         if self._ultima_ejecucion_id:
             self._quizas_pedir_feedback()
 
-        # ── FASE 2c: feedback del usuario ────────────────────────────
+    
     def _quizas_pedir_feedback(self):
         """
         Decide si pedir feedback (1 de cada 3 ejecuciones) y, si toca,
