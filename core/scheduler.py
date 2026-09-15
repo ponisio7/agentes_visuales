@@ -868,6 +868,10 @@ class Scheduler(QObject):
                     f"ℹ [{nombre_fallido}] No tiene dependientes activos",
                     "#6c757d"
                 )
+            # ✅ FIX BUG 3: notificar término si ya no quedan agentes activos.
+            # Sin esto, cuando el Plan B falla y se bloquean dependientes,
+            # la UI queda esperando `ejecucion_terminada` para siempre.
+            self._verificar_terminado_internal()
 
     def _intentar_plan_b(self, agente_fallido, razon: str) -> bool:
         """
@@ -919,6 +923,8 @@ class Scheduler(QObject):
                         ag.progreso = 100
                         self.completed.add(ag.id)
                         self.agente_actualizado.emit(ag.id)
+                    # ✅ FIX BUG 3: notificar término tras bloquear.
+                    self._verificar_terminado_internal()
                 return False
 
             # ⬇️ NUEVO: mensaje de éxito tras generar plan_b
@@ -963,6 +969,7 @@ class Scheduler(QObject):
             # 7. Arrancar el nuevo plan
             self._plan_b_en_progreso = False
             self.iniciar()
+
             return True
 
         except Exception as e:
