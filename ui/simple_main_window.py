@@ -902,7 +902,7 @@ class SimpleMainWindow(QMainWindow):
         si procede, se procesa en un hilo de background para reescribir
         el prompt del agente LLM relevante.
         """
-        import random
+        
         if random.random() >= 1 / 3:
             return
 
