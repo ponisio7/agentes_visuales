@@ -44,6 +44,7 @@ def _crear_escenario(nombre, firma, activo_score, candidato_scores):
     Devuelve (activo_id, candidato_id).
     """
     with sqlite3.connect(DB, timeout=10) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=10000")
 
         # Limpiar versiones de esta firma

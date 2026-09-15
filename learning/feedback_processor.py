@@ -383,7 +383,7 @@ class FeedbackProcessor:
         significativas = [
             p for p in palabras
             if p not in stopwords and len(p) > 2
-        ][:2]  # primeras 2 palabras significativas
+        ][:1]  # primera palabra significativas
 
         if not significativas:
             # Fallback: si todo son stopwords, usar las primeras palabras
