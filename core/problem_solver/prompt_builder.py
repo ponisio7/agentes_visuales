@@ -308,6 +308,10 @@ class PromptBuilder:
         "**APIs Reales**: Usa URLs reales de APIs públicas (ej: Open-Meteo, GitHub API, JSONPlaceholder).",
         "**Prompts Claros**: Para LLM, escribe prompts específicos con formato de salida.",
         "**Justificación**: Explica brevemente POR QUÉ cada paso es necesario.",
+            # ✅ NUEVO: anti-repetición
+        "**Sin Repeticiones**: NUNCA repitas la misma sección, lista o párrafo dos veces. "
+        "Si el contenido generado no llega a la extensión pedida, AMPLÍA con nuevo material, "
+        "no recicles el anterior. Un documento con secciones duplicadas es un documento roto.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'

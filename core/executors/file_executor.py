@@ -962,6 +962,16 @@ class FileExecutor:
 
         # ── 2. Markdown → HTML ──
         try:
+            # ✅ Normalizar H1: si el contenido empieza por '## Título' y el título
+            # del dict coincide, subirlo a '# Título' para que el CSS lo renderice
+            # como H1 (más grande, con línea inferior).
+            if titulo and isinstance(texto, str):
+                texto_strip = texto.lstrip()
+                match_h2 = re.match(r'^##\s+(.+?)\s*\n', texto_strip)
+                if match_h2:
+                    h2_texto = match_h2.group(1).strip()
+                    if h2_texto.lower() == str(titulo).strip().lower():
+                        texto = '# ' + h2_texto + '\n' + texto_strip[match_h2.end():]
             html_cuerpo = md_lib.markdown(
                 texto,
                 extensions=["extra", "tables", "fenced_code", "codehilite",
