@@ -1,4 +1,3 @@
-tests/
 # Python cache y compilados
 __pycache__/
 *.py[cod]
@@ -65,3 +64,5 @@ estrella.svg
 
 # Modelos entrenados (se regeneran con el uso de la app)
 learning_models/
+.~lock.*
+~
