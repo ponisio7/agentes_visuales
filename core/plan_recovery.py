@@ -208,11 +208,11 @@ class PlanRecovery:
             )
 
             # 6. Construir el ExecutionPlan
-            plan_b = self.problem_solver._construir_plan(
+            plan_b = self.problem_solver.builder.construir_plan(
                 problema_original, plan_dict
             )
             if plan_b is None:
-                logger.warning("PlanRecovery: _construir_plan devolvió None")
+                logger.warning("PlanRecovery: construir_plan devolvió None")
                 return None
 
             # 7. Generar los agentes a partir de los pasos (igual que hace
@@ -220,7 +220,7 @@ class PlanRecovery:
             if not getattr(plan_b, "agentes_generados", None):
                 try:
                     plan_b.agentes_generados = (
-                        self.problem_solver._generar_agentes(plan_b)
+                        self.problem_solver.builder.generar_agentes(plan_b)
                     )
                     logger.info(
                         f"PlanRecovery: {len(plan_b.agentes_generados)} "
@@ -228,7 +228,7 @@ class PlanRecovery:
                     )
                 except Exception as e:
                     logger.exception(
-                        f"PlanRecovery: _generar_agentes falló: {e}"
+                        f"PlanRecovery: generar_agentes falló: {e}"
                     )
                     return None
 
@@ -405,12 +405,12 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
                 return None
 
             # Construir plan
-            plan_b = self.problem_solver._construir_plan(
+            plan_b = self.problem_solver.builder.construir_plan(
                 problema_original, plan_dict
             )
             if plan_b is None:
                 logger.warning(
-                    "PlanRecovery reintento: _construir_plan devolvió None"
+                    "PlanRecovery reintento: construir_plan devolvió None"
                 )
                 return None
 
@@ -418,11 +418,11 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
             if not getattr(plan_b, "agentes_generados", None):
                 try:
                     plan_b.agentes_generados = (
-                        self.problem_solver._generar_agentes(plan_b)
+                        self.problem_solver.builder.generar_agentes(plan_b)
                     )
                 except Exception as e:
                     logger.exception(
-                        f"PlanRecovery reintento: _generar_agentes falló: {e}"
+                        f"PlanRecovery reintento: generar_agentes falló: {e}"
                     )
                     return None
 
@@ -601,7 +601,7 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
                     return data["plan"]
                 if isinstance(data["plan"], list):
                     return {"pasos": data["plan"]}
-            # Dict sin pasos: devolverlo tal cual (que _construir_plan decida)
+            # Dict sin pasos: devolverlo tal cual (que construir_plan decida)
             return data
         if isinstance(data, list):
             return {"pasos": data}
