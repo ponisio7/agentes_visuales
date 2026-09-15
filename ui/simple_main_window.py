@@ -12,7 +12,7 @@ Estética: terminal retro (fósforo verde).
 """
 import os
 import sys
-
+import sqlite3
 # Si se ejecuta como script suelto (python ui/simple_main_window.py),
 # añadir la raíz del proyecto al sys.path para que resuelvan
 # los imports storage.*, core.*, learning.*
@@ -854,11 +854,33 @@ class SimpleMainWindow(QMainWindow):
 
     @pyqtSlot()
     def _on_ejecucion_terminada(self):
+        logger.info(
+            f"[TERMINADA] _tiempo_inicio_ejecucion={self._tiempo_inicio_ejecucion} "
+            f"_ultima_ejecucion_id={self._ultima_ejecucion_id} "
+            f"_ejecutando={self._ejecutando}"
+        )
+
         self._ejecutando = False
         self.btn_ejecutar.setEnabled(True)
         self.btn_detener.setEnabled(False)
         self.progress.setValue(100)
 
+        self._actualizar_status_final()
+        self._log("── ejecución finalizada ──", TXT_MUTED)
+
+        ejecucion_id = self._persistir_ejecucion_si_hay_plan()
+        self._ultima_ejecucion_id = ejecucion_id or 0
+        self._tiempo_inicio_ejecucion = None
+
+        if self._ultima_ejecucion_id:
+            logger.info("[TERMINADA] llamando a _quizas_pedir_feedback")
+            self._quizas_pedir_feedback()
+        else:
+            logger.info("[TERMINADA] NO se llama a feedback (id=0)")
+
+
+    def _actualizar_status_final(self):
+        """Actualiza el label de estado según los resultados del scheduler."""
         stats = self.scheduler.obtener_estadisticas()
         completados = stats.get("completados", 0)
         errores = stats.get("errores", 0)
@@ -871,11 +893,24 @@ class SimpleMainWindow(QMainWindow):
                 f"⚠ terminado ({completados} ok, {errores} err, {bloqueados} bloq)",
                 AMBER_WARN,
             )
-        self._log("── ejecución finalizada ──", TXT_MUTED)
 
-        # Persistir + alimentar learning
-        if self._tiempo_inicio_ejecucion:
+
+    def _persistir_ejecucion_si_hay_plan(self) -> int | None:
+        """Persiste la ejecución en aprendizaje si hay un plan activo.
+
+        Si registrar_ejecucion_en_aprendizaje falla o devuelve None, cae a
+        _obtener_ultimo_ejecucion_id_fallback() para no bloquear el feedback.
+        """
+        if self._ultimo_plan is None:
+            logger.info("[TERMINADA] _ultimo_plan es None, no se persiste")
+            return None
+
+        duracion_total = 0.0
+        if self._tiempo_inicio_ejecucion is not None:
             duracion_total = time.time() - self._tiempo_inicio_ejecucion
+
+        ejecucion_id = None
+        try:
             ejecucion_id = registrar_ejecucion_en_aprendizaje(
                 scheduler=self.scheduler,
                 db=self.db,
@@ -883,16 +918,44 @@ class SimpleMainWindow(QMainWindow):
                 problema=self._ultimo_problema,
                 duracion_total=duracion_total,
             )
-            self._ultima_ejecucion_id = ejecucion_id or 0
-            if ejecucion_id:
-                self._log(f"💾 ejecución guardada (ID: {ejecucion_id})", TXT_MUTED)
-                self._log("🧠 aprendizaje lanzado en background", TXT_MUTED)
-            self._tiempo_inicio_ejecucion = None
+            logger.info(f"[TERMINADA] registrar_ejecucion devolvió {ejecucion_id}")
+        except Exception as e:
+            logger.warning(f"[TERMINADA] error persistiendo: {e}", exc_info=True)
+            ejecucion_id = None
+        print(f"[TERMINADA] registrar_ejecucion devolvió {ejecucion_id}", flush=True)
+        # ✅ FIX: si el aprendizaje falló, obtener el último ejecucion_id
+        # de la BD directamente. Sin esto, el feedback nunca se dispara
+        # cuando el aprendizaje falla silenciosamente.
+        if ejecucion_id is None:
+            ejecucion_id = self._obtener_ultimo_ejecucion_id_fallback()
 
-        # ✅ FASE 2c: feedback (fuera del if, para que se dispare siempre
-        # que haya una ejecución completa con id asignado).
-        if self._ultima_ejecucion_id:
-            self._quizas_pedir_feedback()
+        if ejecucion_id:
+            self._log(f"💾 ejecución guardada (ID: {ejecucion_id})", TXT_MUTED)
+            self._log("🧠 aprendizaje lanzado en background", TXT_MUTED)
+        print(f"[TERMINADA] persistido, ejecucion_id={ejecucion_id}", flush=True)
+        logger.info(f"[TERMINADA] persistido, ejecucion_id={ejecucion_id}")
+        return ejecucion_id
+
+
+    def _obtener_ultimo_ejecucion_id_fallback(self) -> int | None:
+        """Fallback: último id de la tabla ejecuciones cuando el registro normal falla.
+
+        Nota: puede no corresponder exactamente a esta ejecución si hay
+        ejecuciones concurrentes, pero es suficiente para disparar el feedback.
+        """
+        try:
+            with sqlite3.connect(self.db.db_path, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                row = conn.execute("SELECT MAX(id) AS ultimo FROM ejecuciones").fetchone()
+                if row and row["ultimo"]:
+                    ultimo_id = int(row["ultimo"])
+                    print(f"[TERMINADA] fallback: usando último id {ultimo_id}", flush=True)
+                    logger.info(f"[TERMINADA] fallback: usando último id {ultimo_id}")
+                    return ultimo_id
+        except Exception as e:
+            print(f"[TERMINADA] fallback falló: {e}", flush=True)
+            logger.warning(f"[TERMINADA] fallback falló: {e}")
+        return None
 
     
     def _quizas_pedir_feedback(self):
@@ -902,9 +965,12 @@ class SimpleMainWindow(QMainWindow):
         si procede, se procesa en un hilo de background para reescribir
         el prompt del agente LLM relevante.
         """
-        
-        if random.random() >= 1 / 3:
+        r = random.random()
+        logger.info(f"[FEEDBACK] random={r:.3f} umbral={1/3:.3f} → {'pide' if r < 1/3 else 'no pide'}")
+        if r >= 1/3:
+            logger.info("🥶 adentro a r >= 1 / 3 simple_main_windows.py")
             return
+        
 
         if not self._ultimo_plan:
             return
@@ -944,7 +1010,6 @@ class SimpleMainWindow(QMainWindow):
         comentario = datos["comentario"]
 
         try:
-            import sqlite3
             with sqlite3.connect(self.db.db_path, timeout=10) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 cur = conn.execute(
