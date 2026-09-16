@@ -300,31 +300,56 @@ class FeedbackProcessor:
             return None
 
     def _guardar_reescritura(
-    self,
-    prompt_original: str,
-    prompt_nuevo: str,
-    razon: str,
-    feedback_id: int,
-) -> Optional[int]:
+        self,
+        prompt_original: str,
+        prompt_nuevo: str,
+        razon: str,
+        feedback_id: int,
+    ) -> Optional[int]:
+        """
+        Guarda una reescritura y calcula su embedding para matching
+        semántico (Fase 5b).
+
+        El embedding se calcula sobre `prompt_original`, que es el
+        prompt crudo que el builder consultará después.
+        """
         try:
             firma = self._firmar(prompt_original)
+
+            # ✅ FASE 5b: calcular embedding del prompt crudo
+            embedding_bytes = None
+            embedding_model = ""
+            try:
+                from learning.embedding_matcher import obtener_matcher
+                matcher = obtener_matcher()
+                embedding_bytes = matcher.calcular(prompt_original)
+                if embedding_bytes is not None:
+                    embedding_model = matcher.modelo
+                    logger.debug(
+                        f"Embedding calculado para firma {firma[:8]} "
+                        f"({len(embedding_bytes)} bytes)"
+                    )
+            except Exception as e:
+                logger.warning(f"No se pudo calcular embedding: {e}")
+
             with sqlite3.connect(self.db_path, timeout=10) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 # Desactivar versiones anteriores de la misma firma.
-                # Mantenemos `activo` por compatibilidad y añadimos `estado`.
                 conn.execute(
                     "UPDATE prompts_reescritos "
                     "SET activo = 0, estado = 'descartado' "
-                    "WHERE firma = ?",
+                    "WHERE firma = ? AND estado = 'activo'",
                     (firma,),
                 )
                 cur = conn.execute(
                     """INSERT INTO prompts_reescritos
+                       (firma, prompt_original, prompt_nuevo, feedback_id,
+                        razon, fecha, activo, estado, n_usos,
+                        embedding, embedding_model)
+                       VALUES (?, ?, ?, ?, ?, ?, 1, 'candidato', 0, ?, ?)""",
                     (firma, prompt_original, prompt_nuevo, feedback_id,
-                        razon, fecha, activo, estado, n_usos)
-                    VALUES (?, ?, ?, ?, ?, ?, 1, 'candidato', 0)""",
-                    (firma, prompt_original, prompt_nuevo, feedback_id,
-                    razon[:500], datetime.now().isoformat()),
+                     razon[:500], datetime.now().isoformat(),
+                     embedding_bytes, embedding_model),
                 )
                 conn.commit()
                 return cur.lastrowid
@@ -383,7 +408,7 @@ class FeedbackProcessor:
         significativas = [
             p for p in palabras
             if p not in stopwords and len(p) > 2
-        ][:2]  # primeras 2 palabras significativas
+        ][:1]  # primera palabra significativas
 
         if not significativas:
             # Fallback: si todo son stopwords, usar las primeras palabras
