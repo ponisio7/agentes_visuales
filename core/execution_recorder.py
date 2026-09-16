@@ -125,7 +125,9 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
             logger.info(f"🧠 Aprendizaje procesado para ejecución {ejecucion_id}")
         except Exception as e:
             logger.debug(f"Aprendizaje en background falló: {e}")
-        return ejecucion_id       # ← esta línea NO EXISTE en tu código actual
+
+    threading.Thread(target=_worker, name="learning-recorder", daemon=False).start()
+    return ejecucion_id
 
 def _snapshot_de_agente(a) -> Optional[Dict[str, Any]]:
     try:

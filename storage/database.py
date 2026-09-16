@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 7  # ✅ FASE 4a: A/B testing de reescrituras
+DB_VERSION = 8  # ✅ FASE 5b: columna embedding en prompts_reescritos
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -844,6 +844,33 @@ class Database:
                             logger.info("✅ Migración 6→7: tabla 'prompt_reescrito_usos' creada")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 6→7: {e}")
+
+                # ✅ Migración 7 → 8: embeddings para matching semántico.
+                #    Añade columnas embedding (BLOB) y embedding_model (TEXT) a
+                #    prompts_reescritos, para poder buscar reescrituras por similitud
+                #    coseno en lugar de por firma exacta.
+                if current_version < 8:
+                    try:
+                        tablas = self._obtener_tablas(conn)
+                        if 'prompts_reescritos' in tablas:
+                            cols = self._obtener_columnas(conn, 'prompts_reescritos')
+                            if 'embedding' not in cols:
+                                cursor.execute(
+                                    "ALTER TABLE prompts_reescritos ADD COLUMN embedding BLOB"
+                                )
+                                logger.info("✅ Migración 7→8: columna 'embedding' añadida")
+                            if 'embedding_model' not in cols:
+                                cursor.execute(
+                                    "ALTER TABLE prompts_reescritos "
+                                    "ADD COLUMN embedding_model TEXT DEFAULT ''"
+                                )
+                                logger.info("✅ Migración 7→8: columna 'embedding_model' añadida")
+                            cursor.execute(
+                                "CREATE INDEX IF NOT EXISTS idx_prompts_reescritos_embedding_model "
+                                "ON prompts_reescritos(embedding_model)"
+                            )
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 7→8: {e}")
 
                 # Actualizar versión
                 cursor.execute("DELETE FROM version")

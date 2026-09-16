@@ -38,14 +38,14 @@ TRANSICIONES_VALIDAS = {
         EstadoAgente.CANCELADO,    # → Cancelado (por usuario)
         EstadoAgente.BLOQUEADO,    # → Bloqueado (dependencia eliminada)
     },
-    
+
     # Desde EN_COLA
     EstadoAgente.EN_COLA: {
         EstadoAgente.LISTO,        # → Listo para ejecutar
         EstadoAgente.CANCELADO,    # → Cancelado
         EstadoAgente.BLOQUEADO,    # → Bloqueado
     },
-    
+
     # Desde ESPERANDO
     EstadoAgente.ESPERANDO: {
         EstadoAgente.LISTO,        # → Listo (dependencias resueltas)
@@ -53,14 +53,14 @@ TRANSICIONES_VALIDAS = {
         EstadoAgente.BLOQUEADO,    # → Bloqueado
         EstadoAgente.SALTADO,      # → Saltado (dependencia fallida)
     },
-    
+
     # Desde LISTO
     EstadoAgente.LISTO: {
         EstadoAgente.EJECUTANDO,   # → Ejecutando
         EstadoAgente.CANCELADO,    # → Cancelado
         EstadoAgente.BLOQUEADO,    # → Bloqueado
     },
-    
+
     # Desde EJECUTANDO
     EstadoAgente.EJECUTANDO: {
         EstadoAgente.COMPLETADO,   # → Completado (éxito)
@@ -69,7 +69,7 @@ TRANSICIONES_VALIDAS = {
         EstadoAgente.REINTENTANDO, # → Reintentando (falló pero hay reintentos)
         EstadoAgente.CANCELADO,    # → Cancelado (por usuario)
     },
-    
+
     # Desde REINTENTANDO
     EstadoAgente.REINTENTANDO: {
         EstadoAgente.EN_COLA,      # → En cola (reintento programado)
@@ -77,7 +77,7 @@ TRANSICIONES_VALIDAS = {
         EstadoAgente.TIMEOUT,      # → Timeout
         EstadoAgente.CANCELADO,    # → Cancelado
     },
-    
+
     # Estados terminales (no tienen transiciones salientes)
     EstadoAgente.COMPLETADO: set(),
     EstadoAgente.ERROR: set(),
@@ -184,7 +184,7 @@ class Scheduler(QObject):
         self._plan_original = plan_original
         self._plan_b_intentos = 0
         self._plan_b_en_progreso = False
-        logger.debug("Plan B contexto inyectado en Scheduler")  
+        logger.debug("Plan B contexto inyectado en Scheduler")
 
     # ============================================================
     # CONEXIÓN DEL BRIDGE
@@ -497,10 +497,10 @@ class Scheduler(QObject):
             'agente_nombre': agente.nombre,
             'timestamp_inicio': time.time()
         })
-        
+
         with self._lock:
             self._tokens_activos[agente.id] = token
-        
+
         try:
             # ── FASE 2: INICIO ──
             tiempo_inicio = time.time()
@@ -517,7 +517,7 @@ class Scheduler(QObject):
                         "#ffc107"
                     )
                     return
-                
+
                 agente.tiempo_inicio = tiempo_inicio
                 agente.progreso = 10
                 agente._bridge = self.bridge
@@ -547,14 +547,14 @@ class Scheduler(QObject):
                             except ValueError:
                                 agente.estado = EstadoAgente.SALTADO
                                 agente.mensaje = f"⏭️ Dependencia '{dep.nombre}' falló"
-                            
+
                             agente.progreso = 100
                             self.log_mensaje.emit(
                                 f"⏭️ [{agente.nombre}] Saltado: dependencia '{dep.nombre}' falló",
                                 "#6c757d"
                             )
                             self.agente_actualizado.emit(agente.id)
-                            
+
                             with self._lock:
                                 self.completed.add(agente.id)
                                 self.running.discard(agente.id)
@@ -562,7 +562,7 @@ class Scheduler(QObject):
                                 self._verificar_terminado_internal()
                                 self._intentar_lanzar_internal()
                             return
-                        
+
                         if dep and dep.resultado is not None and dep.estado == EstadoAgente.COMPLETADO:
                             contexto[dep.nombre] = dep.resultado
                             contexto[dep_id] = dep.resultado
@@ -579,9 +579,9 @@ class Scheduler(QObject):
             self._avisar_riesgo_aprendizaje(agente)
 
             try:
-                
+
                 exito, mensaje, resultado = AgentExecutor.ejecutar(
-                    agente, 
+                    agente,
                     contexto,
                     cancellation_token=token  # ← PASAR EL TOKEN
                 )
@@ -621,7 +621,7 @@ class Scheduler(QObject):
                 if token.esta_cancelado() and not fue_cancelado:
                     fue_cancelado = True
                     razon = token.obtener_metadata('razon_cancelacion', 'Cancelado')
-                
+
                 self._cancelados.discard(agente.id)
 
                 if fue_cancelado:
@@ -639,7 +639,7 @@ class Scheduler(QObject):
                         "#6c757d"
                     )
                     self._bloquear_dependientes(agente.id, f"{razon}")
-                    
+
                 elif exito:
                     try:
                         agente.transicionar_a(
@@ -658,15 +658,15 @@ class Scheduler(QObject):
                         f"✅ [{agente.nombre}] Completado en {duracion:.2f}s → {resumen_resultado}",
                         "#28a745"
                     )
-                    
+
                 else:
                     # ── Verificar si fue timeout ──
                     es_timeout = (
-                        "timeout" in mensaje.lower() or 
-                        "excedió" in mensaje.lower() or 
+                        "timeout" in mensaje.lower() or
+                        "excedió" in mensaje.lower() or
                         "timed out" in mensaje.lower()
                     )
-                    
+
                     if es_timeout:
                         try:
                             agente.transicionar_a(
@@ -683,7 +683,7 @@ class Scheduler(QObject):
                             "#dc3545"
                         )
                         self._bloquear_dependientes(agente.id, f"Timeout: {mensaje[:100]}")
-                        
+
                     # ── Verificar reintentos ──
                     elif agente.reintentos < agente.max_reintentos:
                         agente.reintentos += 1
@@ -714,7 +714,7 @@ class Scheduler(QObject):
                         self.agente_actualizado.emit(agente.id)
                         self._intentar_lanzar_internal()
                         return
-                        
+
                     else:
                         # ── Error final (sin más reintentos) ──
                         try:
@@ -738,10 +738,10 @@ class Scheduler(QObject):
                 # ── Actualizar conjuntos de estado ──
                 self.running.discard(agente.id)
                 if agente.estado in (
-                    EstadoAgente.COMPLETADO, 
-                    EstadoAgente.ERROR, 
+                    EstadoAgente.COMPLETADO,
+                    EstadoAgente.ERROR,
                     EstadoAgente.TIMEOUT,
-                    EstadoAgente.CANCELADO, 
+                    EstadoAgente.CANCELADO,
                     EstadoAgente.SALTADO,
                     EstadoAgente.BLOQUEADO
                 ):
@@ -827,7 +827,7 @@ class Scheduler(QObject):
             dependientes_bloqueados = []
             agente_fallido = self.agentes.get(agente_id)
             nombre_fallido = agente_fallido.nombre if agente_fallido else "desconocido"
-            
+
             # Buscar todos los agentes que dependen de 'agente_id'
             for otro_agente in self.agentes.values():
                 if agente_id in (otro_agente.dependencias_ids or []):
@@ -837,7 +837,7 @@ class Scheduler(QObject):
                         otro_agente.mensaje = f"🚫 Bloqueado porque '{nombre_fallido}' {razon}"
                         otro_agente.progreso = 100
                         dependientes_bloqueados.append(otro_agente.nombre)
-                        
+
                         # Cancelar token si existe
                         if otro_agente.id in self._tokens_activos:
                             token = self._tokens_activos[otro_agente.id]
@@ -848,11 +848,11 @@ class Scheduler(QObject):
                                     token.cancel()
                             except Exception:
                                 pass
-                        
+
                         self.running.discard(otro_agente.id)
                         self.completed.add(otro_agente.id)
                         self.agente_actualizado.emit(otro_agente.id)
-            
+
             # ── Log de bloqueos ──
             if dependientes_bloqueados:
                 nombres = ', '.join(dependientes_bloqueados)
@@ -970,12 +970,15 @@ class Scheduler(QObject):
             self._plan_b_en_progreso = False
             self.iniciar()
 
+            #log temporal al final de _intentar_plan_b ---> logger.info(f"FIN _intentar_plan_b: intentos={self._plan_b_intentos}, m...")
+            #logger.info(f"FIN _intentar_plan_b: intentos={self._plan_b_intentos}, max={self._max_intentos_plan_b}")
             return True
 
         except Exception as e:
             logger.exception(f"Error en Plan B: {e}")
             self._plan_b_en_progreso = False
             return False
+
 
     # ============================================================
     # HELPERS PARA LOG DE RESULTADOS
@@ -1000,7 +1003,7 @@ class Scheduler(QObject):
                 url = resultado.get('url', '')
                 json_data = resultado.get('json')  # ← SIEMPRE presente, puede ser None
                 body = resultado.get('body', '')
-                
+
                 # Si hay JSON, mostrar resumen del JSON
                 if json_data is not None:
                     if isinstance(json_data, dict):
@@ -1015,17 +1018,17 @@ class Scheduler(QObject):
                         return f"HTTP {status} | {url[:40]} | JSON array: {len(json_data)} items"
                     else:
                         return f"HTTP {status} | {url[:40]} | JSON: {str(json_data)[:max_len]}"
-                
+
                 # Si no hay JSON pero hay body
                 if body:
                     body_preview = body[:max_len].replace('\n', ' ').strip()
                     if body_preview:
                         return f"HTTP {status} | {url[:40]} | body: {body_preview}"
-                
+
                 # Si hay error
                 if resultado.get('error'):
                     return f"HTTP {status} | {url[:40]} | error: {resultado['error'][:max_len]}"
-                
+
                 return f"HTTP {status} | {url[:50]}"
 
             # ── LLM ──
@@ -1033,7 +1036,7 @@ class Scheduler(QObject):
                 respuesta = resultado.get('respuesta', '')
                 tokens = resultado.get('tokens_uso', {})
                 token_info = f" ({tokens.get('total', '?')} tokens)" if tokens else ""
-                
+
                 if len(respuesta) > max_len:
                     return f"{respuesta[:max_len]}...{token_info}"
                 return f"{respuesta}{token_info}" if respuesta else "sin respuesta"
@@ -1043,7 +1046,7 @@ class Scheduler(QObject):
                 stdout = resultado.get('stdout', '')
                 stderr = resultado.get('stderr', '')
                 codigo = resultado.get('codigo', '?')
-                
+
                 if stdout:
                     preview = stdout[:max_len] + "..." if len(stdout) > max_len else stdout
                     preview = preview.replace('\n', ' ').strip()
@@ -1075,7 +1078,7 @@ class Scheduler(QObject):
             # ── Python ──
             elif tipo == TipoAgente.PYTHON:
                 if isinstance(resultado, dict):
-                    claves_interes = [k for k in ('status', 'mensaje', 'data', 'resultado', 'output', 'result') 
+                    claves_interes = [k for k in ('status', 'mensaje', 'data', 'resultado', 'output', 'result')
                                     if k in resultado]
                     if claves_interes:
                         partes = []
@@ -1089,12 +1092,12 @@ class Scheduler(QObject):
                                     v_str = v_str[:57] + "..."
                             partes.append(f"{k}={v_str}")
                         return " | ".join(partes)
-                    
+
                     claves = list(resultado.keys())[:4]
                     preview = {k: resultado[k] for k in claves}
                     texto = str(preview)
                     return texto[:max_len] + "..." if len(texto) > max_len else texto
-                
+
                 texto = str(resultado)
                 return texto[:max_len] + "..." if len(texto) > max_len else texto
 
@@ -1104,7 +1107,7 @@ class Scheduler(QObject):
                 preview = {k: resultado[k] for k in claves}
                 texto = str(preview)
                 return texto[:max_len] + "..." if len(texto) > max_len else texto
-            
+
             texto = str(resultado)
             return texto[:max_len] + "..." if len(texto) > max_len else texto
 
@@ -1115,44 +1118,44 @@ class Scheduler(QObject):
     def _resumir_error_log(self, agente: Agente, mensaje: str, resultado: Any) -> str:
         """
         Genera un resumen del error para el log.
-        
+
         Args:
             agente: El agente que produjo el error
             mensaje: Mensaje de error
             resultado: Resultado parcial (si existe)
-            
+
         Returns:
             str: Resumen del error
         """
         max_len = self._MAX_RESULTADO_LOG
-        
+
         # Usar el mensaje de error
         resumen = str(mensaje) if mensaje else "Error desconocido"
         resumen = resumen.replace('\n', ' ').strip()
-        
+
         # Extraer información adicional del resultado
         if resultado and isinstance(resultado, dict):
             extras = []
-            
+
             # Buscar información de error en el resultado
             if 'stderr' in resultado and resultado['stderr']:
                 stderr = str(resultado['stderr'])[:100].replace('\n', ' ').strip()
                 extras.append(f"stderr: {stderr}")
-            
+
             if 'error' in resultado and resultado['error']:
                 error_detail = str(resultado['error'])[:100].replace('\n', ' ').strip()
                 extras.append(f"error: {error_detail}")
-            
+
             if 'stdout' in resultado and resultado['stdout']:
                 stdout = str(resultado['stdout'])[:80].replace('\n', ' ').strip()
                 extras.append(f"stdout: {stdout}")
-            
+
             if 'status_code' in resultado:
                 extras.append(f"HTTP {resultado['status_code']}")
-            
+
             if extras:
                 resumen = f"{resumen[:100]} | " + " | ".join(extras)
-        
+
         # Truncar si es necesario
         return resumen[:max_len] + "..." if len(resumen) > max_len else resumen
 
@@ -1203,17 +1206,17 @@ class Scheduler(QObject):
         if self._plan_b_en_progreso:
             return
         stats = self._calcular_estadisticas_internal()
-        total_terminados = stats['completados'] + stats['errores'] + stats['cancelados'] + stats.get('bloqueados', 0)  # ← AÑADIR
+        total_terminados = stats['completados'] + stats['errores'] + stats['cancelados'] + stats.get('bloqueados', 0)
 
         if total_terminados == stats['total'] and stats['total'] > 0:
             if not self._terminado_notificado:
                 self.ejecutando = False
                 self.pausado = False
                 self._terminado_notificado = True
-                # ⬇️ PARCHE PLAN B: resetear contador al terminar la ejecución
-                self._plan_b_intentos = 0
                 self.ejecucion_terminada.emit()
                 self.estado_cambiado.emit(False)
+            # logger temporal logger.info(f"TERMINADO: intentos_plan_b={self._plan_b_intentos}")
+            #logger.info(f"TERMINADO: intentos_plan_b={self._plan_b_intentos}")
 
     # ============================================================
     # CONTROL DE EJECUCIÓN (API pública)
@@ -1292,7 +1295,7 @@ class Scheduler(QObject):
                 if token.esta_activo():
                     token.cancelar("Ejecución detenida por usuario")
                     cancelados += 1
-            
+
             if cancelados > 0:
                 self.log_mensaje.emit(
                     f"⏹ Cancelados {cancelados} workers en ejecución",

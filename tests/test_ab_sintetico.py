@@ -47,17 +47,24 @@ def _crear_escenario(nombre, firma, activo_score, candidato_scores):
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA busy_timeout=10000")
 
+        # Reutilizar un feedback existente para satisfacer la FK
+        cur = conn.execute("SELECT id FROM feedback_usuario LIMIT 1")
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError("No hay feedback_usuario en la DB; el test necesita al menos uno")
+        feedback_id = row[0]
+
         # Limpiar versiones de esta firma
         conn.execute("DELETE FROM prompts_reescritos WHERE firma = ?", (firma,))
 
-        # Crear activo
+        # Crear activo (usa feedback_id real)
         cur = conn.execute(
             """INSERT INTO prompts_reescritos
                (firma, prompt_original, prompt_nuevo, feedback_id, razon,
                 fecha, activo, estado, n_usos)
-               VALUES (?, ?, ?, 0, ?, ?, 1, 'activo', 0)""",
+               VALUES (?, ?, ?, ?, ?, ?, 1, 'activo', 0)""",
             (firma, f"[TEST] prompt original {nombre}", f"[TEST] activo {nombre}",
-             "sintético", datetime.now().isoformat()),
+             feedback_id, "sintético", datetime.now().isoformat()),
         )
         activo_id = cur.lastrowid
 
@@ -66,9 +73,9 @@ def _crear_escenario(nombre, firma, activo_score, candidato_scores):
             """INSERT INTO prompts_reescritos
                (firma, prompt_original, prompt_nuevo, feedback_id, razon,
                 fecha, activo, estado, n_usos)
-               VALUES (?, ?, ?, 0, ?, ?, 0, 'candidato', 0)""",
+               VALUES (?, ?, ?, ?, ?, ?, 0, 'candidato', 0)""",
             (firma, f"[TEST] prompt original {nombre}", f"[TEST] candidato {nombre}",
-             "sintético", datetime.now().isoformat()),
+             feedback_id, "sintético", datetime.now().isoformat()),
         )
         candidato_id = cur.lastrowid
 

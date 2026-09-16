@@ -68,7 +68,7 @@ SQL_CREAR_TABLAS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_reparaciones_tipo ON reparaciones_plan(tipo)",
-            """
+    """
     CREATE TABLE IF NOT EXISTS prompts_reescritos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         firma TEXT NOT NULL,
@@ -77,12 +77,16 @@ SQL_CREAR_TABLAS = [
         feedback_id INTEGER NOT NULL,
         razon TEXT DEFAULT '',
         fecha TEXT NOT NULL,
-        activo INTEGER DEFAULT 1,           -- legacy, mantenido por compatibilidad
-        estado TEXT DEFAULT 'candidato',    -- 'candidato' | 'activo' | 'descartado'
-        n_usos INTEGER DEFAULT 0,           -- cuántas veces se ha usado esta versión
+        activo INTEGER DEFAULT 1,
+        estado TEXT DEFAULT 'candidato',
+        n_usos INTEGER DEFAULT 0,
+        embedding BLOB,                       -- ✅ FASE 5b: vector del prompt_original
+        embedding_model TEXT DEFAULT '',      -- ✅ FASE 5b: nombre del modelo usado
         FOREIGN KEY (feedback_id) REFERENCES feedback_usuario(id) ON DELETE CASCADE
     )
     """,
+    "CREATE INDEX IF NOT EXISTS idx_prompts_reescritos_embedding_model "
+    "ON prompts_reescritos(embedding_model)",
     "CREATE INDEX IF NOT EXISTS idx_prompts_reescritos_firma "
     "ON prompts_reescritos(firma, activo)",
     "CREATE INDEX IF NOT EXISTS idx_prompts_reescritos_estado "
