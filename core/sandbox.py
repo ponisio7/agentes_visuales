@@ -569,7 +569,7 @@ class PythonSandbox:
                     contexto_simplificado[k] = str(v)
             contexto_json = json.dumps(contexto_simplificado, default=str, ensure_ascii=False)
         
-        script = f'''#!/usr/bin/env python3
+        script_plantilla = '''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Script generado automáticamente por el sandbox.
@@ -589,7 +589,7 @@ from datetime import datetime
 # ============================================================
 # CONTEXTO PROPORCIONADO
 # ============================================================
-contexto = {contexto_json}
+contexto = __CONTEXTO_JSON__
 
 # ============================================================
 # ✅ INYECCIÓN AUTOMÁTICA DE VARIABLES DEL LOOP
@@ -603,7 +603,7 @@ total = contexto.get('total', 0)
 # CÓDIGO DEL USUARIO
 # NOTA: El código ha sido escapado para prevenir inyección.
 # ============================================================
-{codigo_escapado}
+__CODIGO_USUARIO__
 
 # ============================================================
 # CAPTURA DE RESULTADO
@@ -616,7 +616,7 @@ def _capturar_resultado():
             resultado_final = globals()['resultado']
         else:
             # Buscar cualquier variable no mágica en globals()
-            resultado_final = {{
+            resultado_final = {
                 k: v for k, v in globals().items()
                 if not k.startswith('_')
                 and not callable(v)
@@ -624,44 +624,44 @@ def _capturar_resultado():
                 and k not in ['contexto', 'json', 'sys', 'traceback',
                               'datetime', 'time', 'item', 'indice', 'total',
                               'resultado_final', '_capturar_resultado']
-            }}
+            }
         
         # Si no hay resultado, crear uno por defecto
         if not resultado_final:
-            resultado_final = {{'status': 'ok', 'mensaje': 'Código ejecutado correctamente'}}
+            resultado_final = {'status': 'ok', 'mensaje': 'Código ejecutado correctamente'}
         
         # Serializar resultado (convertir tipos no serializables)
         try:
             resultado_serializado = json.loads(json.dumps(resultado_final, default=str))
         except Exception as e_ser:
             # Identificar qué clave específica falla, para no perder el detalle
-            claves_problematicas = {{}}
+            claves_problematicas = {}
             if isinstance(resultado_final, dict):
                 for k, v in resultado_final.items():
                     try:
                         json.dumps(v, default=str)
                     except Exception as e2:
-                        claves_problematicas[k] = {{
+                        claves_problematicas[k] = {
                             'tipo': type(v).__name__,
                             'error': str(e2),
                             'valor': str(v)[:200]
-                        }}
-            resultado_serializado = {{
+                        }
+            resultado_serializado = {
                 'error': 'Resultado no serializable',
                 'error_original': str(e_ser),
                 'tipo': type(resultado_final).__name__,
                 'claves_problematicas': claves_problematicas,
                 'contenido': str(resultado_final)[:1000]
-            }}
+            }
         
         return resultado_serializado
         
     except Exception as e:
-        return {{
+        return {
             'error': str(e),
             'tipo': type(e).__name__,
             'traceback': traceback.format_exc()
-        }}
+        }
 
 # ============================================================
 # EJECUCIÓN PRINCIPAL
@@ -671,14 +671,15 @@ if __name__ == "__main__":
         resultado_final = _capturar_resultado()
         print("__RESULT__" + json.dumps(resultado_final, ensure_ascii=False))
     except Exception as e:
-        print("__ERROR__" + json.dumps({{
+        print("__ERROR__" + json.dumps({
             'error': str(e),
             'tipo': type(e).__name__,
             'traceback': traceback.format_exc()
-        }}, ensure_ascii=False))
+        }, ensure_ascii=False))
         sys.exit(1)
 '''
-        
+        script = script_plantilla.replace("__CONTEXTO_JSON__", contexto_json)
+        script = script.replace("__CODIGO_USUARIO__", codigo_escapado)
         return script
     
     # ============================================================
