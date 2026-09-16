@@ -550,6 +550,13 @@ class SimpleMainWindow(QMainWindow):
         self.btn_detener.setEnabled(False)
         self.btn_detener.clicked.connect(self._on_detener)
         fila.addWidget(self.btn_detener, stretch=1)
+
+        # ✅ FASE 5a: botón del panel de administración
+        self.btn_admin = QPushButton("[ 🟩 ADMIN ]")
+        self.btn_admin.setFont(_mono_font(11, bold=True))
+        self.btn_admin.clicked.connect(self._on_admin)
+        fila.addWidget(self.btn_admin, stretch=1)
+
         layout.addLayout(fila)
 
         self.progress = AsciiProgressBar()
@@ -618,6 +625,20 @@ class SimpleMainWindow(QMainWindow):
         self._boot_timer = QTimer(self)
         self._boot_timer.timeout.connect(self._boot_step)
         self._boot_timer.start(180)
+
+    def _on_admin(self):
+        """Abre el panel de administración del sistema de aprendizaje."""
+        from ui.admin_panel import AdminPanelWindow
+        try:
+            panel = AdminPanelWindow(self.db.db_path, parent=self)
+            panel.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            panel.show()
+        except Exception as e:
+            logger.exception("Error abriendo panel admin")
+            QMessageBox.warning(
+                self, "Error",
+                f"No se pudo abrir el panel de administración:\n{e}"
+            )
 
     def _boot_step(self):
         if self._boot_index < len(BOOT_LINES):
