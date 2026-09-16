@@ -33,7 +33,6 @@ from core.agent import Agente, TipoAgente
 
 from .models import ExecutionPlan, StepPlan
 
-
 class PlanBuilder:
     """Construye el ExecutionPlan y los Agente a partir de la respuesta del LLM."""
 
@@ -263,32 +262,26 @@ class PlanBuilder:
         2. Endurece el prompt con instrucciones anti-alucinación de IDs.
         3. Propaga reasoning_effort y thinking_enabled al Agente.
 
-        ✅ FASE 4c/4d: A/B testing.
-        - La FIRMA se calcula sobre el prompt CRUDO (sin endurecer),
-          porque el endurecimiento es idéntico para todos los agentes
-          LLM y, si se incluyera en la firma, todas las tareas
-          compartirían firma.
-        - Se consultan las dos versiones vigentes (activo y candidato)
-          y `PromptABEvaluator.elegir_variante` elige una.
-        - El id elegido se propaga al Agente para que
-          `execution_recorder` pueda registrar el uso.
-        - El prompt que se asigna al Agente SÍ lleva el endurecimiento
-          (se aplica después de la elección, para que la variante
-          reescrita también lo tenga).
+        ✅ FASE 5b: matching semántico por embeddings.
+        - Se calcula el embedding del prompt crudo (sin endurecer).
+        - Se busca la reescritura más similar en la BD.
+        - Si la similitud supera el umbral, se usa esa reescritura.
+        - El id de la reescritura se propaga al Agente para que
+          execution_recorder registre el uso.
         """
         MIN_TOKENS_SEGUROS = 4000
 
+        # ── 1. Leer configuración ──
         prompt_original = config.get('prompt', '')
         kwargs['modelo_llm'] = config.get('modelo', 'deepseek-v4-flash')
         kwargs['temperatura_llm'] = float(config.get('temperatura', 0.7))
 
-        # ✅ Blindaje: thinking mode consume tokens del presupuesto
+        # Blindaje: thinking mode consume tokens
         max_tokens = int(config.get('max_tokens', MIN_TOKENS_SEGUROS) or MIN_TOKENS_SEGUROS)
         if max_tokens < MIN_TOKENS_SEGUROS:
             self.logger.warning(
                 f"⚠️ Paso LLM '{paso.nombre}': max_tokens={max_tokens} "
-                f"insuficiente para thinking. "
-                f"Subiendo a {MIN_TOKENS_SEGUROS}."
+                f"insuficiente para thinking. Subiendo a {MIN_TOKENS_SEGUROS}."
             )
             max_tokens = MIN_TOKENS_SEGUROS
         kwargs['max_tokens_llm'] = max_tokens
@@ -296,55 +289,102 @@ class PlanBuilder:
         kwargs['reasoning_effort_llm'] = config.get('reasoning_effort', 'low')
         kwargs['thinking_enabled_llm'] = bool(config.get('thinking_enabled', False))
 
-        # 1. ✅ FASE 4d: firma sobre el prompt CRUDO (sin endurecer).
-        # El endurecimiento es idéntico para todos los agentes LLM; si lo
-        # incluyéramos, todas las firmas serían iguales y el A/B no
-        # distinguiría entre tareas.
-        prompt_final = prompt_original
+        # ── 2. Endurecer el prompt (idempotente) ──
+        prompt_endurecido = self._endurecer_prompt_llm(prompt_original)
+
+        # ── 3. ✅ FASE 5b: matching semántico por embeddings ──
+        prompt_final = prompt_endurecido   # fallback si no hay match
         prompt_id_elegido = 0
+        self.logger.info(
+            f"[AB-DEBUG]"
+            
+        )
         try:
+            from learning.embedding_matcher import obtener_matcher
             from learning.prompt_ab_evaluator import PromptABEvaluator
-            from learning.feedback_processor import FeedbackProcessor
 
             db_path = "agent_history.db"
-            firma = FeedbackProcessor._firmar(prompt_original)
-            versiones = PromptABEvaluator.consultar_versiones(db_path, firma)
+            matcher = obtener_matcher()
+            
 
-            activo = versiones.get("activo")
-            candidato = versiones.get("candidato")
+            # 3a. Buscar match activo
+            match_activo = matcher.buscar_match(
+                db_path, prompt_original,
+                estados_validos=("activo",),
+            )
 
-            if activo or candidato:
+            # 3b. Buscar match candidato
+            match_candidato = matcher.buscar_match(
+                db_path, prompt_original,
+                estados_validos=("candidato",),
+            )
+            self.logger.info(
+                f"[AB-DEBUG] '{paso.nombre}' "
+                f"match_activo={match_activo is not None} "
+                f"match_candidato={match_candidato is not None}"
+            )
+
+            if match_activo and match_candidato:
+                # A/B real: hay activo y candidato
                 prompt_elegido, prompt_id_elegido = PromptABEvaluator.elegir_variante(
-                    prompt_activo=(activo or {}).get("prompt"),
-                    prompt_id_activo=(activo or {}).get("id"),
-                    prompt_candidato=(candidato or {}).get("prompt"),
-                    prompt_id_candidato=(candidato or {}).get("id"),
+                    prompt_activo=match_activo["prompt"],
+                    prompt_id_activo=match_activo["id"],
+                    prompt_candidato=match_candidato["prompt"],
+                    prompt_id_candidato=match_candidato["id"],
+                )
+                prompt_final = prompt_elegido
+                self.logger.info(
+                    f"✨ AB: '{paso.nombre}' eligió "
+                    f"id={prompt_id_elegido} "
+                    f"(activo_sim={match_activo['similitud']:.3f}, "
+                    f"cand_sim={match_candidato['similitud']:.3f})"
+                )
+            elif match_activo:
+                prompt_final = match_activo["prompt"]
+                prompt_id_elegido = match_activo["id"]
+                self.logger.info(
+                    f"✨ AB: '{paso.nombre}' usa activo "
+                    f"id={match_activo['id']} (sim={match_activo['similitud']:.3f})"
+                )
+
+            # modificado 16 septiembre 2026 12:38 hora Madrid
+            if match_activo or match_candidato:
+                prompt_elegido, prompt_id_elegido = PromptABEvaluator.elegir_variante(
+                    prompt_activo=(match_activo or {}).get("prompt"),
+                    prompt_id_activo=(match_activo or {}).get("id"),
+                    prompt_candidato=(match_candidato or {}).get("prompt"),
+                    prompt_id_candidato=(match_candidato or {}).get("id"),
                 )
                 if prompt_elegido:
                     prompt_final = prompt_elegido
+                    sim_act = match_activo["similitud"] if match_activo else None
+                    sim_cand = match_candidato["similitud"] if match_candidato else None
                     self.logger.info(
-                        f"✨ AB: '{paso.nombre}' usa prompt id={prompt_id_elegido} "
-                        f"(activo={'sí' if activo else 'no'}, "
-                        f"candidato={'sí' if candidato else 'no'})"
+                        f"✨ AB: '{paso.nombre}' usa id={prompt_id_elegido} "
+                        f"(sim_activo={sim_act}, sim_candidato={sim_cand})"
                     )
+            else:
+                self.logger.debug(
+                    f"AB: sin match semántico para '{paso.nombre}'"
+                )
+
         except Exception as e:
-            self.logger.debug(f"AB no disponible: {e}")
+            self.logger.debug(f"AB semántico no disponible: {e}")
 
-        # 2. Endurecer AL FINAL (idempotente).
-        # Se endurece tanto el prompt crudo como el reescrito. Si el
-        # reescrito ya trae el preámbulo (porque el FeedbackProcessor lo
-        # copió del original), `_endurecer_prompt_llm` no lo duplica.
-        prompt_endurecido = self._endurecer_prompt_llm(prompt_final)
-
-        kwargs['prompt_llm'] = prompt_endurecido
+        # ── 4. Asignar al kwargs ── modificado 16 septiembre 2026 12:38 hora Madrid
+        prompt_final_endurecido = self._endurecer_prompt_llm(prompt_final)
+        kwargs['prompt_llm'] = prompt_final_endurecido
         kwargs['prompt_reescrito_id'] = int(prompt_id_elegido or 0)
+        
 
-    def _endurecer_prompt_llm(self, prompt_original: str) -> str:
+    def _endurecer_prompt_llm(self, prompt_original: str) -> str: # modificado 16 septiembre 2026 12:38 hora Madrid
         """
         Añade instrucciones anti-alucinación al prompt de un agente LLM.
 
         Esto evita que el LLM invente IDs distintos a los de entrada
         (problema típico cuando se le pide procesar una lista de items).
+
+        Idempotente: si el prompt ya empieza por el preámbulo, no lo duplica.
         """
         preambulo = (
             "INSTRUCCIONES CRÍTICAS:\n"
@@ -358,6 +398,8 @@ class PlanBuilder:
             "\n"
             "TAREA:\n"
         )
+        if prompt_original.startswith(preambulo):
+            return prompt_original
         return preambulo + prompt_original
 
     def _kwargs_shell(
