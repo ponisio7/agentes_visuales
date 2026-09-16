@@ -28,6 +28,9 @@ a nivel de archivo en el monolito), no `self.logger` como el resto de
 advertencias de este mismo método. Se replica tal cual para no alterar
 el comportamiento (incluye el nombre del logger que queda en los logs).
 """
+import ast
+import re
+
 import logging
 from typing import Dict, List, Optional, Tuple
 
@@ -222,7 +225,56 @@ class PlanValidator:
             if not valido:
                 errores.append(f"{agente.nombre}: {msg}")
 
+        # ── NUEVO: validar código Python de cada paso ──
+        nombres_agentes = {p.nombre for p in plan.pasos}
+        for paso in plan.pasos:
+            if getattr(paso, "tipo_agente", None) == "Python":
+                errores.extend(self._validar_codigo_python(paso, nombres_agentes))
+
         return len(errores) == 0, errores
+
+    def _validar_codigo_python(self, paso, nombres_agentes: set) -> list:
+        """
+        Valida el código Python de un paso. Devuelve lista de errores.
+        Detecta:
+          - SyntaxError
+          - Nombres de agentes usados como variables sueltas (NameError)
+          - json.loads con placeholder literal sin sustituir
+        """
+        errores = []
+        codigo = (paso.configuracion or {}).get("codigo", "") or ""
+        if not codigo.strip():
+            return errores
+
+        # 1. Sintaxis
+        try:
+            arbol = ast.parse(codigo)
+        except SyntaxError as e:
+            errores.append(
+                f"{paso.nombre}: SyntaxError en línea {e.lineno}: {e.msg}"
+            )
+            return errores   # sin AST no podemos seguir validando
+
+        # 2. Nombres de agentes como variables sueltas
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Name) and nodo.id in nombres_agentes:
+                errores.append(
+                    f"{paso.nombre}: usa '{nodo.id}' como variable Python "
+                    f"(provocará NameError). Debería ser: "
+                    f"contexto.get('{nodo.id}', {{}})"
+                )
+
+        # 3. Placeholder literal en json.loads
+        patron = re.compile(
+            r"json\.loads\s*\(\s*(['\"]{2,3})\s*\{([a-zA-Z_]\w*)\}\s*\1\s*\)"
+        )
+        for m in patron.finditer(codigo):
+            errores.append(
+                f"{paso.nombre}: json.loads con placeholder literal "
+                f"'{{{m.group(2)}}}' sin sustituir"
+            )
+
+        return errores
 
     def _detectar_ciclos(self, plan: ExecutionPlan) -> bool:
         """Detecta ciclos en el DAG usando DFS."""
