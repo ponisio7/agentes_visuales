@@ -251,7 +251,7 @@ class PlanValidator:
             arbol = ast.parse(codigo)
         except SyntaxError as e:
             errores.append(
-                f"{paso.nombre}: SyntaxError en línea {e.lineno}: {e.msg}"
+                f"BLOQUEANTE: {paso.nombre}: SyntaxError en línea {e.lineno}: {e.msg}"
             )
             return errores   # sin AST no podemos seguir validando
 
@@ -259,7 +259,7 @@ class PlanValidator:
         for nodo in ast.walk(arbol):
             if isinstance(nodo, ast.Name) and nodo.id in nombres_agentes:
                 errores.append(
-                    f"{paso.nombre}: usa '{nodo.id}' como variable Python "
+                    f"BLOQUEANTE: {paso.nombre}: usa '{nodo.id}' como variable Python "
                     f"(provocará NameError). Debería ser: "
                     f"contexto.get('{nodo.id}', {{}})"
                 )
@@ -270,7 +270,7 @@ class PlanValidator:
         )
         for m in patron.finditer(codigo):
             errores.append(
-                f"{paso.nombre}: json.loads con placeholder literal "
+                f"BLOQUEANTE: {paso.nombre}: json.loads con placeholder literal "
                 f"'{{{m.group(2)}}}' sin sustituir"
             )
 
