@@ -102,6 +102,7 @@ class ProblemSolver:
         nivel_detalle: str = "normal",
         _es_regeneracion: bool = False,
         _instruccion_extra: str = "",
+        _intento_validacion: int = 0,
     ) -> ExecutionPlan:
         """
         Analiza un problema y genera un plan de ejecución completo.
@@ -197,11 +198,68 @@ class ProblemSolver:
 
             # 10. Validar
             es_valido, errores = self.validator.validar_plan(plan)
-            if not es_valido:
+
+            errores_graves = [
+                e for e in errores
+                if e.startswith("BLOQUEANTE:")
+            ]
+
+            advertencias = [
+                e for e in errores
+                if not e.startswith("BLOQUEANTE:")
+            ]
+
+            if advertencias:
                 plan.advertencias.extend(
-                    e for e in errores if e not in plan.advertencias
+                    a for a in advertencias
+                    if a not in plan.advertencias
                 )
-                self.logger.warning(f"⚠️ Plan con advertencias: {errores}")
+                self.logger.warning(
+                    f"⚠️ Plan con advertencias: {advertencias}"
+                )
+
+            if errores_graves:
+                MAX_INTENTOS_VALIDACION = 2
+
+                if _intento_validacion < MAX_INTENTOS_VALIDACION:
+                    self.logger.error(
+                        f"❌ Plan con {len(errores_graves)} errores bloqueantes. "
+                        f"Reintentando generación "
+                        f"({_intento_validacion + 1}/{MAX_INTENTOS_VALIDACION})..."
+                    )
+
+                    instruccion = (
+                        "El plan anterior tenía errores bloqueantes "
+                        "en el código Python. Corrígelos.\n\n"
+                        "ERRORES DETECTADOS:\n"
+                        + "\n".join(
+                            f"- {e}" for e in errores_graves
+                        )
+                    )
+
+                    self._plan_actual = None
+
+                    return self.resolver_problema(
+                        problema=problema,
+                        contexto_extra=contexto_extra,
+                        max_pasos=max_pasos,
+                        nivel_detalle=nivel_detalle,
+                        _es_regeneracion=True,
+                        _instruccion_extra=instruccion,
+                        _intento_validacion=_intento_validacion + 1,
+                    )
+
+                else:
+                    self.logger.error(
+                        f"❌ Plan con errores bloqueantes tras "
+                        f"{MAX_INTENTOS_VALIDACION} reintentos. "
+                        f"Se dejará pasar; Plan B en ejecución decidirá."
+                    )
+
+                    plan.advertencias.extend(
+                        e for e in errores_graves
+                        if e not in plan.advertencias
+                    )
 
             # 11. Guardar en caché
             self._plan_cache[plan.id] = plan
@@ -265,9 +323,21 @@ class ProblemSolver:
                 nuevo_plan.agentes_generados = self.builder.generar_agentes(nuevo_plan)
 
                 es_valido, errores = self.validator.validar_plan(nuevo_plan)
-                if not es_valido:
+
+                errores_graves = [e for e in errores if e.startswith("BLOQUEANTE:")]
+                advertencias = [e for e in errores if not e.startswith("BLOQUEANTE:")]
+
+                if advertencias:
                     nuevo_plan.advertencias.extend(
-                        e for e in errores if e not in nuevo_plan.advertencias
+                        a for a in advertencias if a not in nuevo_plan.advertencias
+                    )
+
+                if errores_graves:
+                    self.logger.warning(
+                        f"⚠️ Plan refinado con errores bloqueantes: {errores_graves}"
+                    )
+                    nuevo_plan.advertencias.extend(
+                        e for e in errores_graves if e not in nuevo_plan.advertencias
                     )
             finally:
                 self._plan_actual = None
