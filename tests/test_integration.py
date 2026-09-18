@@ -34,15 +34,6 @@ from storage.config_manager import ConfigManager
 # FIXTURES
 # ============================================================
 
-@pytest.fixture(scope="function")
-def qapp():
-    """Fixture que proporciona una instancia de QApplication para pruebas con Qt."""
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    yield app
-
-
 @pytest.fixture
 def temp_db():
     """Fixture: base de datos temporal."""

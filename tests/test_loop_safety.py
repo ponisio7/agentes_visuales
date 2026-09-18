@@ -30,15 +30,6 @@ from core.sandbox import PythonSandbox, SandboxError
 # ============================================================
 
 @pytest.fixture
-def qapp():
-    """Fixture que proporciona una instancia de QApplication para pruebas con Qt."""
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    yield app
-
-
-@pytest.fixture
 def loop_agente_basico():
     """Fixture: agente Loop básico configurado correctamente."""
     return Agente(
@@ -313,25 +304,6 @@ class TestLoopValidacionAgente:
         ok, msg = loop.validar_configuracion()
         # La validación básica no verifica existencia, solo formato
         assert ok is True  # La dependencia existe como nombre, pero no se verifica
-
-
-
-def esperar_condicion(
-    condicion: callable,
-    timeout: float = 5.0,
-    intervalo: float = 0.05,
-    qapp=None,
-) -> bool:
-    start = time.time()
-    from PyQt6.QtWidgets import QApplication as _QA
-    app = qapp if qapp is not None else _QA.instance()
-    while time.time() - start < timeout:
-        if condicion():
-            return True
-        if app is not None:
-            app.processEvents()
-        time.sleep(intervalo)
-    return False
 
 
 # ============================================================

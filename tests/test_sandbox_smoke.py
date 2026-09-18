@@ -1,29 +1,38 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+"""Smoke tests del sandbox de Python.
 
+Cubren casos que históricamente rompían la construcción del script:
+diccionarios con llaves, f-strings con llaves y docstrings con triples
+comillas.
+"""
 from core.sandbox import PythonSandbox
-sb = PythonSandbox()
 
-# Caso 1: diccionario con llaves
-ok, msg, meta = sb.ejecutar("""
-datos = {'a': 1, 'b': 2}
-resultado = sum(datos.values())
-""", {})
-print("Caso 1:", ok, msg, meta)
 
-# Caso 2: f-string del usuario con llaves
-ok, msg, meta = sb.ejecutar("""
-nombre = "pepe"
-resultado = f"Hola {nombre}, tienes {2+3} mensajes"
-""", {})
-print("Caso 2:", ok, msg, meta)
+def test_diccionario_con_llaves():
+    ok, msg, meta = PythonSandbox.ejecutar(
+        "datos = {'a': 1, 'b': 2}\nresultado = sum(datos.values())",
+        {},
+    )
+    assert ok is True, msg
+    assert meta == 3
 
-# Caso 3: docstring con triple comilla
-ok, msg, meta = sb.ejecutar('''
-def foo():
-    """Docstring normal"""
-    return 42
-resultado = foo()
-''', {})
-print("Caso 3:", ok, msg, meta)
+
+def test_fstring_con_llaves():
+    ok, msg, meta = PythonSandbox.ejecutar(
+        'nombre = "pepe"\n'
+        'resultado = f"Hola {nombre}, tienes {2+3} mensajes"',
+        {},
+    )
+    assert ok is True, msg
+    assert meta == "Hola pepe, tienes 5 mensajes"
+
+
+def test_docstring_con_triple_comilla():
+    codigo = (
+        "def foo():\n"
+        '    """Docstring normal"""\n'
+        "    return 42\n"
+        "resultado = foo()"
+    )
+    ok, msg, meta = PythonSandbox.ejecutar(codigo, {})
+    assert ok is True, msg
+    assert meta == 42

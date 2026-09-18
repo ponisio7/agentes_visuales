@@ -46,7 +46,8 @@ def test_contexto_get_es_correcto(validator):
 
 
 def test_json_loads_placeholder_detectado(validator):
-    plan = _plan_con_codigo("datos = contexto.get('GenerarCuento', {}).get('json', {})")
+    """Un json.loads con placeholder literal debe detectarse como error."""
+    plan = _plan_con_codigo("datos = json.loads('''{GenerarCuento}''')")
     valido, errores = validator.validar_plan(plan)
     assert valido is False
     assert any("placeholder" in e for e in errores)
@@ -69,25 +70,5 @@ def test_advertencia_no_lleva_prefijo_bloqueante(validator):
     valido, errores = validator.validar_plan(plan)
     assert valido is False   # duplicados → inválido
     # Pero NO debe llevar BLOQUEANTE
-    assert any("duplicados" in e.lower() for e in errores)
-    assert not any(e.startswith("BLOQUEANTE:") for e in errores)
-
-def test_error_grave_lleva_prefijo_bloqueante(validator):
-    """Los errores de código Python se marcan como BLOQUEANTE."""
-    plan = _plan_con_codigo("resultado = {")
-    valido, errores = validator.validar_plan(plan)
-    assert valido is False
-    assert any(e.startswith("BLOQUEANTE:") for e in errores)
-
-
-def test_advertencia_no_lleva_prefijo_bloqueante(validator):
-    """Los errores de estructura (no de código) NO son bloqueantes."""
-    pasos = [
-        StepPlan(nombre="A", tipo_agente="Python", configuracion={"codigo": "resultado = 1"}),
-        StepPlan(nombre="A", tipo_agente="Python", configuracion={"codigo": "resultado = 2"}),
-    ]
-    plan = ExecutionPlan(pasos=pasos, problema_original="test")
-    valido, errores = validator.validar_plan(plan)
-    assert valido is False   # duplicados → inválido
     assert any("duplicados" in e.lower() for e in errores)
     assert not any(e.startswith("BLOQUEANTE:") for e in errores)

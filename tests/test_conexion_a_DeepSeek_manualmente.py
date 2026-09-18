@@ -571,7 +571,7 @@ class TestDeepSeekIntegracion:
 
         # ✅ Parchear TANTO la variable de entorno COMO la carga desde archivos
         with patch.dict(os.environ, {}, clear=True), \
-            patch('core.llm.client.cargar_entorno_desde_archivos', return_value={}):
+            patch('core.llm_client.cargar_entorno_desde_archivos', return_value={}):
             exito, mensaje, resultado = AgentExecutor.ejecutar(agente, {})
 
         assert exito is False

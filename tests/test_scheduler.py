@@ -26,15 +26,6 @@ from core.agent import Agente, EstadoAgente, TipoAgente
 # FIXTURES Y UTILIDADES
 # ============================================================
 
-@pytest.fixture(scope="function")
-def qapp():
-    """Fixture que proporciona una instancia de QApplication para pruebas con Qt."""
-    app = QApplication.instance()
-    if app is None:
-        app = QApplication([])
-    yield app
-
-
 @pytest.fixture
 def scheduler_basico():
     """Fixture: scheduler con 3 agentes en cadena A1 → A2 → A3."""
@@ -66,22 +57,6 @@ resultado = {
         dependencias_nombres=["A2"],
         codigo_python=codigo_base.replace("{nombre}", "A3")
     )
-    
-    scheduler.agregar_agentes([a1, a2, a3])
-    scheduler.resolver_dependencias()
-    
-    return scheduler
-
-
-@pytest.fixture
-def scheduler_rapido():
-    """Fixture: scheduler con 3 agentes rápidos para pruebas de concurrencia."""
-    scheduler = Scheduler(max_concurrent=2)
-    
-    codigo = "resultado = {'status': 'ok', 'id': 'test'}"
-    a1 = Agente(nombre="A1", duracion=0.05, codigo_python=codigo)
-    a2 = Agente(nombre="A2", duracion=0.05, dependencias_nombres=["A1"], codigo_python=codigo)
-    a3 = Agente(nombre="A3", duracion=0.05, dependencias_nombres=["A2"], codigo_python=codigo)
     
     scheduler.agregar_agentes([a1, a2, a3])
     scheduler.resolver_dependencias()

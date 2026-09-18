@@ -1,50 +1,50 @@
-import sys
-sys.path.insert(0, '.')
+"""Pruebas del validador AST de código Python de ``PlanValidator``.
+
+Se comprueba la función pura ``_validar_codigo_python_ast`` que detecta
+SyntaxError, nombres de agente usados como variables, ``json.loads`` con
+placeholder literal y sintaxis de plantilla ``{{X}}``.
+"""
+import pytest
+
 from core.problem_solver.validator import PlanValidator
 
-nombres = {"GenerarCuento", "CrearImagenes"}
+NOMBRES = {"GenerarCuento", "CrearImagenes"}
 
-casos = [
-    # (codigo, esperado_errores, descripcion)
-    (
-        "datos = GenerarCuento\ntexto = datos['cuento']",
-        1,  # debe detectar 1 NameError
-        "Nombre de agente como variable",
-    ),
-    (
-        "datos = {{CrearImagenes}}['imagenes']",
-        2,  # {{X}} dispara DOS reglas: set-like (NameError) + Jinja
-        "Sintaxis de plantilla",
-    ),
-    (
-        "datos = {{CrearImagenes}}['imagenes']",
-        1,  # debe detectar 1 {{X}}
-        "Sintaxis de plantilla",
-    ),
-    (
-        "import json\ndatos = json.loads('''{datos_llm}''')",
-        1,  # debe detectar 1 placeholder
-        "json.loads con placeholder",
-    ),
-    (
-        "x = 1 / 0",
-        0,  # código válido (falla en runtime, no en validación)
-        "ZeroDivisionError (no detectado por AST)",
-    ),
-    (
-        "datos = contexto.get('GenerarCuento', {})",
-        0,  # OK
-        "Código correcto",
-    ),
-]
 
-for codigo, esperado, desc in casos:
-    errs = PlanValidator._validar_codigo_python_ast(
+@pytest.mark.parametrize(
+    "codigo, esperado, descripcion",
+    [
+        (
+            "datos = GenerarCuento\ntexto = datos['cuento']",
+            1,
+            "Nombre de agente como variable",
+        ),
+        (
+            "datos = {{CrearImagenes}}['imagenes']",
+            2,
+            "Sintaxis de plantilla (set-like + Jinja)",
+        ),
+        (
+            "import json\ndatos = json.loads('''{datos_llm}''')",
+            1,
+            "json.loads con placeholder",
+        ),
+        (
+            "x = 1 / 0",
+            0,
+            "ZeroDivisionError (no detectado por AST)",
+        ),
+        (
+            "datos = contexto.get('GenerarCuento', {})",
+            0,
+            "Código correcto",
+        ),
+    ],
+)
+def test_validar_codigo_python_ast(codigo, esperado, descripcion):
+    errores = PlanValidator._validar_codigo_python_ast(
         codigo=codigo,
         nombre="TestPaso",
-        nombres_agentes=nombres,
+        nombres_agentes=NOMBRES,
     )
-    ok = "✅" if len(errs) == esperado else "❌"
-    print(f"{ok} {desc}: {len(errs)} error(es) (esperado {esperado})")
-    for e in errs:
-        print(f"     {e}")
+    assert len(errores) == esperado, f"{descripcion}: {errores}"
