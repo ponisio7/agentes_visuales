@@ -115,24 +115,120 @@ class Watchdog:
 #
 GRUPOS_TESTS = {
     "A_ui_datos": [
-        # Cargan PyQt6 + matplotlib + pandas + numpy
-        "tests/test_dashboard.py",
-        "tests/test_exporters.py",
+        # Cargan PyQt6 + matplotlib + pandas + numpy + sklearn
         "tests/test_config_manager.py",
+        "tests/test_exporters.py",
+        "tests/test_ab_sintetico.py",
     ],
-    "B_ejecucion": [
-        # Usan subprocess/ThreadPoolExecutor + sandbox
+    "B_scheduler": [
+        # Scheduler + subprocess/ThreadPoolExecutor + base de datos
         "tests/test_scheduler.py",
-        "tests/test_sandbox.py",
+        "tests/test_scheduler_orden.py",
+        "tests/test_scheduler_ciclos.py",
+        "tests/test_scheduler_resolucion.py",
+        "tests/test_ejecucion_individual.py",
+    ],
+    "C_integration": [
+        # Flujo completo (scheduler + sandbox + DB): aislado para no mezclar
+        # con otros grupos que cargan extensiones nativas pesadas.
         "tests/test_integration.py",
+    ],
+    "D_sandbox": [
+        # Sandbox (subprocess)
+        "tests/test_sandbox.py",
+        "tests/test_sandbox_smoke.py",
+    ],
+    "E_loops": [
+        # Agentes Loop (scheduler + sandbox)
         "tests/test_loop_safety.py",
     ],
-    "C_ligeros": [
-        # Solo modelos, mocks, sin extensiones nativas pesadas
+    "F_ligeros": [
+        # Modelos, mocks y validadores sin extensiones nativas pesadas
         "tests/test_agent.py",
         "tests/test_conexion_a_DeepSeek_manualmente.py",
+        "tests/test_contrato_cuento.py",
+        "tests/test_contrato_salida.py",
+        "tests/test_plan_recovery.py",
+        "tests/test_plan_validator.py",
+        "tests/test_validador.py",
     ],
 }
+
+# Señales que indican que el intérprete murió (no que un test falló). En
+# CPython 3.13 + PyQt6 + extensiones nativas + fork se observa un SIGSEGV
+# esporádico; para esos casos el runner reintenta una vez el grupo.
+SENALES_CAIDA_INTERPRETE = {-11, -6, -4, -8}  # SIGSEGV, SIGABRT, SIGILL, SIGFPE
+
+
+def descubrir_grupos_completos() -> dict[str, list[str]]:
+    """Devuelve los grupos asegurando que ningún ``test_*.py`` quede fuera.
+
+    Los tests que no aparezcan en ``GRUPOS_TESTS`` se agrupan en
+    ``Z_sin_clasificar`` para que el runner nunca los ignore en silencio.
+    """
+    asignados = {path for paths in GRUPOS_TESTS.values() for path in paths}
+    tests_dir = Path(__file__).resolve().parent / "tests"
+    faltantes = sorted(
+        f"tests/{archivo.name}"
+        for archivo in tests_dir.glob("test_*.py")
+        if f"tests/{archivo.name}" not in asignados
+    )
+
+    grupos = {nombre: list(paths) for nombre, paths in GRUPOS_TESTS.items()}
+    if faltantes:
+        grupos.setdefault("Z_sin_clasificar", []).extend(faltantes)
+    return grupos
+
+
+def ejecutar_comando_pytest(
+    cmd: list[str],
+    env: dict,
+    f_out,
+    intervalo_watchdog: int,
+    umbral_alerta: int,
+) -> tuple[int, float, int, bool]:
+    """Ejecuta pytest en un subproceso con streaming y watchdog.
+
+    Returns:
+        (returncode, segundos, lineas, interrumpido_por_usuario)
+    """
+    t0 = time.time()
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+    )
+
+    wd = Watchdog(intervalo=intervalo_watchdog, umbral_alerta=umbral_alerta)
+    wd.start()
+
+    lineas = 0
+    interrumpido = False
+    try:
+        for linea in proc.stdout:
+            lineas += 1
+            f_out.write(linea)
+            f_out.flush()
+            sys.stdout.write(_colorear_linea(linea))
+            sys.stdout.flush()
+            wd.registrar_linea(linea)
+        proc.wait()
+    except KeyboardInterrupt:
+        interrumpido = True
+        print()
+        print(amarillo("⏹  Interrumpido. Terminando pytest..."))
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    finally:
+        wd.stop()
+
+    return proc.returncode, time.time() - t0, lineas, interrumpido
 
 
 # ============================================================
@@ -151,6 +247,9 @@ def main() -> int:
     parser.add_argument("--single-process", action="store_true",
                         help="Ejecutar toda la suite en un solo pytest "
                              "(útil para depurar, PERO puede segfaultear en py3.13)")
+    parser.add_argument("--no-retry", action="store_true",
+                        help="No reintentar grupos que mueran por señal "
+                             "(SIGSEGV/SIGABRT) del intérprete")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -181,7 +280,7 @@ def main() -> int:
     if args.single_process:
         print(amarillo("⚠️  Modo single-process: toda la suite en un pytest"))
     else:
-        print(gris("🔀 Modo multi-proceso: 3 grupos aislados "
+        print(gris("🔀 Modo multi-proceso: grupos aislados "
                    "(evita segfault py3.13 + Qt + fork)"))
     print()
 
@@ -189,7 +288,7 @@ def main() -> int:
     if args.single_process:
         grupos_a_ejecutar = {"ALL": None}   # None = todo tests/
     else:
-        grupos_a_ejecutar = GRUPOS_TESTS
+        grupos_a_ejecutar = descubrir_grupos_completos()
 
     if not args.include_gui:
         print(azul("ℹ️  Modo rápido: excluyendo pruebas GUI/slow."))
@@ -199,7 +298,7 @@ def main() -> int:
 
     # ── Preparar comando base ──
     def _cmd_pytest(paths: list[str]) -> list[str]:
-        cmd = [sys.executable, "-m", "pytest", "--color=no", "-ra"]
+        cmd = [sys.executable, "-m", "pytest", "--color=no", "-ra", "--maxfail=1000"]
         cmd += paths
         if args.verbose:
             cmd.append("-vv")
@@ -232,51 +331,34 @@ def main() -> int:
             f_out.write("=" * 80 + "\n\n")
             f_out.flush()
 
-            t0 = time.time()
-            proc = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env,
+            rc, elapsed_grupo, lineas_grupo, interrumpido = ejecutar_comando_pytest(
+                cmd, env, f_out, args.watchdog, args.watchdog_alerta
             )
-
-            wd = Watchdog(intervalo=args.watchdog,
-                          umbral_alerta=args.watchdog_alerta)
-            wd.start()
-
-            lineas_grupo = 0
-            try:
-                for linea in proc.stdout:
-                    lineas_grupo += 1
-                    f_out.write(linea)
-                    f_out.flush()
-                    sys.stdout.write(_colorear_linea(linea))
-                    sys.stdout.flush()
-                    wd.registrar_linea(linea)
-                proc.wait()
-            except KeyboardInterrupt:
-                print()
-                print(amarillo("⏹  Interrumpido. Terminando pytest..."))
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-            finally:
-                wd.stop()
-
-            elapsed_grupo = time.time() - t0
             lineas_totales += lineas_grupo
-            resultados[nombre_grupo] = (proc.returncode, elapsed_grupo, lineas_grupo)
 
-            if proc.returncode == 0:
+            # Reintento acotado ante muerte del intérprete por señal. No se
+            # reintentan fallos de tests (rc positivo) ni interrupciones.
+            if (rc in SENALES_CAIDA_INTERPRETE and not interrumpido
+                    and not args.no_retry):
+                print(amarillo(
+                    f"\n   ⚠️  Grupo {nombre_grupo} murió por señal {rc}. "
+                    f"Reintentando una vez (flake conocido CPython 3.13 + Qt)..."
+                ))
+                f_out.write(f"\n[REINTENTO tras señal {rc}]\n")
+                f_out.flush()
+                rc, elapsed_grupo, lineas_grupo, interrumpido = ejecutar_comando_pytest(
+                    cmd, env, f_out, args.watchdog, args.watchdog_alerta
+                )
+                lineas_totales += lineas_grupo
+
+            resultados[nombre_grupo] = (rc, elapsed_grupo, lineas_grupo)
+
+            if rc == 0:
                 print(verde(f"\n   ✅ Grupo {nombre_grupo}: OK "
                             f"({elapsed_grupo:.1f}s, {lineas_grupo} líneas)"))
             else:
                 print(rojo(f"\n   ❌ Grupo {nombre_grupo}: FALLÓ "
-                           f"(returncode={proc.returncode}, "
+                           f"(returncode={rc}, "
                            f"{elapsed_grupo:.1f}s, {lineas_grupo} líneas)"))
 
     elapsed = time.time() - start_time_global
