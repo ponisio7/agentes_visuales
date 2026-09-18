@@ -41,7 +41,7 @@ def minar_dataset(
         """
     )
     columnas = [d[0] for d in cursor.description]
-    filas = [dict(zip(columnas, fila)) for fila in cursor.fetchall()]
+    filas = [dict(zip(columnas, fila, strict=False)) for fila in cursor.fetchall()]
 
     features, y_exito, y_reward = [], [], []
     for fila in filas:

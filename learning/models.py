@@ -158,7 +158,7 @@ class FailurePredictor:
         from collections import defaultdict
 
         stats: dict[str, list[int]] = defaultdict(lambda: [0, 0])
-        for f, y in zip(features, etiquetas):
+        for f, y in zip(features, etiquetas, strict=False):
             tipo = f.get("tipo", "Desconocido")
             stats[tipo][1] += 1
             if y == 1:

@@ -535,7 +535,6 @@ class TestRecuperacionErrores:
         scheduler.iniciar()
 
         timeout = 5
-        start = time.time()
         completado = esperar(lambda: terminado, timeout=timeout, qapp=qapp)
         assert completado, f"El flujo no terminó en {timeout}s"
 
@@ -596,7 +595,6 @@ resultado = {{'exito': True, 'intentos': contador}}
         scheduler.iniciar()
 
         timeout = 15
-        start = time.time()
         completado = esperar(lambda: terminado, timeout=timeout, qapp=qapp)
         assert completado, f"El flujo no terminó en {timeout}s"
 

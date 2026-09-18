@@ -192,7 +192,7 @@ class CancellationManager:
         """
         with self._lock:
             cancelados = 0
-            for token_id, token in list(self._tokens.items()):
+            for token in list(self._tokens.values()):
                 if token.esta_activo():
                     token.cancelar(razon)
                     cancelados += 1
@@ -212,7 +212,7 @@ class CancellationManager:
             bool: True si se canceló correctamente
         """
         with self._lock:
-            for token_id, token in self._tokens.items():
+            for token in self._tokens.values():
                 if token.obtener_metadata('agente_id') == agente_id:
                     if token.esta_activo():
                         token.cancelar(razon)

@@ -568,9 +568,7 @@ class Scheduler(QObject):
                             contexto[dep_id] = dep.resultado
 
             # ── FASE 4: Ejecutar con timeout y token de cancelación ──
-            timeout_total = self._AGENT_TIMEOUT
             if agente.tipo == TipoAgente.LOOP:
-                timeout_total = getattr(agente, 'timeout_loop', self._AGENT_TIMEOUT)
                 with self._lock:
                     self._loops_activos.add(agente.id)
                     self._loop_items_procesados[agente.id] = 0

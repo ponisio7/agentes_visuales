@@ -131,7 +131,6 @@ def _verificar_api_key(c: _Colores) -> tuple[str | None, str | None, list[str]]:
     # 1. Variable de entorno
     key_env = os.environ.get("DEEPSEEK_API_KEY")
     if key_env:
-        origen = "variable de entorno"
         return key_env, "env", mensajes
 
     # 2. Archivo de fallback
@@ -163,7 +162,6 @@ def _verificar_api_key(c: _Colores) -> tuple[str | None, str | None, list[str]]:
                     clave, valor = resultado
                     if clave == "DEEPSEEK_API_KEY":
                         if valor:
-                            origen = f"archivo ({path})"
                             return valor, "archivo", mensajes
                         else:
                             mensajes.append(f"{path}: DEEPSEEK_API_KEY está vacía")

@@ -229,7 +229,7 @@ class ConfigManager:
             if os.path.exists(ruta_tmp):
                 try:
                     os.unlink(ruta_tmp)
-                except:
+                except OSError:
                     pass
             raise ConfigError(f"Error al escribir archivo: {e}")
 
@@ -737,7 +737,7 @@ class ConfigManager:
                 if os.path.exists(journal_path):
                     try:
                         os.unlink(journal_path)
-                    except:
+                    except OSError:
                         pass
 
             logger.info(f"Configuración eliminada: {ruta}")
@@ -904,7 +904,7 @@ class ConfigManager:
             if os.path.exists(ruta_tmp):
                 try:
                     os.unlink(ruta_tmp)
-                except:
+                except OSError:
                     pass
             raise ConfigError(f"Error al escribir archivo: {e}")
 

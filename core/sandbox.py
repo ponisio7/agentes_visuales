@@ -461,8 +461,6 @@ class PythonSandbox:
                 logger.debug(f"Resultado cacheado para código hash {hashlib.sha256(codigo.encode()).hexdigest()[:8]}")
                 return cached_result.success, cached_result.message, cached_result.result
         
-        start_time = time.time()
-        
         try:
             codigo_escapado = PythonSandbox._escapar_codigo(codigo)
             script = PythonSandbox._construir_script(codigo_escapado, contexto)
@@ -946,7 +944,7 @@ if __name__ == "__main__":
                                 stdout=stdout,
                                 stderr=stderr
                             )
-                        except:
+                        except Exception:
                             return SandboxResult(
                                 success=False,
                                 message=f"Error en ejecución: {stderr or stdout}",
@@ -978,7 +976,7 @@ if __name__ == "__main__":
                                 stdout=stdout,
                                 stderr=stderr
                             )
-                    except:
+                    except Exception:
                         pass
                     
                     return SandboxResult(
@@ -1011,7 +1009,7 @@ if __name__ == "__main__":
             # (SandboxTimeoutError, SandboxSecurityError, etc.);
             # no lo envolvemos, dejamos que el llamador lo distinga.
             raise
-        except subprocess.TimeoutExpired as e:
+        except subprocess.TimeoutExpired:
             raise SandboxTimeoutError(f"El código excedió {timeout}s")
         except subprocess.SubprocessError as e:
             raise SandboxError(f"Error en subproceso: {e}")
@@ -1162,5 +1160,5 @@ def _cleanup_sandbox():
             PythonSandbox._temp_manager.stop()
             PythonSandbox._temp_manager.cleanup_all()
         PythonSandbox.clear_cache()
-    except:
+    except Exception:
         pass

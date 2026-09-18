@@ -55,7 +55,7 @@ def _celda_segura(valor: Any) -> Any:
 
 def _parece_csv(texto: str) -> bool:
     """Heurística simple para detectar si un string es contenido CSV."""
-    lineas = [l for l in texto.strip().split("\n") if l.strip()]
+    lineas = [linea for linea in texto.strip().split("\n") if linea.strip()]
     if len(lineas) < 2:
         return False
     conteos = [linea.count(",") for linea in lineas[:5]]
@@ -209,7 +209,7 @@ class FileExecutor:
                         valor_unico = next(iter(contexto.values()))
                         contenido = extraer_contenido_relevante(valor_unico)
                     else:
-                        for clave, valor in contexto.items():
+                        for valor in contexto.values():
                             if not isinstance(valor, dict):
                                 continue
                             candidato = extraer_contenido_relevante(valor)
@@ -1047,7 +1047,7 @@ class FileExecutor:
         # (si vienen en `imagenes`, se añaden al final del HTML)
         if imagenes:
             partes_img = ['<h2>Imágenes</h2>']
-            for idx, img_item in enumerate(imagenes):
+            for img_item in imagenes:
                 if isinstance(img_item, dict):
                     url = img_item.get("url") or img_item.get("src") or ""
                     desc = img_item.get("descripcion") or img_item.get("alt") or ""

@@ -296,7 +296,7 @@ class Database:
                     continue
                 conn.execute("ROLLBACK")
                 raise
-            except Exception as e:
+            except Exception:
                 conn.execute("ROLLBACK")
                 raise
         raise RuntimeError("No se pudo completar la transacción después de varios intentos")
@@ -1243,9 +1243,6 @@ class Database:
 
                 # ✅ Normalizar estado antes de guardar
                 estado = self._normalizar_estado(agente.get('estado', 'Pendiente'))
-
-                # ✅ Descripción del agente
-                descripcion = str(agente.get('descripcion', '') or '')
 
                 # ✅ FASE 1: prompt del agente LLM (vacío si no aplica)
                 prompt_usado = str(agente.get('prompt_usado', '') or '')[:4000]

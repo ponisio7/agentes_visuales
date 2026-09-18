@@ -123,7 +123,7 @@ def extraer_contenido_relevante(
         if isinstance(encontrado, list):
             return encontrado
 
-    for clave, sub_valor in valor.items():
+    for sub_valor in valor.values():
         if isinstance(sub_valor, dict) and sub_valor:
             resultado_recursivo = extraer_contenido_relevante(
                 sub_valor, _profundidad + 1, _visitados

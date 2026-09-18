@@ -114,7 +114,7 @@ class ExtractorLecciones:
             return []
 
         # Ordenar por confianza descendente y limitar
-        lecciones.sort(key=lambda l: l.confianza, reverse=True)
+        lecciones.sort(key=lambda lec: lec.confianza, reverse=True)
         return lecciones[:max_lecciones]
 
     def formatear_para_prompt(self, lecciones: list[Leccion]) -> str:

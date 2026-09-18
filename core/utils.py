@@ -48,20 +48,16 @@ def extraer_json_de_llm(respuesta: str) -> dict[str, Any] | list | None:
     if inicio_objeto == -1:
         inicio = inicio_array
         fin = limpio.rfind(']')
-        es_array = True
     elif inicio_array == -1:
         inicio = inicio_objeto
         fin = limpio.rfind('}')
-        es_array = False
     else:
         if inicio_objeto < inicio_array:
             inicio = inicio_objeto
             fin = limpio.rfind('}')
-            es_array = False
         else:
             inicio = inicio_array
             fin = limpio.rfind(']')
-            es_array = True
     
     if fin == -1 or fin <= inicio:
         logger.debug(f"No se encontró JSON completo: {limpio[:100]}...")

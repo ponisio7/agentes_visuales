@@ -25,6 +25,15 @@ DEEPSEEK_BASE_URL_DEFAULT = 'https://api.deepseek.com'
 DEFAULT_MODEL_DEFAULT = 'deepseek-v4-flash'
 
 
+def _requiere_openai():
+    """Devuelve el módulo ``openai`` o salta el test si no está instalado."""
+    try:
+        import openai
+    except ImportError:
+        pytest.skip("openai no está instalado")
+    return openai
+
+
 def get_deepseek_client(api_key: str | None = None, base_url: str | None = None):
     """
     Obtiene un cliente de DeepSeek para pruebas.
@@ -100,10 +109,7 @@ class TestConexionRealDeepSeek:
     
     def test_conexion_basica(self):
         """Prueba la conexión básica con DeepSeek."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        openai = _requiere_openai()
         
         try:
             client = get_deepseek_client(api_key=DEEPSEEK_API_KEY)
@@ -137,10 +143,7 @@ class TestConexionRealDeepSeek:
     
     def test_conexion_con_prompt_largo(self):
         """Prueba conexión con un prompt más largo."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        _requiere_openai()
         
         try:
             client = get_deepseek_client(api_key=DEEPSEEK_API_KEY)
@@ -183,10 +186,7 @@ class TestConexionRealDeepSeek:
     
     def test_conexion_con_temperatura_variable(self):
         """Prueba conexión con diferentes temperaturas."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        _requiere_openai()
         
         try:
             client = get_deepseek_client(api_key=DEEPSEEK_API_KEY)
@@ -226,10 +226,7 @@ class TestConexionRealDeepSeek:
         Prueba el manejo de errores con modelo inexistente.
         CORREGIDO: Usa excepciones específicas de openai en lugar de Exception genérico.
         """
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        openai = _requiere_openai()
         
         try:
             client = get_deepseek_client(api_key=DEEPSEEK_API_KEY)
@@ -268,10 +265,7 @@ class TestDeepSeekMock:
     
     def test_cliente_creacion_con_api_key(self):
         """Prueba que crear cliente con API key funciona."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        _requiere_openai()
         
         client = get_deepseek_client(api_key='test-key-fake')
         assert client is not None
@@ -279,10 +273,7 @@ class TestDeepSeekMock:
     
     def test_cliente_con_base_url_personalizada(self):
         """Prueba creación de cliente con base_url personalizada."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        _requiere_openai()
         
         custom_url = 'https://custom.api.com/v1'
         client = get_deepseek_client(api_key='test-key', base_url=custom_url)
@@ -348,10 +339,7 @@ class TestDeepSeekMock:
     @patch('openai.OpenAI')
     def test_respuesta_exitosa(self, mock_openai_class):
         """Prueba el procesamiento de una respuesta exitosa mockeada."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        _requiere_openai()
         
         # Configurar mock
         mock_response = MagicMock()
@@ -385,10 +373,7 @@ class TestDeepSeekMock:
     @patch('openai.OpenAI')
     def test_respuesta_con_error(self, mock_openai_class):
         """Prueba el manejo de errores en la API mockeada."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        openai = _requiere_openai()
         
         # Configurar mock con error
         mock_client = MagicMock()
@@ -427,20 +412,14 @@ class TestDeepSeekConfiguracion:
     
     def test_get_deepseek_client_usa_url_por_defecto(self):
         """Verifica que get_deepseek_client usa la URL correcta por defecto."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        _requiere_openai()
         
         client = get_deepseek_client(api_key='test-key')
         assert 'deepseek.com' in str(client.base_url)
     
     def test_get_deepseek_client_sobreescribe_url(self):
         """Verifica que se puede sobreescribir la URL base."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        _requiere_openai()
         
         custom_url = 'https://mi-api.custom.com/v1'
         client = get_deepseek_client(api_key='test-key', base_url=custom_url)
@@ -591,10 +570,7 @@ class TestDeepSeekPerformance:
     
     def test_tiempo_respuesta(self):
         """Prueba el tiempo de respuesta de la API."""
-        try:
-            import openai
-        except ImportError:
-            pytest.skip("openai no está instalado")
+        _requiere_openai()
         
         try:
             client = get_deepseek_client(api_key=DEEPSEEK_API_KEY)
@@ -606,7 +582,7 @@ class TestDeepSeekPerformance:
         start = time.time()
         
         try:
-            response = client.chat.completions.create(
+            client.chat.completions.create(
                 model=DEFAULT_MODEL_DEFAULT,
                 messages=[{"role": "user", "content": "Hola, ¿cómo estás?"}],
                 max_tokens=20

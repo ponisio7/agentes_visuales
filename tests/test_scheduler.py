@@ -881,7 +881,7 @@ class TestSchedulerConcurrencia:
                 agente = Agente(nombre=f"Thread_{i}")
                 scheduler.agregar_agente(agente)
                 resultados.append(True)
-            except Exception as e:
+            except Exception:
                 resultados.append(False)
         
         # Crear y lanzar múltiples hilos

@@ -143,11 +143,8 @@ class AgentTextParser:
         """Separa el texto en bloques de agentes."""
         bloques = []
         bloque_actual = None
-        linea_num = 0
-        
+
         for i, linea in enumerate(lineas, 1):
-            linea_num = i
-            
             # Ignorar comentarios
             if self.RE_COMMENT.match(linea):
                 continue

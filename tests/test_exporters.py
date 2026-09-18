@@ -349,8 +349,7 @@ class TestStreaming:
         ruta = os.path.join(temp_dir, "stream.csv")
 
         def generador():
-            for item in sample_data:
-                yield item
+            yield from sample_data
 
         result = exporter.exportar_streaming(generador(), ruta=ruta, formato="csv")
 

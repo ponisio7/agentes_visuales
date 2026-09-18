@@ -13,7 +13,6 @@ Uso:
     engine = obtener_learning_engine(db_path="...", llm_client=...)
 """
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

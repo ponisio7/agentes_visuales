@@ -24,7 +24,6 @@ CARACTERÍSTICAS:
 """
 
 import os
-import sys
 import tempfile
 import time
 
@@ -643,7 +642,7 @@ except Exception as e:
         temp_manager.cleanup_all()
 
         # Registrar muchos archivos (más del límite)
-        for i in range(MAX_TEMP_FILES + 10):
+        for _ in range(MAX_TEMP_FILES + 10):
             with tempfile.NamedTemporaryFile(delete=False) as f:
                 temp_manager.register(f.name)
 
@@ -661,7 +660,7 @@ except Exception as e:
 
         # Crear archivos temporales
         paths = []
-        for i in range(5):
+        for _ in range(5):
             with tempfile.NamedTemporaryFile(delete=False) as f:
                 paths.append(f.name)
                 temp_manager.register(f.name)
@@ -1016,8 +1015,9 @@ time.sleep(0.1)
 resultado = {'id': threading.get_ident()}
 """
 
+        import concurrent.futures
+
         def ejecutar():
-            '''
             return PythonSandbox.ejecutar(codigo, {}, timeout=5)
 
         # Ejecutar 10 veces concurrentemente
@@ -1028,12 +1028,7 @@ resultado = {'id': threading.get_ident()}
         # Todos deberían ser exitosos
         for exito, mensaje, resultado in resultados:
             assert exito is True, f"Falló: {mensaje}"
-            assert 'id' in resultado'''
-            
-            result = PythonSandbox.ejecutar(codigo, {}, timeout=5)
-            # Añadir: imprimir el stdout/stderr crudo del sandbox
-            print(f"[TEST] exito={result[0]} msg={result[1][:60]!r} res_keys={list(result[2].keys())}", file=sys.stderr)
-            return result
+            assert 'id' in resultado
 
     def test_cache_concurrente(self):
         """Prueba acceso concurrente a la caché."""
@@ -1052,7 +1047,7 @@ resultado = {'id': threading.get_ident()}
             resultados = [f.result() for f in futures]
 
         # Todos deberían ser exitosos
-        for exito, mensaje, resultado in resultados:
+        for exito, *_ in resultados:
             assert exito is True
 
         # La caché debería tener hits y misses

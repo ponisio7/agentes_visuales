@@ -32,8 +32,6 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
         logger.warning(f"No se pudo guardar la ejecución: {e}")
         return None
     agentes_snapshot = _construir_snapshot(scheduler)
-    try: stats_snap = dict(scheduler.obtener_estadisticas())
-    except Exception: stats_snap = {}
     db_path = db.db_path
     problema_snap = problema or ""
     plan_snap = plan

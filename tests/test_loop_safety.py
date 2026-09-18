@@ -867,10 +867,9 @@ resultado = {
         
         # Esperar a que termine
         timeout = 10.0
-        start = time.time()
         
         completado = esperar_condicion(lambda: terminado, timeout=timeout, qapp=qapp)
-        assert completado, "El flujo no terminó en %s segundos" % timeout
+        assert completado, f"El flujo no terminó en {timeout} segundos"
         
         # Verificar resultados
         stats = scheduler.obtener_estadisticas()
@@ -930,10 +929,9 @@ resultado = {
         
         # Esperar a que termine
         timeout = 10.0
-        start = time.time()
         
         completado = esperar_condicion(lambda: terminado, timeout=timeout, qapp=qapp)
-        assert completado, "El flujo no terminó en %s segundos" % timeout
+        assert completado, f"El flujo no terminó en {timeout} segundos"
         
         # Verificar que el loop falló
         stats = scheduler.obtener_estadisticas()
@@ -986,10 +984,9 @@ resultado = {
         scheduler.iniciar()
         
         timeout = 10.0
-        start = time.time()
         
         completado = esperar_condicion(lambda: terminado, timeout=timeout, qapp=qapp)
-        assert completado, "El flujo no terminó en %s segundos" % timeout
+        assert completado, f"El flujo no terminó en {timeout} segundos"
         
         stats = scheduler.obtener_estadisticas()
         assert stats['completados'] == 2
