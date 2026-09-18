@@ -5,6 +5,10 @@ logs/
 
 # Output del pipeline
 imagenes/
+clima.txt
+cuento_*.txt
+cuento_*.docx
+embeding.txt
 
 # Basura de ejecuciones (PostScript, PDFs sueltos)
 sqlite3
