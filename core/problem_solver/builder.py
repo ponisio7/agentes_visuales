@@ -1,4 +1,3 @@
-# core/problem_solver/builder.py
 """
 PlanBuilder: construcción de ExecutionPlan/Agente a partir de la respuesta
 del LLM. Extraído de los métodos privados de ProblemSolver (monolito) —
@@ -9,13 +8,13 @@ Métodos migrados desde el monolito (misma lógica; solo cambia el "self"
 de ProblemSolver por el de PlanBuilder, y se hacen públicos los que
 `solver.py` necesita llamar desde fuera):
 
-    _construir_plan     -> construir_plan      (público)
-    _generar_agentes    -> generar_agentes     (público)
-    _paso_a_agente      -> paso_a_agente       (público, lo usa generar_agentes internamente)
+    _construir_plan -> construir_plan (público)
+    _generar_agentes -> generar_agentes (público)
+    _paso_a_agente -> paso_a_agente (público, lo usa generar_agentes internamente)
     _kwargs_python..._kwargs_loop -> _kwargs_* (privados, dispatch interno)
-    _endurecer_prompt_llm          -> _endurecer_prompt_llm (privado, solo lo usa _kwargs_llm)
+    _endurecer_prompt_llm -> _endurecer_prompt_llm (privado, solo lo usa _kwargs_llm)
 
-⚠️ Único cambio real de comportamiento (necesario para desacoplar de
+⚠ Único cambio real de comportamiento (necesario para desacoplar de
 ProblemSolver): igual que en `validator.py`, el monolito usaba
 `self._plan_actual` (estado de instancia de ProblemSolver) dentro de
 `_validar_campos_configuracion`, invocado indirectamente desde
@@ -31,7 +30,7 @@ from typing import Any, Dict, List
 
 from core.agent import Agente, TipoAgente
 
-from .models import ExecutionPlan, StepPlan
+from.models import ExecutionPlan, StepPlan
 
 class PlanBuilder:
     """Construye el ExecutionPlan y los Agente a partir de la respuesta del LLM."""
@@ -56,9 +55,9 @@ class PlanBuilder:
                         "import json\n\n"
                         "data = contexto if contexto else {}\n\n"
                         "resultado = {\n"
-                        "    'status': 'ok',\n"
-                        "    'problema': 'Resuelto',\n"
-                        "    'datos': data\n"
+                        " 'status': 'ok',\n"
+                        " 'problema': 'Resuelto',\n"
+                        " 'datos': data\n"
                         "}\n"
                     ),
                     "timeout": 30
@@ -122,8 +121,8 @@ class PlanBuilder:
                     codigo_python=(
                         "import json\n"
                         "resultado = {\n"
-                        "    'error': 'Fallo en la generación',\n"
-                        "    'detalle': str(e)\n"
+                        " 'error': 'Fallo en la generación',\n"
+                        " 'detalle': str(e)\n"
                         "}\n"
                     )
                 )
@@ -199,11 +198,11 @@ class PlanBuilder:
         # ── 4. Añadir configuración específica según tipo ──
         dispatch = {
             TipoAgente.PYTHON: self._kwargs_python,
-            TipoAgente.HTTP:   self._kwargs_http,
-            TipoAgente.LLM:    self._kwargs_llm,
-            TipoAgente.SHELL:  self._kwargs_shell,
-            TipoAgente.FILE:   self._kwargs_file,
-            TipoAgente.LOOP:   self._kwargs_loop,
+            TipoAgente.HTTP: self._kwargs_http,
+            TipoAgente.LLM: self._kwargs_llm,
+            TipoAgente.SHELL: self._kwargs_shell,
+            TipoAgente.FILE: self._kwargs_file,
+            TipoAgente.LOOP: self._kwargs_loop,
         }
 
         helper = dispatch.get(tipo)
@@ -280,7 +279,7 @@ class PlanBuilder:
         max_tokens = int(config.get('max_tokens', MIN_TOKENS_SEGUROS) or MIN_TOKENS_SEGUROS)
         if max_tokens < MIN_TOKENS_SEGUROS:
             self.logger.warning(
-                f"⚠️ Paso LLM '{paso.nombre}': max_tokens={max_tokens} "
+                f"⚠ Paso LLM '{paso.nombre}': max_tokens={max_tokens} "
                 f"insuficiente para thinking. Subiendo a {MIN_TOKENS_SEGUROS}."
             )
             max_tokens = MIN_TOKENS_SEGUROS
@@ -293,11 +292,10 @@ class PlanBuilder:
         prompt_endurecido = self._endurecer_prompt_llm(prompt_original)
 
         # ── 3. ✅ FASE 5b: matching semántico por embeddings ──
-        prompt_final = prompt_endurecido   # fallback si no hay match
+        prompt_final = prompt_endurecido # fallback si no hay match
         prompt_id_elegido = 0
         self.logger.info(
             f"[AB-DEBUG]"
-            
         )
         try:
             from learning.embedding_matcher import obtener_matcher
@@ -305,7 +303,6 @@ class PlanBuilder:
 
             db_path = "agent_history.db"
             matcher = obtener_matcher()
-            
 
             # 3a. Buscar match activo
             match_activo = matcher.buscar_match(
@@ -373,9 +370,11 @@ class PlanBuilder:
 
         # ── 4. Asignar al kwargs ── modificado 16 septiembre 2026 12:38 hora Madrid
         prompt_final_endurecido = self._endurecer_prompt_llm(prompt_final)
-        kwargs['prompt_llm'] = prompt_final_endurecido
+        prompt_con_contrato = _inyectar_contrato_salida(
+            prompt_final_endurecido, paso.nombre
+        )
+        kwargs['prompt_llm'] = prompt_con_contrato
         kwargs['prompt_reescrito_id'] = int(prompt_id_elegido or 0)
-        
 
     def _endurecer_prompt_llm(self, prompt_original: str) -> str: # modificado 16 septiembre 2026 12:38 hora Madrid
         """
@@ -444,3 +443,93 @@ class PlanBuilder:
         kwargs['timeout_loop'] = int(config.get('timeout_loop', 300))
         kwargs['timeout_python'] = int(config.get('timeout_python', 30))
         kwargs['continuar_en_error'] = bool(config.get('continuar_en_error', False))
+
+# ============================================================
+# CONTRATOS DE SALIDA POR PASO
+# ============================================================
+# Mapa de nombre_paso → bloque de contrato a inyectar en su prompt.
+#
+# Motivación: el LLM planificador describe qué claves debe producir
+# cada paso (ver PromptBuilder.DOCX_IMAGE_RULES), pero al materializar
+# el Agente LLM, su prompt_llm NO incluye esa información. Resultado:
+# el LLM que ejecuta el paso devuelve texto natural, y el consumidor
+# (que espera JSON) falla con "El LLM no devolvió descripciones válidas".
+#
+# Este mapa cierra ese hueco. Añadir un contrato nuevo = añadir una
+# entrada aquí. Cero lógica adicional.
+#
+# Idempotente: si el prompt ya contiene el marcador, no se duplica.
+# ============================================================
+CONTRATOS_SALIDA_POR_PASO: Dict[str, str] = {
+    "GenerarCuento": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "cuento": "<texto completo del cuento, en prosa, sin markdown>",\n'
+        ' "descripciones_imagenes": [\n'
+        ' "<descripción de la imagen 1, en inglés, para un generador>",\n'
+        ' "<descripción de la imagen 2, en inglés, para un generador>"\n'
+        " ]\n"
+        "}\n"
+        "El número de elementos en descripciones_imagenes debe coincidir "
+        "con el número de imágenes pedidas en el problema.\n"
+        "Sin markdown fences, sin texto adicional fuera del JSON.\n"
+    ),
+    "GenerarInforme": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "informe": "<texto completo del informe, en markdown>"\n'
+        "}\n"
+        "Sin markdown fences, sin texto adicional fuera del JSON.\n"
+    ),
+    "GenerarTextoChino": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "texto": "<texto en chino mandarín>"\n'
+        "}\n"
+        "Sin markdown fences, sin texto adicional fuera del JSON.\n"
+    ),
+    "GenerarTextoEsperanto": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "texto": "<texto en esperanto>"\n'
+        "}\n"
+        "Sin markdown fences, sin texto adicional fuera del JSON.\n"
+    ),
+    "GenerarTextoMedieval": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "texto": "<texto en español medieval>"\n'
+        "}\n"
+        "Sin markdown fences, sin texto adicional fuera del JSON.\n"
+    ),
+    "GenerarCatalogoRopa": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "catalogo": [\n'
+        ' {"id": 1, "nombre": "...", "descripcion": "...", "precio": 0.0},\n'
+        ' {"id": 2, "nombre": "...", "descripcion": "...", "precio": 0.0}\n'
+        " ]\n"
+        "}\n"
+        "Sin markdown fences, sin texto adicional fuera del JSON.\n"
+    ),
+}
+
+MARCADOR_CONTRATO = "CONTRATO DE SALIDA OBLIGATORIO:"
+
+def _inyectar_contrato_salida(prompt: str, nombre_paso: str) -> str:
+    """
+    Si el paso tiene un contrato declarado en CONTRATOS_SALIDA_POR_PASO,
+    lo añade al final del prompt. Idempotente.
+    """
+    contrato = CONTRATOS_SALIDA_POR_PASO.get(nombre_paso)
+    if not contrato:
+        return prompt
+    if MARCADOR_CONTRATO in prompt:
+        return prompt
+    return prompt + contrato
