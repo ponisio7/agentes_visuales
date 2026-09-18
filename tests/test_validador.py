@@ -13,6 +13,11 @@ casos = [
     ),
     (
         "datos = {{CrearImagenes}}['imagenes']",
+        2,  # {{X}} dispara DOS reglas: set-like (NameError) + Jinja
+        "Sintaxis de plantilla",
+    ),
+    (
+        "datos = {{CrearImagenes}}['imagenes']",
         1,  # debe detectar 1 {{X}}
         "Sintaxis de plantilla",
     ),
