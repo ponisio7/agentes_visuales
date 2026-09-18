@@ -29,24 +29,23 @@ El código del usuario tiene acceso completo al intérprete Python.
 Para un sandbox real, usar contenedores (Docker) o RestrictedPython.
 """
 
-import subprocess
-import tempfile
-import os
-import json
-import sys
-import platform
-import time
-import hashlib
-import threading
-import re
 import atexit
-from typing import Dict, Tuple, Optional, Any, List
-from pathlib import Path
-from dataclasses import dataclass, field
-from collections import OrderedDict
+import hashlib
+import json
 import logging
+import os
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Any, Optional
 
-from .cancellation import obtener_gestor_cancelacion, CancellationToken
+from .cancellation import CancellationToken
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -103,9 +102,9 @@ class SandboxResult:
     """Resultado de una ejecución en el sandbox."""
     success: bool
     message: str
-    result: Dict[str, Any]
+    result: dict[str, Any]
     execution_time: float = 0.0
-    memory_used: Optional[int] = None
+    memory_used: int | None = None
     exit_code: int = 0
     stdout: str = ""
     stderr: str = ""
@@ -155,7 +154,7 @@ class TempFileManager:
         if self._initialized:
             return
         self._initialized = True
-        self._temp_files: Dict[str, float] = OrderedDict()
+        self._temp_files: dict[str, float] = OrderedDict()
         self._lock = threading.RLock()
         self._cleanup_thread = None
         self._stop_cleanup = False
@@ -278,7 +277,7 @@ class SandboxCache:
         code_hash = hashlib.sha256(codigo.encode('utf-8')).hexdigest()
         return f"{code_hash}_{contexto_hash}"
     
-    def get(self, codigo: str, contexto: Dict) -> Optional[SandboxResult]:
+    def get(self, codigo: str, contexto: dict) -> SandboxResult | None:
         """
         Obtiene un resultado del caché si existe y es válido.
         
@@ -308,7 +307,7 @@ class SandboxCache:
             self._misses += 1
             return None
     
-    def put(self, codigo: str, contexto: Dict, result: SandboxResult):
+    def put(self, codigo: str, contexto: dict, result: SandboxResult):
         """
         Guarda un resultado en el caché.
         
@@ -340,7 +339,7 @@ class SandboxCache:
             self._hits = 0
             self._misses = 0
     
-    def get_stats(self) -> Dict[str, int]:
+    def get_stats(self) -> dict[str, int]:
         """Obtiene estadísticas del caché."""
         with self._lock:
             return {
@@ -368,8 +367,8 @@ class PythonSandbox:
     - Logging detallado
     """
     
-    _temp_manager: Optional[TempFileManager] = None
-    _cache: Optional[SandboxCache] = None
+    _temp_manager: TempFileManager | None = None
+    _cache: SandboxCache | None = None
     _class_lock = threading.RLock()
     
     @classmethod
@@ -396,7 +395,7 @@ class PythonSandbox:
                 cls._cache.clear()
     
     @classmethod
-    def get_cache_stats(cls) -> Dict[str, int]:
+    def get_cache_stats(cls) -> dict[str, int]:
         """Obtiene estadísticas del caché."""
         with cls._class_lock:
             if cls._cache:
@@ -419,12 +418,12 @@ class PythonSandbox:
     @staticmethod
     def ejecutar(
         codigo: str,
-        contexto: Dict,
+        contexto: dict,
         timeout: int = DEFAULT_TIMEOUT,
         use_cache: bool = False,
-        memory_limit_mb: Optional[int] = None,
+        memory_limit_mb: int | None = None,
         cancellation_token: Optional['CancellationToken'] = None
-    ) -> Tuple[bool, str, Dict]:
+    ) -> tuple[bool, str, dict]:
         """
         Ejecuta código Python en un subproceso aislado.
         
@@ -534,7 +533,7 @@ class PythonSandbox:
     # ============================================================
     
     @staticmethod
-    def _construir_script(codigo_escapado: str, contexto: Dict) -> str:
+    def _construir_script(codigo_escapado: str, contexto: dict) -> str:
         """
         ✅ CORREGIDO: Construye el script completo a ejecutar.
         Ahora usa globals() en lugar de locals() para capturar 'resultado'.
@@ -709,8 +708,8 @@ if __name__ == "__main__":
     @staticmethod
     def _comando_con_limite_memoria(
         script_path: str,
-        memory_limit_mb: Optional[int],
-    ) -> List[str]:
+        memory_limit_mb: int | None,
+    ) -> list[str]:
         """Construye el comando de ejecución aplicando el límite de memoria.
 
         En POSIX, en lugar de ``preexec_fn`` (no seguro cuando hay hilos), se
@@ -740,9 +739,9 @@ if __name__ == "__main__":
     @staticmethod
     def _ejecutar_script(
         script: str,
-        contexto: Dict,
+        contexto: dict,
         timeout: int,
-        memory_limit_mb: Optional[int] = None,
+        memory_limit_mb: int | None = None,
         cancellation_token: Optional['CancellationToken'] = None
     ) -> SandboxResult:
         """
@@ -883,7 +882,7 @@ if __name__ == "__main__":
                             debug_path = os.path.join(debug_dir, "sandbox_debug.log")
                             with open(debug_path, "a", encoding="utf-8") as f:
                                 f.write("=" * 80 + "\n")
-                                f.write(f"=== SANDBOX DEBUG ===\n")
+                                f.write("=== SANDBOX DEBUG ===\n")
                                 f.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                                 f.write(f"Script path: {script_path}\n")
                                 f.write(f"stderr (filtrado):\n{stderr_util}\n")
@@ -893,7 +892,7 @@ if __name__ == "__main__":
                         except Exception:
                             pass
                     else:
-                        logger.debug(f"stderr solo contenía warnings, ignorado")
+                        logger.debug("stderr solo contenía warnings, ignorado")
                         # Opcional: guardar el stderr crudo en el debug log por si acaso
                         try:
                             debug_dir = os.path.join(os.getcwd(), "logs")
@@ -901,7 +900,7 @@ if __name__ == "__main__":
                             debug_path = os.path.join(debug_dir, "sandbox_debug.log")
                             with open(debug_path, "a", encoding="utf-8") as f:
                                 f.write("=" * 80 + "\n")
-                                f.write(f"=== SANDBOX WARNINGS (no errores) ===\n")
+                                f.write("=== SANDBOX WARNINGS (no errores) ===\n")
                                 f.write(f"Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                                 f.write(f"stderr:\n{stderr}\n")
                                 f.write("=" * 80 + "\n\n")
@@ -1027,7 +1026,7 @@ if __name__ == "__main__":
     # ============================================================
     
     @classmethod
-    def probar_ejecucion(cls, codigo: str, contexto: Dict = None) -> Tuple[bool, str, Dict]:
+    def probar_ejecucion(cls, codigo: str, contexto: dict = None) -> tuple[bool, str, dict]:
         """
         Método de prueba para verificar la ejecución de código.
         
@@ -1042,7 +1041,7 @@ if __name__ == "__main__":
         return cls.ejecutar(codigo, contexto, timeout=10)
     
     @classmethod
-    def probar_loop(cls, codigo_por_item: str, items: List[Any]) -> Tuple[bool, str, Dict]:
+    def probar_loop(cls, codigo_por_item: str, items: list[Any]) -> tuple[bool, str, dict]:
         """
         Prueba un código de loop con items de ejemplo.
         
@@ -1087,7 +1086,7 @@ if __name__ == "__main__":
         }
     
     @classmethod
-    def diagnosticar_contexto(cls, contexto: Dict) -> Dict:
+    def diagnosticar_contexto(cls, contexto: dict) -> dict:
         """
         Analiza un contexto y reporta si es serializable a JSON y, si no,
         qué claves fallan y por qué. Es una utilidad de diagnóstico bajo
@@ -1134,7 +1133,7 @@ if __name__ == "__main__":
             }
 
     @classmethod
-    def get_status(cls) -> Dict:
+    def get_status(cls) -> dict:
         """
         Obtiene el estado del sandbox.
         

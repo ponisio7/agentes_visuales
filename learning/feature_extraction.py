@@ -6,8 +6,9 @@ diccionario de features homogéneo, para que el mismo vectorizador
 (DictVectorizer) sirva tanto en entrenamiento como en predicción en vivo.
 """
 from __future__ import annotations
-from typing import Any, Dict
+
 import json
+from typing import Any
 
 CAMPOS_TEXTO_POR_TIPO = {
     "Python": ["codigo"],
@@ -28,7 +29,7 @@ def _longitud_segura(valor: Any) -> int:
         return 0
 
 
-def extraer_features_agente(agente: Any) -> Dict[str, Any]:
+def extraer_features_agente(agente: Any) -> dict[str, Any]:
     """
     Features de un objeto Agente REAL, previo a la ejecución.
     Usa getattr con default para tolerar atributos ausentes según el tipo
@@ -43,7 +44,7 @@ def extraer_features_agente(agente: Any) -> Dict[str, Any]:
         _longitud_segura(getattr(agente, c, None)) for c in campos_texto
     )
 
-    features: Dict[str, Any] = {
+    features: dict[str, Any] = {
         "tipo": tipo_str,
         "num_dependencias": len(deps),
         "longitud_nombre": _longitud_segura(getattr(agente, "nombre", "")),
@@ -85,7 +86,7 @@ def extraer_features_agente(agente: Any) -> Dict[str, Any]:
     return features
 
 
-def extraer_features_registro_historico(fila: Dict[str, Any]) -> Dict[str, Any]:
+def extraer_features_registro_historico(fila: dict[str, Any]) -> dict[str, Any]:
     """
     Features equivalentes a partir de una fila de agentes_ejecucion (para
     entrenar). No todos los campos del Agente original están disponibles
@@ -110,17 +111,17 @@ def extraer_features_registro_historico(fila: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def extraer_features_plan(plan: Any) -> Dict[str, Any]:
+def extraer_features_plan(plan: Any) -> dict[str, Any]:
     """Features agregadas de un ExecutionPlan completo (para el PlanScorer)."""
     pasos = getattr(plan, "pasos", []) or []
     tipos = [getattr(p, "tipo_agente", "Desconocido") for p in pasos]
 
-    conteo_tipos: Dict[str, Any] = {}
+    conteo_tipos: dict[str, Any] = {}
     for t in tipos:
         clave = f"tipo_{t}"
         conteo_tipos[clave] = conteo_tipos.get(clave, 0) + 1
 
-    features: Dict[str, Any] = {
+    features: dict[str, Any] = {
         "num_pasos": len(pasos),
         "num_criticos": sum(
             1 for p in pasos if getattr(p, "es_critico", False)
@@ -139,7 +140,7 @@ def extraer_features_plan(plan: Any) -> Dict[str, Any]:
     return features
 
 
-def etiqueta_exito(fila: Dict[str, Any]) -> int:
+def etiqueta_exito(fila: dict[str, Any]) -> int:
     """1 = éxito, 0 = fallo, según el campo 'estado' del historial."""
     estado = (fila.get("estado") or "").lower()
     return 1 if estado in (

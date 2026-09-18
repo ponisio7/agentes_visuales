@@ -14,16 +14,24 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from contextlib import closing        # ← añadir
+from contextlib import closing  # ← añadir
 from datetime import datetime
-from typing import Dict, List, Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor, QTextCursor
+from PyQt6.QtGui import QFont, QTextCursor
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QPushButton, QTableWidget, QTableWidgetItem,
-    QHeaderView, QFrame, QTextEdit, QSizePolicy,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
 
 logger = logging.getLogger(__name__)
@@ -271,7 +279,7 @@ class AdminPanelWindow(QMainWindow):
             logger.exception("Error cargando panel admin")
             self._log(f"❌ Error: {e}")
 
-    def _leer_kpis(self) -> Dict:
+    def _leer_kpis(self) -> dict:
         """Consulta los KPIs principales."""
         with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
             conn.row_factory = sqlite3.Row
@@ -305,7 +313,7 @@ class AdminPanelWindow(QMainWindow):
                 "usos_con_score": usos_con_score,
             }
 
-    def _leer_reescrituras(self) -> List[Dict]:
+    def _leer_reescrituras(self) -> list[dict]:
         """Lee todas las reescrituras con su score medio."""
         with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
             conn.row_factory = sqlite3.Row
@@ -340,7 +348,7 @@ class AdminPanelWindow(QMainWindow):
     # ────────────────────────────────────────────────────────────
     # Render
     # ────────────────────────────────────────────────────────────
-    def _actualizar_kpis(self, kpis: Dict):
+    def _actualizar_kpis(self, kpis: dict):
         self.kpi_feedback.set_valor(kpis["feedback"])
         self.kpi_reescrituras.set_valor(kpis["total_reescrituras"])
         self.kpi_activos.set_valor(kpis["activos"])
@@ -350,7 +358,7 @@ class AdminPanelWindow(QMainWindow):
         self.kpi_promociones.set_valor(kpis["activos"])
         self.kpi_descartes.set_valor(kpis["descartados"])
 
-    def _actualizar_tabla(self, filas: List[Dict]):
+    def _actualizar_tabla(self, filas: list[dict]):
         self.tabla.setRowCount(len(filas))
         for i, r in enumerate(filas):
             firma_corta = (r["firma"] or "")[:8]
@@ -378,7 +386,7 @@ class AdminPanelWindow(QMainWindow):
                 self.tabla.setItem(i, j, item)
 
     @staticmethod
-    def _item(texto: str, color: Optional[str] = None, bold: bool = False) -> QTableWidgetItem:
+    def _item(texto: str, color: str | None = None, bold: bool = False) -> QTableWidgetItem:
         it = QTableWidgetItem(texto)
         if color:
             from PyQt6.QtGui import QColor

@@ -4,14 +4,14 @@ Utilidades para extracción de JSON de respuestas del LLM.
 """
 
 import json
-import re
 import logging
-from typing import Optional, Dict, Any, Union
+import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 
-def extraer_json_de_llm(respuesta: str) -> Optional[Union[Dict[str, Any], list]]:
+def extraer_json_de_llm(respuesta: str) -> dict[str, Any] | list | None:
     """
     Extrae un JSON válido de una respuesta del LLM.
     

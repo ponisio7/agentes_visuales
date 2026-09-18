@@ -4,11 +4,11 @@ Extracción inteligente de contenido desde resultados de agentes,
 sustitución de variables y utilidades relacionadas.
 """
 
-import os
 import json
-import shlex
 import logging
-from typing import Dict, Any, Optional, Set, List
+import os
+import shlex
+from typing import Any
 
 from core.agent import Agente
 
@@ -60,7 +60,7 @@ _CLAVES_ESTRUCTURA_DOCUMENTO = (
 def extraer_contenido_relevante(
     valor: Any,
     _profundidad: int = 0,
-    _visitados: Optional[Set[int]] = None
+    _visitados: set[int] | None = None
 ) -> Any:
     """
     Extrae el contenido más relevante de un resultado de agente.
@@ -138,7 +138,7 @@ def extraer_contenido_relevante(
 # VARIABLES Y SUSTITUCIÓN
 # ============================================================
 
-def variables_disponibles(agente: Agente, contexto: Dict) -> Dict[str, str]:
+def variables_disponibles(agente: Agente, contexto: dict) -> dict[str, str]:
     """Construye el diccionario de variables sustituibles."""
     import time as _time
     contexto = contexto or {}
@@ -184,7 +184,7 @@ def variables_disponibles(agente: Agente, contexto: Dict) -> Dict[str, str]:
     return variables
 
 
-def sustituir_variables(texto: str, variables: Dict[str, str]) -> str:
+def sustituir_variables(texto: str, variables: dict[str, str]) -> str:
     """Sustituye variables en un texto usando el patrón {variable}."""
     if not texto or "{" not in texto or not variables:
         return texto
@@ -195,7 +195,7 @@ def sustituir_variables(texto: str, variables: Dict[str, str]) -> str:
     return pattern.sub(lambda m: variables.get(m.group(1), m.group(0)), texto)
 
 
-def resolver_ruta_en_contexto(contexto: Dict, ruta: str) -> Any:
+def resolver_ruta_en_contexto(contexto: dict, ruta: str) -> Any:
     """Resuelve una ruta en el contexto (ej: 'Dependencia.clave')."""
     if not ruta:
         return None
@@ -213,7 +213,7 @@ def resolver_ruta_en_contexto(contexto: Dict, ruta: str) -> Any:
 # DETECCIÓN DE COMANDOS PRIVILEGIADOS
 # ============================================================
 
-def extraer_primer_comando(comando: str) -> Optional[str]:
+def extraer_primer_comando(comando: str) -> str | None:
     """Extrae el primer comando 'real' de una cadena shell."""
     if not comando or not comando.strip():
         return None

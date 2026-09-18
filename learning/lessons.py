@@ -11,13 +11,15 @@ planes.
 NO usa el LLM para nada: es pura minería sobre la BD.
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
-from collections import Counter, defaultdict
-import sqlite3
+
 import logging
+import sqlite3
+from collections import Counter, defaultdict
 from contextlib import closing
+from dataclasses import dataclass
+
 from core.plan_repairs import GENERADOR_URLS_NOMBRE
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ class ExtractorLecciones:
     def __init__(self, db_path: str):
         self.db_path = str(db_path)
 
-    def _lecciones_por_reparaciones(self, conn: sqlite3.Connection) -> List[Leccion]:
+    def _lecciones_por_reparaciones(self, conn: sqlite3.Connection) -> list[Leccion]:
         """
         Si un tipo de reparación se repite N veces, genera una lección
         que se inyectará en el prompt para que el LLM aprenda.
@@ -82,7 +84,7 @@ class ExtractorLecciones:
                 ))
         return lecciones
 
-    def _texto_leccion_reparacion(self, tipo: str, n: int) -> Optional[str]:
+    def _texto_leccion_reparacion(self, tipo: str, n: int) -> str | None:
         if tipo == GENERADOR_URLS_NOMBRE:
             return (
                 "Cuando el usuario pida un documento CON IMÁGENES, DEBES "
@@ -96,7 +98,7 @@ class ExtractorLecciones:
     # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
-    def extraer(self, max_lecciones: int = MAX_LECCIONES) -> List[Leccion]:
+    def extraer(self, max_lecciones: int = MAX_LECCIONES) -> list[Leccion]:
         """Devuelve una lista de lecciones ordenadas por confianza."""
         try:
             with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
@@ -115,7 +117,7 @@ class ExtractorLecciones:
         lecciones.sort(key=lambda l: l.confianza, reverse=True)
         return lecciones[:max_lecciones]
 
-    def formatear_para_prompt(self, lecciones: List[Leccion]) -> str:
+    def formatear_para_prompt(self, lecciones: list[Leccion]) -> str:
         """Convierte la lista en un bloque de texto para el system prompt."""
         if not lecciones:
             return ""
@@ -140,7 +142,7 @@ class ExtractorLecciones:
     # ------------------------------------------------------------------
     def _lecciones_por_error_recurrente(
         self, conn: sqlite3.Connection
-    ) -> List[Leccion]:
+    ) -> list[Leccion]:
         """
         Detecta errores que se repiten en agentes_ejecucion y los
         convierte en reglas del tipo "cuando X, haz Y".
@@ -183,7 +185,7 @@ class ExtractorLecciones:
                 ))
         return lecciones
 
-    def _categorizar_error(self, error: str, tipo: str) -> Optional[str]:
+    def _categorizar_error(self, error: str, tipo: str) -> str | None:
         """Clasifica un mensaje de error en una categoría."""
         if "path traversal" in error or "ruta contiene" in error:
             return "ruta_invalida"
@@ -241,7 +243,7 @@ class ExtractorLecciones:
 
         return None
 
-    def _texto_leccion_error(self, patron: str, n: int) -> tuple[Optional[str], str]:
+    def _texto_leccion_error(self, patron: str, n: int) -> tuple[str | None, str]:
         if patron == "json_truncado_llm":
             return (
                 "Cuando generes JSON grande, divide la salida en pasos más "
@@ -413,7 +415,7 @@ class ExtractorLecciones:
     # ------------------------------------------------------------------
     def _lecciones_por_score_bajo(
         self, conn: sqlite3.Connection
-    ) -> List[Leccion]:
+    ) -> list[Leccion]:
         """
         Agrupa evaluaciones con score bajo por tipo de agente y detecta
         tendencias: "los agentes tipo X están puntuando bajo".
@@ -507,7 +509,7 @@ class ExtractorLecciones:
     # ------------------------------------------------------------------
     def _lecciones_por_estructura(
         self, conn: sqlite3.Connection
-    ) -> List[Leccion]:
+    ) -> list[Leccion]:
         """
         Compara planes exitosos vs fallidos y extrae reglas estructurales
         (ej: "planes con 6+ agentes fallan más").

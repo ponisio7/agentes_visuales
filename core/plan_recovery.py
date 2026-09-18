@@ -11,8 +11,9 @@ Flujo:
 Máximo de Plan B por ejecución: 2 (configurable en el Scheduler).
 """
 from __future__ import annotations
-from typing import Optional, Any
+
 import logging
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,7 @@ class PlanRecovery:
         plan_fallido: Any,
         agente_fallido: Any,
         error: str,
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """
         Pide al LLM un plan alternativo y lo devuelve como ExecutionPlan.
         Devuelve None si algo falla.
@@ -298,7 +299,7 @@ class PlanRecovery:
         error: str,
         errores_sintaxis: list,
         lecciones: str,
-    ) -> Optional[Any]:
+    ) -> Any | None:
         """
         Reintenta generar el plan B con una instrucción correctiva que
         describe exactamente los errores de sintaxis detectados.
@@ -456,7 +457,7 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
             return None
 
     @staticmethod
-    def _parsear_respuesta_json(respuesta: str) -> Optional[dict]:
+    def _parsear_respuesta_json(respuesta: str) -> dict | None:
         """
         Extrae el JSON de la respuesta del LLM. Maneja:
         - JSON puro
@@ -591,7 +592,7 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
         return bloques
 
     @staticmethod
-    def _normalizar_plan_dict(data) -> Optional[dict]:
+    def _normalizar_plan_dict(data) -> dict | None:
         """Normaliza un dict/lista a `{"pasos": [...]}`."""
         if isinstance(data, dict):
             if "pasos" in data and isinstance(data["pasos"], list):

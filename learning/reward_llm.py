@@ -1,7 +1,6 @@
 import json
-import re
 import logging
-from typing import Optional
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +14,7 @@ class EvaluadorLLM:
     def __init__(
         self,
         llm_client,
-        modelo: Optional[str] = None,
+        modelo: str | None = None,
         temperature: float = 0.0,
         max_tokens: int = 500,   # ✅ subido de 200: thinking + JSON cabe
     ):

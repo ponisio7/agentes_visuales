@@ -4,13 +4,13 @@ Caché HTTP (LRU con TTL) y rate limiter para APIs externas.
 Thread-safe.
 """
 
-import json
-import time
 import hashlib
-import threading
+import json
 import logging
-from typing import Dict, Optional, Any, Union
+import threading
+import time
 from collections import OrderedDict
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class HTTPCache:
         self._lock = threading.RLock()
         self._stats = {"hits": 0, "misses": 0}
 
-    def _generate_key(self, url: str, method: str, headers: Dict, body: Optional[Any]) -> str:
+    def _generate_key(self, url: str, method: str, headers: dict, body: Any | None) -> str:
         headers_normalized = {k.lower(): v for k, v in (headers or {}).items()}
         headers_json = json.dumps(headers_normalized, sort_keys=True)
         body_str = ""
@@ -41,7 +41,7 @@ class HTTPCache:
         key_str = f"{method.upper()}|{url}|{headers_json}|{body_str}"
         return hashlib.sha256(key_str.encode('utf-8')).hexdigest()
 
-    def get(self, url: str, method: str, headers: Dict, body: Optional[Any]) -> Optional[Dict]:
+    def get(self, url: str, method: str, headers: dict, body: Any | None) -> dict | None:
         key = self._generate_key(url, method, headers, body)
         with self._lock:
             if key not in self._cache:
@@ -56,7 +56,7 @@ class HTTPCache:
             self._stats["hits"] += 1
             return entry['result']
 
-    def put(self, url: str, method: str, headers: Dict, body: Optional[Any], result: Dict):
+    def put(self, url: str, method: str, headers: dict, body: Any | None, result: dict):
         key = self._generate_key(url, method, headers, body)
         with self._lock:
             if len(self._cache) >= self.max_size:
@@ -69,7 +69,7 @@ class HTTPCache:
             self._cache.clear()
             self._stats = {"hits": 0, "misses": 0}
 
-    def get_stats(self) -> Dict[str, Union[int, float]]:
+    def get_stats(self) -> dict[str, int | float]:
         with self._lock:
             total = self._stats["hits"] + self._stats["misses"]
             return {

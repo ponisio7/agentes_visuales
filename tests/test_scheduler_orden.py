@@ -1,6 +1,9 @@
+import time
+
 from core.agent import Agente
 from core.scheduler import Scheduler  # <-- IMPORTANTE
-import time
+
+
 # tests/test_scheduler_orden.py
 class TestSchedulerOrden:
     """Pruebas de orden topológico de ejecución"""

@@ -12,8 +12,8 @@ llamador (Database._transaction) ya gestiona la transacción. Hacer commit
 aquí provocaría:
     sqlite3.OperationalError: cannot commit - no transaction is active
 """
-import sqlite3
 import logging
+import sqlite3
 
 logger = logging.getLogger(__name__)
 

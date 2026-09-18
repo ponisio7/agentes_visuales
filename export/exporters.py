@@ -17,18 +17,14 @@ CARACTERÍSTICAS:
 
 import csv
 import json
+import logging
 import os
 import time
-import logging
 import zipfile
-import io
-import base64
-from typing import List, Dict, Any, Optional, Union, Iterator, Tuple
-from datetime import datetime
-from pathlib import Path
-from dataclasses import dataclass, field
 from collections import defaultdict
-import re
+from collections.abc import Iterator
+from dataclasses import dataclass, field
+from datetime import datetime
 
 from .utils import aplanar_diccionario, aplanar_lista
 
@@ -71,11 +67,11 @@ class ExportConfig:
     comprimir: bool = False
     incluir_graficos: bool = True
     incluir_timestamp: bool = True
-    limit_rows: Optional[int] = None
+    limit_rows: int | None = None
     flatten: bool = True
     separator: str = "."
     estilo: str = "moderno"
-    plantilla: Optional[str] = None
+    plantilla: str | None = None
     chunk_size: int = CHUNK_SIZE
 
 
@@ -88,8 +84,8 @@ class ExportResult:
     filas_exportadas: int
     tamaño_bytes: int
     tiempo_ejecucion: float
-    errores: List[str] = field(default_factory=list)
-    advertencias: List[str] = field(default_factory=list)
+    errores: list[str] = field(default_factory=list)
+    advertencias: list[str] = field(default_factory=list)
 
 
 # ============================================================
@@ -101,7 +97,7 @@ class ResultExporter:
     Exporta resultados en diferentes formatos con soporte para datos anidados.
     """
     
-    def __init__(self, config: Optional[ExportConfig] = None):
+    def __init__(self, config: ExportConfig | None = None):
         """
         Inicializa el exportador.
         
@@ -128,9 +124,9 @@ class ResultExporter:
     
     def exportar(
         self,
-        agentes: List[Dict],
-        ruta: Optional[str] = None,
-        formato: Optional[str] = None,
+        agentes: list[dict],
+        ruta: str | None = None,
+        formato: str | None = None,
         **kwargs
     ) -> ExportResult:
         """
@@ -227,7 +223,7 @@ class ResultExporter:
     # CONFIGURACIÓN
     # ============================================================
     
-    def _actualizar_config(self, kwargs: Dict) -> ExportConfig:
+    def _actualizar_config(self, kwargs: dict) -> ExportConfig:
         """Actualiza la configuración con los kwargs proporcionados."""
         config = ExportConfig(
             formato=kwargs.get('formato', self.config.formato),
@@ -273,20 +269,20 @@ class ResultExporter:
     
     def _aplanar_diccionario(
         self,
-        d: Dict,
+        d: dict,
         parent_key: str = "",
         separator: str = ".",
         max_depth: int = 10
-    ) -> Dict:
+    ) -> dict:
         """Delegación en :func:`export.utils.aplanar_diccionario`."""
         return aplanar_diccionario(d, parent_key, separator, max_depth)
 
     def _aplanar_lista(
         self,
-        data: List[Dict],
+        data: list[dict],
         flatten: bool = True,
         separator: str = "."
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Delegación en :func:`export.utils.aplanar_lista`."""
         return aplanar_lista(data, flatten, separator)
 
@@ -296,10 +292,10 @@ class ResultExporter:
     
     def _exportar_csv(
         self,
-        agentes: List[Dict],
+        agentes: list[dict],
         ruta: str,
         config: ExportConfig
-    ) -> Tuple[int, List[str], List[str]]:
+    ) -> tuple[int, list[str], list[str]]:
         """
         Exporta a CSV con aplanamiento automático.
         """
@@ -348,10 +344,10 @@ class ResultExporter:
     
     def _exportar_json(
         self,
-        agentes: List[Dict],
+        agentes: list[dict],
         ruta: str,
         config: ExportConfig
-    ) -> Tuple[int, List[str], List[str]]:
+    ) -> tuple[int, list[str], list[str]]:
         errores = []
         advertencias = []
 
@@ -396,10 +392,10 @@ class ResultExporter:
     
     def _exportar_html(
         self,
-        agentes: List[Dict],
+        agentes: list[dict],
         ruta: str,
         config: ExportConfig
-    ) -> Tuple[int, List[str], List[str]]:
+    ) -> tuple[int, list[str], list[str]]:
         """
         Exporta a HTML con estilos y gráficos.
         """
@@ -433,7 +429,7 @@ class ResultExporter:
     
     def _generar_html(
         self,
-        data: List[Dict],
+        data: list[dict],
         total: int,
         completados: int,
         errores: int,
@@ -455,7 +451,7 @@ class ResultExporter:
                 estado = row.get('estado', 'Desconocido')
                 color = COLORES_ESTADO.get(estado, '#6c757d')
                 
-                rows_html += f'<tr style="border-bottom: 1px solid #dee2e6;">'
+                rows_html += '<tr style="border-bottom: 1px solid #dee2e6;">'
                 for header in headers:
                     value = row.get(header, '')
                     if header == 'estado':
@@ -610,10 +606,10 @@ class ResultExporter:
     
     def _exportar_excel(
         self,
-        agentes: List[Dict],
+        agentes: list[dict],
         ruta: str,
         config: ExportConfig
-    ) -> Tuple[int, List[str], List[str]]:
+    ) -> tuple[int, list[str], list[str]]:
         """
         Exporta a Excel con múltiples hojas.
         """
@@ -682,10 +678,10 @@ class ResultExporter:
     
     def _exportar_markdown(
         self,
-        agentes: List[Dict],
+        agentes: list[dict],
         ruta: str,
         config: ExportConfig
-    ) -> Tuple[int, List[str], List[str]]:
+    ) -> tuple[int, list[str], list[str]]:
         """
         Exporta a Markdown.
         """
@@ -752,10 +748,10 @@ class ResultExporter:
     
     def _exportar_pdf(
         self,
-        agentes: List[Dict],
+        agentes: list[dict],
         ruta: str,
         config: ExportConfig
-    ) -> Tuple[int, List[str], List[str]]:
+    ) -> tuple[int, list[str], list[str]]:
         """
         Exporta a PDF.
         """
@@ -763,11 +759,18 @@ class ResultExporter:
         advertencias = []
         
         try:
-            from reportlab.lib.pagesizes import letter, landscape
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
-            from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
             from reportlab.lib import colors
+            from reportlab.lib.pagesizes import landscape, letter
+            from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
             from reportlab.lib.units import inch
+            from reportlab.platypus import (
+                PageBreak,
+                Paragraph,
+                SimpleDocTemplate,
+                Spacer,
+                Table,
+                TableStyle,
+            )
         except ImportError:
             errores.append("reportlab no instalado. Ejecuta: pip install reportlab")
             return 0, errores, advertencias
@@ -784,7 +787,7 @@ class ResultExporter:
             if config.limit_rows:
                 data = data[:min(config.limit_rows, 5000)]
                 if len(data) < len(agentes):
-                    advertencias.append(f"Limitado a 5000 filas para PDF")
+                    advertencias.append("Limitado a 5000 filas para PDF")
             
             # Crear documento
             doc = SimpleDocTemplate(ruta, pagesize=letter)
@@ -865,10 +868,10 @@ class ResultExporter:
     
     def _exportar_txt(
         self,
-        agentes: List[Dict],
+        agentes: list[dict],
         ruta: str,
         config: ExportConfig
-    ) -> Tuple[int, List[str], List[str]]:
+    ) -> tuple[int, list[str], list[str]]:
         """
         Exporta a TXT con formato legible.
         """
@@ -954,7 +957,7 @@ class ResultExporter:
     
     def exportar_streaming(
         self,
-        generador: Iterator[Dict],
+        generador: Iterator[dict],
         ruta: str,
         formato: str = "csv",
         **kwargs
@@ -1022,10 +1025,10 @@ class ResultExporter:
     
     def _exportar_csv_streaming(
         self,
-        generador: Iterator[Dict],
+        generador: Iterator[dict],
         ruta: str,
         config: ExportConfig
-    ) -> Tuple[int, List[str], List[str]]:
+    ) -> tuple[int, list[str], list[str]]:
         """
         Exporta CSV desde un generador.
 
@@ -1051,7 +1054,7 @@ class ResultExporter:
                 errores.append("No hay datos para exportar")
                 return 0, errores, advertencias
 
-            def preparar(fila: Dict) -> Dict:
+            def preparar(fila: dict) -> dict:
                 if config.flatten:
                     fila = self._aplanar_diccionario(fila, separator=config.separator)
                 return {k: (v if v is not None else '') for k, v in fila.items()}
@@ -1103,7 +1106,7 @@ class ResultExporter:
     # ============================================================
     
     @staticmethod
-    def obtener_formatos_soportados() -> List[str]:
+    def obtener_formatos_soportados() -> list[str]:
         """
         Obtiene la lista de formatos soportados.
         
@@ -1140,8 +1143,8 @@ class ResultExporter:
 # ============================================================
 
 def exportar_resultados(
-    agentes: List[Dict],
-    ruta: Optional[str] = None,
+    agentes: list[dict],
+    ruta: str | None = None,
     formato: str = "json",
     **kwargs
 ) -> ExportResult:

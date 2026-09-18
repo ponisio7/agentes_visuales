@@ -24,19 +24,18 @@ MEJORAS RESPECTO A VERSIÓN ANTERIOR:
 - ✅ Validación de datos en guardar_ejecucion()
 - ✅ Manejo robusto de errores con logging estructurado
 """
-import sqlite3
-import json
-import time
-import os
-import threading
-import logging
-import gzip
 import base64
-from typing import List, Dict, Optional, Any, Tuple, Union
-from pathlib import Path
-from datetime import datetime, timedelta
+import gzip
+import json
+import logging
+import os
+import sqlite3
+import threading
+import time
 from contextlib import contextmanager
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta
+from typing import Any
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -113,8 +112,8 @@ INDEX_DEFINITION = {
 @dataclass
 class Ejecucion:
     """Modelo de una ejecución."""
-    id: Optional[int] = None
-    fecha: Optional[str] = None
+    id: int | None = None
+    fecha: str | None = None
     duracion_total: float = 0.0
     agentes_total: int = 0
     completados: int = 0
@@ -125,25 +124,25 @@ class Ejecucion:
     tags: str = ""
     notas: str = ""
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return asdict(self)
 
 
 @dataclass
 class AgenteEjecucion:
     """Modelo de un agente en una ejecución."""
-    id: Optional[int] = None
+    id: int | None = None
     ejecucion_id: int = 0
     agente_id: str = ""
     nombre: str = ""
     tipo: str = ""
     estado: str = ""
     duracion: float = 0.0
-    dependencias: List[str] = field(default_factory=list)
-    resultado: Optional[Dict] = None
-    error: Optional[str] = None
+    dependencias: list[str] = field(default_factory=list)
+    resultado: dict | None = None
+    error: str | None = None
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         data = asdict(self)
         data['dependencias'] = json.dumps(data['dependencias'])
         if data['resultado']:
@@ -444,7 +443,7 @@ class Database:
     # ============================================================
     # ✅ DIAGNÓSTICO DE LA BASE DE DATOS (NUEVO)
     # ============================================================
-    def diagnostico(self) -> Dict[str, Any]:
+    def diagnostico(self) -> dict[str, Any]:
         """
         Retorna un diagnóstico completo del estado de la base de datos.
         Útil para debugging y para verificar que todo esté correcto.
@@ -498,7 +497,7 @@ class Database:
     # ============================================================
     # REPARACIÓN DE ESQUEMA
     # ============================================================
-    def reparar_esquema(self) -> Dict[str, Any]:
+    def reparar_esquema(self) -> dict[str, Any]:
         """
         Repara el esquema de la base de datos si está corrupto.
         Útil para recuperar bases de datos antiguas o dañadas.
@@ -1118,10 +1117,10 @@ class Database:
     # ============================================================
     def guardar_ejecucion(
         self,
-        agentes: List[Dict],
+        agentes: list[dict],
         duracion_total: float,
         estado: str = "completada",
-        tags: List[str] = None,
+        tags: list[str] = None,
         notas: str = "",
         ejecutor: str = ""
     ) -> int:
@@ -1216,7 +1215,7 @@ class Database:
         self,
         conn: sqlite3.Connection,
         ejecucion_id: int,
-        agentes: List[Dict]
+        agentes: list[dict]
         ):
             """Inserta múltiples agentes de una ejecución."""
             cursor = conn.cursor()
@@ -1311,7 +1310,7 @@ class Database:
         limit: int = 20,
         offset: int = 0,
         estado: str = None
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Obtiene el historial de ejecuciones."""
         try:
             with self._transaction() as conn:
@@ -1336,7 +1335,7 @@ class Database:
             logger.error(f"Error obteniendo historial: {e}")
             return []
 
-    def obtener_ejecucion(self, ejecucion_id: int) -> Optional[Dict]:
+    def obtener_ejecucion(self, ejecucion_id: int) -> dict | None:
         """Obtiene una ejecución específica por ID."""
         try:
             with self._transaction() as conn:
@@ -1350,7 +1349,7 @@ class Database:
             logger.error(f"Error obteniendo ejecución {ejecucion_id}: {e}")
             return None
 
-    def obtener_detalle_ejecucion(self, ejecucion_id: int) -> List[Dict]:
+    def obtener_detalle_ejecucion(self, ejecucion_id: int) -> list[dict]:
         """Obtiene el detalle de agentes de una ejecución."""
         try:
             with self._transaction() as conn:
@@ -1377,7 +1376,7 @@ class Database:
             logger.error(f"Error obteniendo detalle de ejecución {ejecucion_id}: {e}")
             return []
 
-    def obtener_estadisticas(self, dias: int = 30) -> Dict:
+    def obtener_estadisticas(self, dias: int = 30) -> dict:
         """Obtiene estadísticas agregadas de las últimas N días."""
         try:
             cutoff = (datetime.now() - timedelta(days=dias)).isoformat()
@@ -1435,9 +1434,9 @@ class Database:
         estado: str = None,
         desde: str = None,
         hasta: str = None,
-        tags: List[str] = None,
+        tags: list[str] = None,
         limit: int = 50
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Busca ejecuciones con filtros."""
         try:
             with self._transaction() as conn:
@@ -1670,7 +1669,7 @@ class Database:
                 except Exception:
                     pass    
 
-    def verificar_integridad(self) -> Tuple[bool, str]:
+    def verificar_integridad(self) -> tuple[bool, str]:
         """Verifica la integridad de la base de datos."""
         try:
             with self._transaction() as conn:
@@ -1687,7 +1686,7 @@ class Database:
     # ============================================================
     # EXPORTACIÓN E IMPORTACIÓN
     # ============================================================
-    def exportar_json(self, ruta: str, ejecucion_id: Optional[int] = None) -> bool:
+    def exportar_json(self, ruta: str, ejecucion_id: int | None = None) -> bool:
         """Exporta datos a JSON."""
         try:
             if ejecucion_id:
@@ -1717,7 +1716,7 @@ class Database:
     def importar_json(self, ruta: str) -> int:
         """Importa datos desde JSON."""
         try:
-            with open(ruta, 'r', encoding='utf-8') as f:
+            with open(ruta, encoding='utf-8') as f:
                 data = json.load(f)
 
             importados = 0
@@ -1766,7 +1765,7 @@ class Database:
         except Exception as e:
             logger.warning(f"Error registrando auditoría: {e}")
 
-    def obtener_auditoria(self, limit: int = 100) -> List[Dict]:
+    def obtener_auditoria(self, limit: int = 100) -> list[dict]:
         """Obtiene el log de auditoría."""
         try:
             with self._transaction() as conn:
@@ -1784,7 +1783,7 @@ class Database:
     # ============================================================
     # ESTADÍSTICAS DE BASE DE DATOS
     # ============================================================
-    def obtener_info_db(self) -> Dict:
+    def obtener_info_db(self) -> dict:
         """Obtiene información general de la base de datos."""
         try:
             with self._transaction() as conn:
@@ -1820,7 +1819,7 @@ class Database:
     # ============================================================
     # BACKUP Y RECUPERACIÓN
     # ============================================================
-    def backup(self, ruta: Optional[str] = None) -> Optional[str]:
+    def backup(self, ruta: str | None = None) -> str | None:
         """Crea un backup de la base de datos."""
         if not ruta:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -1874,7 +1873,7 @@ class Database:
             logger.error(f"Error restaurando backup: {e}")
             return False
 
-    def maintenance(self, days: int = CLEANUP_DAYS) -> Dict:
+    def maintenance(self, days: int = CLEANUP_DAYS) -> dict:
         """Ejecuta mantenimiento completo de la base de datos."""
         result = {
             'limpieza': 0,

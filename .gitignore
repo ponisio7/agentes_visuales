@@ -11,7 +11,7 @@ clima.txt
 cuento_*.txt
 cuento_*.docx
 embeding.txt
-"Estructura del Proyecto.txt"
+Estructura del Proyecto.txt
 
 # === Bases de datos locales ===
 agent_history.db
@@ -30,6 +30,8 @@ htmlcov/
 # === Basura accidental ===
 sqlite3
 *.pdf
+~/
+.recon/
 
 # === Resúmenes personales ===
 resumenhoy.md

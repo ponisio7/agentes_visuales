@@ -3,7 +3,8 @@ Test de contrato: GenerarCuento debe devolver JSON con 'cuento' y
 'descripciones_imagenes'. Si devuelve texto natural, GenerarURLs falla.
 """
 import json
-from core.executors.helpers import parsear_json_robusto, es_resultado_sospechoso
+
+from core.executors.helpers import parsear_json_robusto
 
 
 def test_respuesta_texto_natural_falla():

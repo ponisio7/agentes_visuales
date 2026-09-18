@@ -4,15 +4,14 @@ Contiene el aplanamiento de estructuras anidadas como funciones libres,
 de modo que puedan reutilizarse (y probarse) con independencia de
 :class:`export.exporters.ResultExporter`.
 """
-from typing import Any, Dict, List
 
 
 def aplanar_diccionario(
-    d: Dict,
+    d: dict,
     parent_key: str = "",
     separator: str = ".",
     max_depth: int = 10,
-) -> Dict:
+) -> dict:
     """Aplana un diccionario anidado usando ``separator`` entre claves.
 
     Las listas se resumen como texto y los valores ``None`` se convierten
@@ -33,7 +32,7 @@ def aplanar_diccionario(
     if max_depth <= 0:
         return {parent_key: str(d) if parent_key else "..."}
 
-    items: List[tuple] = []
+    items: list[tuple] = []
     for k, v in d.items():
         new_key = f"{parent_key}{separator}{k}" if parent_key else k
 
@@ -58,10 +57,10 @@ def aplanar_diccionario(
 
 
 def aplanar_lista(
-    data: List[Dict],
+    data: list[dict],
     flatten: bool = True,
     separator: str = ".",
-) -> List[Dict]:
+) -> list[dict]:
     """Aplana una lista de diccionarios.
 
     Args:

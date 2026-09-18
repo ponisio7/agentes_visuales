@@ -20,14 +20,13 @@ import zipfile
 
 import pytest
 
-from export.utils import aplanar_diccionario, aplanar_lista
 from export.exporters import (
-    ResultExporter,
     ExportConfig,
     ExportResult,  # noqa: F401  (reexportado para uso externo)
+    ResultExporter,
     exportar_resultados,
 )
-
+from export.utils import aplanar_diccionario, aplanar_lista
 
 # ============================================================
 # FIXTURES
@@ -175,7 +174,7 @@ class TestJSONExport:
         assert os.path.exists(ruta)
         assert result.filas_exportadas == 2
 
-        with open(ruta, "r", encoding="utf-8") as f:
+        with open(ruta, encoding="utf-8") as f:
             data = json.load(f)
         assert "metadata" in data
         assert "agentes" in data
@@ -193,7 +192,7 @@ class TestJSONExport:
         assert result.filas_exportadas == 1
         assert len(result.advertencias) > 0
 
-        with open(ruta, "r", encoding="utf-8") as f:
+        with open(ruta, encoding="utf-8") as f:
             data = json.load(f)
         assert len(data["agentes"]) == 1
 
@@ -214,7 +213,7 @@ class TestCSVExport:
         assert os.path.exists(ruta)
         assert result.filas_exportadas == 2
 
-        with open(ruta, "r", encoding="utf-8-sig") as f:
+        with open(ruta, encoding="utf-8-sig") as f:
             reader = csv.DictReader(f)
             rows = list(reader)
         assert len(rows) == 2
@@ -237,7 +236,7 @@ class TestTextBasedExports:
         assert result.exito is True
         assert os.path.exists(ruta)
 
-        with open(ruta, "r", encoding="utf-8") as f:
+        with open(ruta, encoding="utf-8") as f:
             content = f.read()
         assert "<!DOCTYPE html>" in content
         assert "Reporte de Ejecución de Agentes" in content
@@ -252,7 +251,7 @@ class TestTextBasedExports:
         assert result.exito is True
         assert os.path.exists(ruta)
 
-        with open(ruta, "r", encoding="utf-8") as f:
+        with open(ruta, encoding="utf-8") as f:
             content = f.read()
         assert "# 📊 Reporte de Agentes" in content
         assert "|" in content  # Tabla markdown
@@ -266,7 +265,7 @@ class TestTextBasedExports:
         assert result.exito is True
         assert os.path.exists(ruta)
 
-        with open(ruta, "r", encoding="utf-8") as f:
+        with open(ruta, encoding="utf-8") as f:
             content = f.read()
         assert "📊 REPORTE DE AGENTES" in content
         assert "Agente 1" in content

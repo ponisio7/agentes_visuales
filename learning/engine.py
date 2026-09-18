@@ -6,25 +6,26 @@ usar desde ProblemSolver / Scheduler / la UI, sin que esos módulos
 tengan que saber nada de scikit-learn ni de SQL.
 """
 from __future__ import annotations
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+
+import logging
 import sqlite3
 from contextlib import closing
-import logging
 from datetime import datetime
+from pathlib import Path
+from typing import Any
 
-from .schema import aplicar_esquema_learning
+from .dataset import minar_dataset
 from .feature_extraction import (
     extraer_features_agente,
     extraer_features_plan,
 )
-from .reward_llm import EvaluadorLLM
-from .dataset import minar_dataset
 from .models import (
+    MUESTRAS_MINIMAS_ENTRENAMIENTO_INICIAL,
     FailurePredictor,
     PlanScorer,
-    MUESTRAS_MINIMAS_ENTRENAMIENTO_INICIAL,
 )
+from .reward_llm import EvaluadorLLM
+from .schema import aplicar_esquema_learning
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +54,8 @@ class LearningEngine:
         self,
         db_path: str,
         llm_client,
-        ruta_modelos: Optional[str] = None,
-        modelo_evaluador: Optional[str] = None,
+        ruta_modelos: str | None = None,
+        modelo_evaluador: str | None = None,
     ):
         self.db_path = str(db_path)
         self.llm_client = llm_client
@@ -100,7 +101,7 @@ class LearningEngine:
     # ------------------------------------------------------------------
     # ENTRENAMIENTO / MINERÍA
     # ------------------------------------------------------------------
-    def reentrenar_desde_historial(self) -> Dict[str, int]:
+    def reentrenar_desde_historial(self) -> dict[str, int]:
         """
         Vuelca todo el historial disponible al FailurePredictor.
         Llamar al arrancar la app o desde un botón "🧠 Reentrenar".
@@ -130,7 +131,7 @@ class LearningEngine:
     # ------------------------------------------------------------------
     # PREDICCIÓN (antes de ejecutar)
     # ------------------------------------------------------------------
-    def predecir_riesgo_agente(self, agente: Any) -> Dict[str, Any]:
+    def predecir_riesgo_agente(self, agente: Any) -> dict[str, Any]:
         try:
             features = extraer_features_agente(agente)
             resultado = self.failure_predictor.predecir(features)
@@ -147,7 +148,7 @@ class LearningEngine:
                 "n_muestras": 0,
             }
 
-    def puntuar_plan(self, plan: Any) -> Dict[str, Any]:
+    def puntuar_plan(self, plan: Any) -> dict[str, Any]:
         try:
             features = extraer_features_plan(plan)
             score = self.plan_scorer.puntuar(features)
@@ -156,7 +157,7 @@ class LearningEngine:
             logger.debug(f"puntuar_plan falló: {e}")
             return {"score_esperado": 0.5, "n_muestras": 0}
 
-    def elegir_mejor_plan(self, planes: List[Any]) -> Any:
+    def elegir_mejor_plan(self, planes: list[Any]) -> Any:
         if not planes:
             return None
         if self.plan_scorer.n_muestras == 0:
@@ -181,7 +182,7 @@ class LearningEngine:
         tarea: str,
         resultado_texto: str,
         estado_real: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Llamar justo después de que un agente termina de ejecutarse.
         1) Pide al LLM que evalúe el resultado (esa es la recompensa).
@@ -231,7 +232,7 @@ class LearningEngine:
         plan: Any,
         tarea: str,
         resultado_texto: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Evalúa y refuerza a nivel de PLAN completo."""
         evaluacion = self.evaluador.evaluar(tarea, resultado_texto)
 

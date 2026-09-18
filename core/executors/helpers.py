@@ -6,9 +6,9 @@ Funciones puras sin estado. Se usan desde varios ejecutores.
 """
 
 import json
-import re
 import logging
-from typing import Any, Optional, Tuple
+import re
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ def limpiar_fences_markdown(texto: str) -> str:
     return t.strip()
 
 
-def parsear_json_robusto(texto: str) -> Optional[Any]:
+def parsear_json_robusto(texto: str) -> Any | None:
     """Intenta parsear JSON con múltiples estrategias."""
     if not texto:
         return None
@@ -58,7 +58,7 @@ def parsear_json_robusto(texto: str) -> Optional[Any]:
     return None
 
 
-def es_resultado_sospechoso(resultado: Any) -> Tuple[bool, str]:
+def es_resultado_sospechoso(resultado: Any) -> tuple[bool, str]:
     """Detecta resultados vacíos que antes pasaban silenciosos."""
     if resultado is None:
         return True, "resultado es None"

@@ -3,7 +3,6 @@
 Constantes y enumeraciones de ProblemSolver.
 Extraído literalmente de core/problem_solver.py (monolito) — Paso 2.
 """
-from typing import Dict, Set
 from enum import Enum
 
 
@@ -35,7 +34,7 @@ class PlanComplexity(Enum):
 # El contenido se obtiene automáticamente del resultado de la
 # dependencia declarada; nunca se configura manualmente.
 # ============================================================
-CAMPOS_VALIDOS_POR_TIPO: Dict[str, Set[str]] = {
+CAMPOS_VALIDOS_POR_TIPO: dict[str, set[str]] = {
     "Python": {"codigo", "timeout"},
     "Shell":  {"comando", "timeout", "working_dir"},
     "HTTP":   {"url", "metodo", "headers", "body", "timeout"},

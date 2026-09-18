@@ -25,17 +25,14 @@ import json
 import logging
 import os
 import time
-import uuid
-from typing import Dict, List, Optional, Tuple
 
-from core.agent import Agente, TipoAgente
 from core.llm_client import LLMClient
 
 from .builder import PlanBuilder
 from .code_corrector import PythonCodeCorrector
 from .constants import PlanComplexity
 from .file_normalizer import FileNameNormalizer
-from .models import ExecutionPlan, StepPlan
+from .models import ExecutionPlan
 from .parser import PlanParser
 from .prompt_builder import PromptBuilder
 from .validator import PlanValidator
@@ -55,7 +52,7 @@ class ProblemSolver:
     DEFAULT_REASONING_EFFORT = "low"
     DEFAULT_THINKING_ENABLED = False
 
-    def __init__(self, llm_client: Optional[LLMClient] = None):
+    def __init__(self, llm_client: LLMClient | None = None):
         """
         Inicializa el solver.
 
@@ -75,9 +72,9 @@ class ProblemSolver:
                 "Configura la variable de entorno DEEPSEEK_API_KEY."
             )
 
-        self._plan_cache: Dict[str, ExecutionPlan] = {}
+        self._plan_cache: dict[str, ExecutionPlan] = {}
         self._ultimo_problema: str = ""
-        self._plan_actual: Optional[ExecutionPlan] = None
+        self._plan_actual: ExecutionPlan | None = None
         self.logger = logger
 
         # Componentes modulares
@@ -97,7 +94,7 @@ class ProblemSolver:
     def resolver_problema(
         self,
         problema: str,
-        contexto_extra: Optional[Dict] = None,
+        contexto_extra: dict | None = None,
         max_pasos: int = 10,
         nivel_detalle: str = "normal",
         _es_regeneracion: bool = False,
@@ -157,9 +154,9 @@ class ProblemSolver:
         try:
             # 6. Detectar requisitos no cumplidos
             from core.plan_repairs import (
-                detectar_requisitos_no_cumplidos,
                 aplicar_parche,
                 construir_instruccion_regeneracion,
+                detectar_requisitos_no_cumplidos,
             )
             requisitos_faltantes = detectar_requisitos_no_cumplidos(problema, plan)
 
@@ -349,11 +346,11 @@ class ProblemSolver:
             self.logger.error(f"Error refinando plan: {e}")
             raise ValueError(f"No se pudo refinar el plan: {e}")
 
-    def obtener_plan(self, plan_id: str) -> Optional[ExecutionPlan]:
+    def obtener_plan(self, plan_id: str) -> ExecutionPlan | None:
         """Obtiene un plan de la caché por su ID."""
         return self._plan_cache.get(plan_id)
 
-    def listar_planes(self) -> List[Dict]:
+    def listar_planes(self) -> list[dict]:
         """Lista todos los planes en caché con metadatos."""
         return [
             {
@@ -372,7 +369,7 @@ class ProblemSolver:
     # CONSULTA AL LLM CON REINTENTOS
     # ============================================================
 
-    def _consultar_llm_con_reintentos(self, user_prompt: str) -> Dict:
+    def _consultar_llm_con_reintentos(self, user_prompt: str) -> dict:
         """Consulta al LLM con reintentos y modelos alternativos."""
         system_prompt = self.prompt_builder.build_system_prompt()
 
@@ -449,7 +446,7 @@ class ProblemSolver:
     # PLAN DE FALLBACK
     # ============================================================
 
-    def _crear_plan_fallback(self, problema: str) -> Dict:
+    def _crear_plan_fallback(self, problema: str) -> dict:
         """Crea un plan de fallback con código Python CORRECTO."""
         self.logger.warning(f"Creando plan de fallback para: {problema[:50]}...")
 

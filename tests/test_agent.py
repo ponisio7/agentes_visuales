@@ -1,5 +1,4 @@
 # tests/test_agent.py
-import pytest
 from core.agent import Agente, EstadoAgente, TipoAgente
 
 

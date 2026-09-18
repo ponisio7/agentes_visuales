@@ -13,10 +13,9 @@ from unittest.mock import Mock
 
 import pytest
 
+from core.agent import Agente, TipoAgente
 from core.plan_recovery import PlanRecovery
 from core.problem_solver import ProblemSolver
-from core.agent import Agente, TipoAgente
-
 
 # ============================================================
 # FIXTURES

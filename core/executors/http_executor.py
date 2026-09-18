@@ -2,10 +2,9 @@
 """Ejecutor de agentes HTTP."""
 
 import json
-import time
 import logging
 import threading
-from typing import Dict, Tuple, Optional
+import time
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -14,19 +13,17 @@ from urllib3.util.retry import Retry
 from core.agent import Agente
 from core.cancellation import CancellationToken
 
-from .security import (
-    MAX_HTTP_BODY_SIZE, ALLOWED_HTTP_METHODS, validar_url
-)
-from .content_extractor import variables_disponibles, sustituir_variables
 from .cache import HTTPCache, RateLimiter
+from .content_extractor import sustituir_variables, variables_disponibles
+from .security import ALLOWED_HTTP_METHODS, MAX_HTTP_BODY_SIZE, validar_url
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_USER_AGENT = "Agentes-Visuales/1.0"
 
 # Singletons a nivel de módulo
-_http_cache: Optional[HTTPCache] = None
-_rate_limiter: Optional[RateLimiter] = None
+_http_cache: HTTPCache | None = None
+_rate_limiter: RateLimiter | None = None
 _class_lock = threading.RLock()
 
 
@@ -64,9 +61,9 @@ class HTTPExecutor:
     def ejecutar(
         cls,
         agente: Agente,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None
+    ) -> tuple[bool, str, dict]:
         if cancellation_token and cancellation_token.esta_cancelado():
             return False, "Cancelado antes de ejecutar", {
                 'error': 'cancelled', 'cancelled': True,

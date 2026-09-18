@@ -27,6 +27,8 @@ ignore = [
     "E701",    # varias sentencias tras ':' (estilo heredado)
     "E702",    # varias sentencias con ';' (estilo heredado)
     "B904",    # raise sin 'from' dentro de except (estilo heredado)
+    "W291",    # espacios al final de línea: churn irrelevante
+    "W293",    # líneas en blanco con espacios: churn irrelevante
 ]
 
 [tool.ruff.lint.isort]

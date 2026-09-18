@@ -17,7 +17,6 @@ que `solver.py` necesita llamar desde fuera):
 """
 import json
 import re
-from typing import Dict, Optional
 
 from core.utils import extraer_json_de_llm
 
@@ -28,7 +27,7 @@ class PlanParser:
     def __init__(self, logger):
         self.logger = logger
 
-    def parsear(self, respuesta: str) -> Dict:
+    def parsear(self, respuesta: str) -> dict:
         """Parsea la respuesta JSON del LLM."""
         if not respuesta or not respuesta.strip():
             raise ValueError("La respuesta está vacía")
@@ -88,7 +87,7 @@ class PlanParser:
         reparado = reparado.strip()
         return reparado
 
-    def reparar_json(self, texto: str) -> Optional[str]:
+    def reparar_json(self, texto: str) -> str | None:
         """Intenta reparar un JSON mal formado."""
         if not texto or not texto.strip():
             return None
@@ -124,7 +123,7 @@ class PlanParser:
         except json.JSONDecodeError:
             return None
 
-    def _buscar_json(self, texto: str) -> Optional[str]:
+    def _buscar_json(self, texto: str) -> str | None:
         """Busca un objeto JSON en el texto."""
         inicio = texto.find('{')
         fin = texto.rfind('}')
@@ -132,7 +131,7 @@ class PlanParser:
             return texto[inicio:fin + 1]
         return None
 
-    def _extraer_json_por_partes(self, texto: str) -> Optional[str]:
+    def _extraer_json_por_partes(self, texto: str) -> str | None:
         """Extrae JSON buscando estructuras comunes."""
         patrones = [
             r'\{[^{}]*"pasos"[^{}]*\[[^\]]*\][^{}]*\}',

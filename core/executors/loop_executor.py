@@ -1,13 +1,13 @@
 # core/executors/loop_executor.py
 """Ejecutor de agentes Loop."""
 
-import time
 import logging
-from typing import Dict, Tuple, Optional, Any, List
+import time
+from typing import Any
 
 from core.agent import Agente
-from core.sandbox import PythonSandbox
 from core.cancellation import CancellationToken
+from core.sandbox import PythonSandbox
 
 from .content_extractor import resolver_ruta_en_contexto
 from .security import es_lista_valida
@@ -33,9 +33,9 @@ class LoopExecutor:
     def ejecutar(
         cls,
         agente: Agente,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None
+    ) -> tuple[bool, str, dict]:
         if cancellation_token and cancellation_token.esta_cancelado():
             return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
 
@@ -227,7 +227,7 @@ class LoopExecutor:
         return exito_general, mensaje, resultado_final
 
     @classmethod
-    def probar_loop(cls, agente: Agente, items: List[Any]) -> Tuple[bool, str, Dict]:
+    def probar_loop(cls, agente: Agente, items: list[Any]) -> tuple[bool, str, dict]:
         """Método de prueba para verificar la configuración de un agente LOOP."""
         from core.agent import TipoAgente
         if agente.tipo != TipoAgente.LOOP:

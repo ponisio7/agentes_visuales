@@ -11,16 +11,14 @@ CORRECCIONES APLICADAS:
 - ✅ Documentación: docstrings explicativos en cada prueba
 """
 
-import pytest
-import time
 import threading
-from unittest.mock import MagicMock, patch
+import time
 
+import pytest
 from PyQt6.QtWidgets import QApplication
 
-from core.scheduler import Scheduler
 from core.agent import Agente, EstadoAgente, TipoAgente
-
+from core.scheduler import Scheduler
 
 # ============================================================
 # FIXTURES Y UTILIDADES

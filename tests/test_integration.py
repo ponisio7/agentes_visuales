@@ -12,23 +12,19 @@ CORRECCIONES APLICADAS:
 - ✅ Documentación: docstrings explicativos en cada prueba
 """
 
-import pytest
-import time
 import json
 import os
 import tempfile
+import time
 from unittest.mock import MagicMock, patch
-from pathlib import Path
 
-from PyQt6.QtCore import QTimer, QEventLoop
-from PyQt6.QtWidgets import QApplication
+import pytest
+from PyQt6.QtCore import QEventLoop, QTimer
 
-from core.scheduler import Scheduler
 from core.agent import Agente, EstadoAgente, TipoAgente
-from core.executors import AgentExecutor
-from storage.database import Database
+from core.scheduler import Scheduler
 from storage.config_manager import ConfigManager
-
+from storage.database import Database
 
 # ============================================================
 # FIXTURES

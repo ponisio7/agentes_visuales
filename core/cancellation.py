@@ -4,12 +4,13 @@ Sistema de cancelación para operaciones en ejecución.
 Permite cancelar workers de forma segura y coordinada.
 """
 
+import logging
 import threading
 import time
-import logging
-from typing import Optional, Set, Dict, Any, List, Callable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +40,8 @@ class CancellationToken:
     id: str = field(default_factory=lambda: f"token_{int(time.time()*1000)}")
     estado: CancellationState = CancellationState.ACTIVE
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
-    _callbacks: List[Callable] = field(default_factory=list, repr=False)
-    _metadata: Dict[str, Any] = field(default_factory=dict)
+    _callbacks: list[Callable] = field(default_factory=list, repr=False)
+    _metadata: dict[str, Any] = field(default_factory=dict)
     
     def cancelar(self, razon: str = "Cancelado por usuario") -> bool:
         """
@@ -128,11 +129,11 @@ class CancellationManager:
     """
     
     def __init__(self):
-        self._tokens: Dict[str, CancellationToken] = {}
+        self._tokens: dict[str, CancellationToken] = {}
         self._lock = threading.RLock()
         self._logger = logging.getLogger(f"{__name__}.CancellationManager")
     
-    def crear_token(self, metadata: Optional[Dict] = None) -> CancellationToken:
+    def crear_token(self, metadata: dict | None = None) -> CancellationToken:
         """
         Crea un nuevo token de cancelación.
         
@@ -153,7 +154,7 @@ class CancellationManager:
         self._logger.debug(f"Token creado: {token.id}")
         return token
     
-    def obtener_token(self, token_id: str) -> Optional[CancellationToken]:
+    def obtener_token(self, token_id: str) -> CancellationToken | None:
         """Obtiene un token por su ID."""
         with self._lock:
             return self._tokens.get(token_id)
@@ -241,7 +242,7 @@ class CancellationManager:
                 self._logger.debug(f"Limpiados {len(a_eliminar)} tokens completados")
             return len(a_eliminar)
     
-    def obtener_estadisticas(self) -> Dict:
+    def obtener_estadisticas(self) -> dict:
         """Obtiene estadísticas del gestor."""
         with self._lock:
             total = len(self._tokens)
@@ -261,7 +262,7 @@ class CancellationManager:
 # INSTANCIA GLOBAL
 # ============================================================
 
-_cancellation_manager: Optional[CancellationManager] = None
+_cancellation_manager: CancellationManager | None = None
 
 def obtener_gestor_cancelacion() -> CancellationManager:
     """Obtiene la instancia global del gestor de cancelación."""

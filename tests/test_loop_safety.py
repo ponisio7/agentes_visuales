@@ -11,19 +11,13 @@ CORRECCIONES APLICADAS:
 - ✅ Documentación: docstrings explicativos en cada prueba
 """
 
-import pytest
 import time
-import json
-from unittest.mock import MagicMock, patch
 
-from PyQt6.QtWidgets import QApplication
+import pytest
 
-from core.agent import Agente, TipoAgente, EstadoAgente
-from core.scheduler import Scheduler
-from core.executors import AgentExecutor
+from core.agent import Agente, EstadoAgente, TipoAgente
 from core.executors.loop_executor import LoopExecutor
-from core.sandbox import PythonSandbox, SandboxError
-
+from core.scheduler import Scheduler
 
 # ============================================================
 # FIXTURES

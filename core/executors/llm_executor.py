@@ -2,23 +2,22 @@
 """Ejecutor de agentes LLM (DeepSeek)."""
 
 import json
-import time
 import logging
 import threading
-from typing import Dict, Tuple, Optional
+import time
 
 from core.agent import Agente
 from core.cancellation import CancellationToken
 
-from .helpers import limpiar_fences_markdown, parsear_json_robusto, es_resultado_sospechoso
-from .content_extractor import variables_disponibles, sustituir_variables
 from .cache import RateLimiter
+from .content_extractor import sustituir_variables, variables_disponibles
+from .helpers import es_resultado_sospechoso, limpiar_fences_markdown, parsear_json_robusto
 
 logger = logging.getLogger(__name__)
 
 MIN_TOKENS_SEGUROS = 4000
 
-_rate_limiter: Optional[RateLimiter] = None
+_rate_limiter: RateLimiter | None = None
 _class_lock = threading.RLock()
 
 
@@ -48,9 +47,9 @@ class LLMExecutor:
     def ejecutar(
         cls,
         agente: Agente,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None
+    ) -> tuple[bool, str, dict]:
         if cancellation_token and cancellation_token.esta_cancelado():
             return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
 

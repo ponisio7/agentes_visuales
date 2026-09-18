@@ -6,19 +6,20 @@ ya persistido por storage/database.py) con las evaluaciones del LLM
 de entrenamiento.
 """
 from __future__ import annotations
-from typing import List, Tuple, Dict, Any
+
 import sqlite3
+from typing import Any
 
 from .feature_extraction import (
-    extraer_features_registro_historico,
     etiqueta_exito,
+    extraer_features_registro_historico,
 )
 
 
 def minar_dataset(
     conn: sqlite3.Connection,
     minimo_muestras: int = 1,
-) -> Tuple[List[Dict[str, Any]], List[int], List[float]]:
+) -> tuple[list[dict[str, Any]], list[int], list[float]]:
     """
     Devuelve (features_por_fila, etiquetas_exito, recompensas_llm).
 
@@ -57,7 +58,7 @@ def minar_dataset(
 
 def minar_dataset_planes(
     conn: sqlite3.Connection,
-) -> Tuple[List[int], List[float]]:
+) -> tuple[list[int], list[float]]:
     """
     Devuelve los ejecucion_id que tienen evaluación de PLAN (alcance='plan')
     junto a su score, para poder reconstruir sus features si se guardó

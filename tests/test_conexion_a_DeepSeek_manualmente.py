@@ -13,10 +13,9 @@ CARACTERÍSTICAS:
 
 import os
 import sys
-import pytest
-import json
 from unittest.mock import MagicMock, patch
-from typing import Dict, Any, Optional
+
+import pytest
 
 # ============================================================
 # CONSTANTES Y CONFIGURACIÓN
@@ -26,7 +25,7 @@ DEEPSEEK_BASE_URL_DEFAULT = 'https://api.deepseek.com'
 DEFAULT_MODEL_DEFAULT = 'deepseek-v4-flash'
 
 
-def get_deepseek_client(api_key: Optional[str] = None, base_url: Optional[str] = None):
+def get_deepseek_client(api_key: str | None = None, base_url: str | None = None):
     """
     Obtiene un cliente de DeepSeek para pruebas.
     
@@ -57,7 +56,7 @@ def get_deepseek_client(api_key: Optional[str] = None, base_url: Optional[str] =
     )
 
 
-def create_deepseek_request(messages: list, model: str = DEFAULT_MODEL_DEFAULT, **kwargs) -> Dict:
+def create_deepseek_request(messages: list, model: str = DEFAULT_MODEL_DEFAULT, **kwargs) -> dict:
     """
     Crea una solicitud para DeepSeek con valores por defecto.
     NOTA: Esta función NO valida los datos, solo los empaqueta.
@@ -80,6 +79,7 @@ def create_deepseek_request(messages: list, model: str = DEFAULT_MODEL_DEFAULT, 
 # Leer directamente del archivo, no del entorno, para evitar que una
 # variable de entorno obsoleta tape la key real
 from core.llm_client import cargar_entorno_desde_archivos
+
 _env = cargar_entorno_desde_archivos()
 DEEPSEEK_API_KEY = _env.get('DEEPSEEK_API_KEY') or os.environ.get('DEEPSEEK_API_KEY')
 
@@ -666,7 +666,7 @@ if __name__ == "__main__":
             max_tokens=50
         )
         
-        print(f"\n✅ Conexión exitosa!")
+        print("\n✅ Conexión exitosa!")
         print(f"📝 Respuesta: {response.choices[0].message.content}")
         print(f"📊 Tokens: {response.usage.total_tokens}")
         print("\n" + "=" * 60)

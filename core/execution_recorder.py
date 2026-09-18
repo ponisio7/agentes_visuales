@@ -1,14 +1,16 @@
 #core/execution_recorder.py — FIX Bug #7
 from __future__ import annotations
+
 import logging
+import sqlite3  # ← añadir
 import threading
-import sqlite3                        # ← añadir
-from contextlib import closing        # ← añadir
+from contextlib import closing  # ← añadir
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 logger = logging.getLogger(__name__)
 
-def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, duracion_total: float) -> Optional[int]:
+def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, duracion_total: float) -> int | None:
     # 1. Guardar en DB - incluir plan original si hubo Plan B, deduplicando por id
     try:
         vistos_db: set = set()
@@ -38,8 +40,8 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
     
     def _worker():
         try:
-            from learning import obtener_learning_engine
             from core.llm_client import obtener_llm_client_compartido
+            from learning import obtener_learning_engine
             engine = obtener_learning_engine(db_path=db_path, llm_client=obtener_llm_client_compartido())
             if engine is None: return
 
@@ -78,7 +80,6 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
                     # ✅ FASE 4c: propaga el score al A/B y decide.
                     try:
                         from learning.prompt_ab_evaluator import PromptABEvaluator
-                        from learning.feedback_processor import FeedbackProcessor
                         ab = PromptABEvaluator(db_path)
 
                         # Score del plan completo (o del último agente si no hay plan)
@@ -131,7 +132,7 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
     threading.Thread(target=_worker, name="learning-recorder", daemon=False).start()
     return ejecucion_id
 
-def _snapshot_de_agente(a) -> Optional[Dict[str, Any]]:
+def _snapshot_de_agente(a) -> dict[str, Any] | None:
     try:
         deps_ids = list(getattr(a, "dependencias_ids", []) or [])
         deps_nombres = list(getattr(a, "dependencias_nombres", []) or [])
@@ -164,8 +165,8 @@ def _snapshot_de_agente(a) -> Optional[Dict[str, Any]]:
         logger.debug(f"Snapshot aprendizaje falló para un agente: {e}")
         return None
 
-def _construir_snapshot(scheduler) -> List[Dict[str, Any]]:
-    snapshot: List[Dict[str, Any]] = []
+def _construir_snapshot(scheduler) -> list[dict[str, Any]]:
+    snapshot: list[dict[str, Any]] = []
     vistos: set = set()
     for a in getattr(scheduler, "_agentes_plan_original", []):
         aid = getattr(a, "id", None)

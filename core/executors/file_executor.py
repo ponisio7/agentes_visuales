@@ -1,31 +1,29 @@
 # core/executors/file_executor.py
 """Ejecutor de agentes File."""
 
-import os
-import re
 import csv
 import io
-import tempfile
 import json
-import markdown as md_lib  # nuevo
-import weasyprint  # nuevo
-import shutil
 import logging
-from io import BytesIO
-from PIL import Image as PILImage
-from typing import Dict, Tuple, Optional, Any, List
+import os
+import re
+import shutil
+import tempfile
+from typing import Any
 
+import markdown as md_lib  # nuevo
 import requests
+import weasyprint  # nuevo
 
 from core.agent import Agente
 from core.cancellation import CancellationToken
 
-from .security import (
-    MAX_BYTES_LECTURA_ARCHIVO, DANGEROUS_DIRS, validar_ruta_archivo
-)
 from .content_extractor import (
-    variables_disponibles, sustituir_variables, extraer_contenido_relevante
+    extraer_contenido_relevante,
+    sustituir_variables,
+    variables_disponibles,
 )
+from .security import DANGEROUS_DIRS, MAX_BYTES_LECTURA_ARCHIVO, validar_ruta_archivo
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +62,7 @@ def _parece_csv(texto: str) -> bool:
     return conteos[0] > 0 and len(set(conteos)) == 1
 
 
-def _parsear_csv_simple(texto: str) -> List[List[str]]:
+def _parsear_csv_simple(texto: str) -> list[list[str]]:
     """Parsea un string CSV a una lista de filas."""
     reader = csv.reader(io.StringIO(texto))
     return [fila for fila in reader]
@@ -93,9 +91,9 @@ class FileExecutor:
     def ejecutar(
         cls,
         agente: Agente,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None
+    ) -> tuple[bool, str, dict]:
         if cancellation_token and cancellation_token.esta_cancelado():
             return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
 
@@ -162,7 +160,7 @@ class FileExecutor:
                 cls.actualizar_progreso(agente, 70, "Leyendo archivo...")
                 contenido = ""
                 chunk_size = 8192
-                with open(ruta_archivo, 'r', encoding='utf-8', errors='replace') as f:
+                with open(ruta_archivo, encoding='utf-8', errors='replace') as f:
                     while True:
                         if cancellation_token and cancellation_token.esta_cancelado():
                             return False, "Cancelado durante lectura", {
@@ -405,7 +403,7 @@ class FileExecutor:
             }
 
     @staticmethod
-    def _aplicar_modo_salida_file(resultado: Dict, modo: str, contenido_texto: str) -> Dict:
+    def _aplicar_modo_salida_file(resultado: dict, modo: str, contenido_texto: str) -> dict:
         """Ajusta el resultado devuelto por un agente File según el modo elegido."""
         modo = (modo or "auto").lower()
         if modo == "auto":
@@ -460,7 +458,7 @@ class FileExecutor:
         contenido: Any,
         ruta_archivo: str,
         contexto_formato: str,
-    ) -> Tuple[Optional[str], Optional[str]]:
+    ) -> tuple[str | None, str | None]:
         """
         Extrae el texto útil de `contenido`. Devuelve (texto, None) si OK,
         o (None, mensaje_error) si el dict no tiene claves reconocidas.
@@ -501,7 +499,7 @@ class FileExecutor:
         return str(contenido), None
 
     @classmethod
-    def _descargar_imagen_temporal(cls, url: str) -> Optional[str]:
+    def _descargar_imagen_temporal(cls, url: str) -> str | None:
         """
         Descarga una imagen desde una URL a un archivo temporal.
         Devuelve la ruta del archivo o None si falla o no es una imagen válida.
@@ -522,7 +520,7 @@ class FileExecutor:
         return tmp_path
 
     @classmethod
-    def _descargar_a_temporal(cls, url: str) -> Optional[str]:
+    def _descargar_a_temporal(cls, url: str) -> str | None:
         """Descarga la URL a un archivo temporal, respetando el límite de tamaño."""
         try:
             from urllib.parse import urlparse
@@ -613,9 +611,9 @@ class FileExecutor:
         agente: Agente,
         ruta_archivo: str,
         contenido: Any,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None,
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None,
+    ) -> tuple[bool, str, dict]:
         try:
             from docx import Document
             from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -799,12 +797,12 @@ class FileExecutor:
         agente: Agente,
         ruta_archivo: str,
         contenido: Any,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None,
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None,
+    ) -> tuple[bool, str, dict]:
         try:
             import openpyxl
-            from openpyxl.styles import Font, Alignment, PatternFill
+            from openpyxl.styles import Alignment, Font, PatternFill
         except ImportError:
             return False, (
                 "openpyxl no está instalado. Instálalo con: pip install openpyxl"
@@ -985,9 +983,9 @@ class FileExecutor:
         agente: Agente,
         ruta_archivo: str,
         contenido: Any,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None,
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None,
+    ) -> tuple[bool, str, dict]:
         """
         Escribe un PDF a partir de contenido Markdown o texto.
 
@@ -1115,9 +1113,9 @@ class FileExecutor:
         agente: Agente,
         ruta_archivo: str,
         contenido: Any,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None,
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None,
+    ) -> tuple[bool, str, dict]:
         """Escribe contenido como Markdown. A diferencia de 'escribir' plano,
         antepone un título como cabecera '#' si viene en un dict."""
         directorio = os.path.dirname(ruta_archivo)

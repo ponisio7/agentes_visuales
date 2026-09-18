@@ -16,17 +16,16 @@ CARACTERÍSTICAS:
 - CORRECCIONES: Validación de Loop sin dependencia de listas que se vacían
 """
 
-import uuid
-import time
-import logging
-import json
 import hashlib
+import json
+import logging
 import re
+import time
+import uuid
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
-from dataclasses import dataclass, field, asdict, fields
-from typing import List, Optional, Dict, Any, Set, Tuple, Union
-from datetime import datetime
 from functools import total_ordering
+from typing import Any
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -171,7 +170,7 @@ class AgenteValidator:
     """Valida la configuración de agentes."""
     
     @staticmethod
-    def validar_nombre(nombre: str) -> Tuple[bool, str]:
+    def validar_nombre(nombre: str) -> tuple[bool, str]:
         """Valida el nombre del agente."""
         if not nombre or not nombre.strip():
             return False, "El nombre es obligatorio"
@@ -189,7 +188,7 @@ class AgenteValidator:
         return True, ""
     
     @staticmethod
-    def validar_codigo(codigo: str, max_length: int = 100000) -> Tuple[bool, str]:
+    def validar_codigo(codigo: str, max_length: int = 100000) -> tuple[bool, str]:
         """Valida código Python."""
         if not codigo:
             return True, ""  # Opcional
@@ -213,7 +212,7 @@ class AgenteValidator:
         return True, ""
     
     @staticmethod
-    def validar_url(url: str) -> Tuple[bool, str]:
+    def validar_url(url: str) -> tuple[bool, str]:
         """Valida una URL."""
         if not url or not url.strip():
             return False, "La URL es obligatoria"
@@ -233,7 +232,7 @@ class AgenteValidator:
         return True, ""
     
     @staticmethod
-    def validar_ruta(ruta: str) -> Tuple[bool, str]:
+    def validar_ruta(ruta: str) -> tuple[bool, str]:
         """Valida una ruta de archivo."""
         if not ruta or not ruta.strip():
             return False, "La ruta es obligatoria"
@@ -256,7 +255,7 @@ class AgenteValidator:
         return True, ""
     
     @staticmethod
-    def validar_dependencias(dependencias: List[str], agentes_existentes: Set[str] = None) -> Tuple[bool, str]:
+    def validar_dependencias(dependencias: list[str], agentes_existentes: set[str] = None) -> tuple[bool, str]:
         """Valida dependencias."""
         if not dependencias:
             return True, ""
@@ -297,8 +296,8 @@ class Agente:
     nombre: str = ""
     tipo: TipoAgente = TipoAgente.PYTHON
     descripcion: str = ""
-    dependencias_ids: List[str] = field(default_factory=list)
-    dependencias_nombres: List[str] = field(default_factory=list)
+    dependencias_ids: list[str] = field(default_factory=list)
+    dependencias_nombres: list[str] = field(default_factory=list)
     duracion: float = 5.0
     reintentos: int = 0
     max_reintentos: int = 3
@@ -310,9 +309,9 @@ class Agente:
     estado: EstadoAgente = EstadoAgente.PENDIENTE
     progreso: int = 0
     mensaje: str = ""
-    tiempo_inicio: Optional[float] = None
-    tiempo_fin: Optional[float] = None
-    resultado: Optional[Dict[str, Any]] = None
+    tiempo_inicio: float | None = None
+    tiempo_fin: float | None = None
+    resultado: dict[str, Any] | None = None
     salida: str = ""
     error: str = ""
     
@@ -322,7 +321,7 @@ class Agente:
     
     # ── Python ──
     codigo_python: str = ""
-    funciones_import: List[str] = field(default_factory=list)
+    funciones_import: list[str] = field(default_factory=list)
     timeout_python: int = 30
     
     # ── Shell ──
@@ -333,7 +332,7 @@ class Agente:
     # ── HTTP ──
     url_http: str = ""
     metodo_http: str = "GET"
-    headers_http: Dict[str, str] = field(default_factory=dict)
+    headers_http: dict[str, str] = field(default_factory=dict)
     body_http: str = ""
     timeout_http: int = 30
     
@@ -469,7 +468,7 @@ class Agente:
         self.error = ""
         self.reintentos = 0
     
-    def marcar_como_completado(self, resultado: Dict = None, salida: str = ""):
+    def marcar_como_completado(self, resultado: dict = None, salida: str = ""):
         """Marca el agente como completado exitosamente."""
         self.estado = EstadoAgente.COMPLETADO
         self.progreso = 100
@@ -478,7 +477,7 @@ class Agente:
         self.salida = salida
         self.mensaje = "✅ Completado"
     
-    def marcar_como_error(self, error: str, resultado: Dict = None):
+    def marcar_como_error(self, error: str, resultado: dict = None):
         """Marca el agente como fallido."""
         self.estado = EstadoAgente.ERROR
         self.progreso = 100
@@ -498,7 +497,7 @@ class Agente:
     # VALIDACIÓN (CORREGIDA)
     # ============================================================
     
-    def validar_configuracion(self, agentes_disponibles: Optional[Dict[str, 'Agente']] = None) -> Tuple[bool, str]:
+    def validar_configuracion(self, agentes_disponibles: dict[str, 'Agente'] | None = None) -> tuple[bool, str]:
         """
         Valida la configuración del agente según su tipo.
         
@@ -564,7 +563,7 @@ class Agente:
         
         return True, ""
     
-    def _validar_python(self) -> Tuple[bool, str]:
+    def _validar_python(self) -> tuple[bool, str]:
         """Valida configuración de Python."""
         if self.timeout_python < 1:
             return False, f"Python: 'timeout_python' debe ser >= 1 (actual: {self.timeout_python})"
@@ -577,7 +576,7 @@ class Agente:
         
         return True, ""
     
-    def _validar_shell(self) -> Tuple[bool, str]:
+    def _validar_shell(self) -> tuple[bool, str]:
         """Valida configuración de Shell."""
         if not self.comando_shell or not self.comando_shell.strip():
             return False, "Shell: 'comando_shell' es obligatorio"
@@ -593,7 +592,7 @@ class Agente:
         
         return True, ""
     
-    def _validar_http(self) -> Tuple[bool, str]:
+    def _validar_http(self) -> tuple[bool, str]:
         """Valida configuración de HTTP."""
         if not self.url_http or not self.url_http.strip():
             return False, "HTTP: 'url_http' es obligatoria"
@@ -612,7 +611,7 @@ class Agente:
         
         return True, ""
     
-    def _validar_llm(self) -> Tuple[bool, str]:
+    def _validar_llm(self) -> tuple[bool, str]:
         """Valida configuración de LLM."""
         if not self.prompt_llm or not self.prompt_llm.strip():
             return False, "LLM: 'prompt_llm' es obligatorio"
@@ -647,7 +646,7 @@ class Agente:
 
         return True, ""
     
-    def _validar_file(self) -> Tuple[bool, str]:
+    def _validar_file(self) -> tuple[bool, str]:
         """Valida configuración de File."""
         operaciones_validas = {"leer", "escribir", "copiar", "mover", "eliminar"}
         if self.operacion_file not in operaciones_validas:
@@ -683,7 +682,7 @@ class Agente:
         
         return True, ""
     
-    def _validar_loop(self, agentes_disponibles: Optional[Dict[str, 'Agente']] = None) -> Tuple[bool, str]:
+    def _validar_loop(self, agentes_disponibles: dict[str, 'Agente'] | None = None) -> tuple[bool, str]:
         """
         Valida configuración de Loop.
         CORREGIDO: No depende de listas que se vacían (dependencias_nombres).
@@ -776,7 +775,7 @@ class Agente:
     # MÉTODOS PARA LOOP
     # ============================================================
     
-    def obtener_ruta_completa(self) -> Optional[List[str]]:
+    def obtener_ruta_completa(self) -> list[str] | None:
         """
         Para agentes Loop: retorna la ruta completa de 'fuente_items'
         como lista de partes, o None si no está configurada.
@@ -787,7 +786,7 @@ class Agente:
             return None
         return [p.strip() for p in self.fuente_items.split('.') if p.strip()]
     
-    def obtener_nombre_dependencia(self) -> Optional[str]:
+    def obtener_nombre_dependencia(self) -> str | None:
         """
         Para agentes Loop: retorna el nombre de la dependencia raíz
         de la que se obtienen los items.
@@ -797,7 +796,7 @@ class Agente:
         ruta = self.obtener_ruta_completa()
         return ruta[0] if ruta else None
     
-    def obtener_clave_items(self) -> Optional[str]:
+    def obtener_clave_items(self) -> str | None:
         """
         Para agentes Loop: retorna la clave dentro del resultado
         de la dependencia donde están los items.
@@ -822,7 +821,7 @@ class Agente:
     # SERIALIZACIÓN
     # ============================================================
     
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         """
         Representación del agente para historial de ejecuciones.
         Incluye solo información relevante para el historial.
@@ -863,7 +862,7 @@ class Agente:
         return json.dumps(data, default=str, ensure_ascii=False)
     
     @classmethod
-    def from_dict(cls, data: Dict) -> 'Agente':
+    def from_dict(cls, data: dict) -> 'Agente':
         """
         Reconstruye un Agente desde un diccionario.
         Compatible con formatos nuevos y antiguos.
@@ -1022,7 +1021,7 @@ class Agente:
     @staticmethod
     def crear_agente_por_tipo(
         nombre: str,
-        tipo: Union[str, TipoAgente],
+        tipo: str | TipoAgente,
         **kwargs
     ) -> 'Agente':
         """
@@ -1065,7 +1064,7 @@ class Agente:
         return Agente(nombre=nombre, tipo=tipo, **base_config)
     
     @staticmethod
-    def validar_configuracion_completa(agentes: List['Agente']) -> Tuple[bool, List[str]]:
+    def validar_configuracion_completa(agentes: list['Agente']) -> tuple[bool, list[str]]:
         """
         Valida la configuración de múltiples agentes incluyendo dependencias.
         

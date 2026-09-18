@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,7 @@ EXTENSIONES_DOC_CON_IMAGENES = (".docx",)
 # API PÚBLICA
 # ============================================================
 
-def detectar_requisitos_no_cumplidos(problema: str, plan) -> List[str]:
+def detectar_requisitos_no_cumplidos(problema: str, plan) -> list[str]:
     """
     Analiza el problema y el plan y devuelve la lista de requisitos
     explícitos del problema que el plan NO cumple.
@@ -81,7 +80,7 @@ def detectar_requisitos_no_cumplidos(problema: str, plan) -> List[str]:
     return faltantes
 
 
-def aplicar_parche(problema: str, plan, requisito: str) -> Optional[str]:
+def aplicar_parche(problema: str, plan, requisito: str) -> str | None:
     """
     Aplica un parche determinista al plan para cubrir un requisito faltante.
 
@@ -94,7 +93,7 @@ def aplicar_parche(problema: str, plan, requisito: str) -> Optional[str]:
     return None
 
 
-def construir_instruccion_regeneracion(requisitos: List[str]) -> str:
+def construir_instruccion_regeneracion(requisitos: list[str]) -> str:
     """
     Construye la instrucción extra que se añade al user_prompt en la
     segunda llamada al LLM, forzando los requisitos que faltaron.
@@ -163,7 +162,7 @@ def _extraer_numero_imagenes(problema: str) -> int:
 # PARCHE: IMÁGENES
 # ============================================================
 
-def _parche_imagenes(problema: str, plan) -> Optional[str]:
+def _parche_imagenes(problema: str, plan) -> str | None:
     """
     Inyecta un paso GenerarURLsImagenes y adapta el paso de preparación
     para que combine el contenido con las URLs.
@@ -260,7 +259,7 @@ def _codigo_generador_urls(n_imagenes: int) -> str:
     )
 
 
-def _codigo_preparador_documento(nombre_contenido: Optional[str]) -> str:
+def _codigo_preparador_documento(nombre_contenido: str | None) -> str:
     """
     Código Python que combina el contenido (si existe) con las URLs
     de imágenes, produciendo el dict que el FileExecutor de .docx espera.

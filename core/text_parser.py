@@ -13,9 +13,8 @@ Formato soportado:
 
 Soporta múltiples agentes en un solo texto.
 """
-import re
 import logging
-from typing import List, Dict, Optional, Tuple, Any
+import re
 from dataclasses import dataclass, field
 
 from core.agent import Agente, TipoAgente
@@ -45,9 +44,9 @@ class TextValidationError(TextParseError):
 @dataclass
 class ParseResult:
     """Resultado del parseo de texto."""
-    agentes: List[Dict] = field(default_factory=list)
-    errores: List[str] = field(default_factory=list)
-    advertencias: List[str] = field(default_factory=list)
+    agentes: list[dict] = field(default_factory=list)
+    errores: list[str] = field(default_factory=list)
+    advertencias: list[str] = field(default_factory=list)
     
     @property
     def exito(self) -> bool:
@@ -139,8 +138,8 @@ class AgentTextParser:
     # FASE 1: Separar bloques @agente
     # ========================================================
     def _separar_bloques(
-        self, lineas: List[str], resultado: ParseResult
-    ) -> List[Dict]:
+        self, lineas: list[str], resultado: ParseResult
+    ) -> list[dict]:
         """Separa el texto en bloques de agentes."""
         bloques = []
         bloque_actual = None
@@ -186,8 +185,8 @@ class AgentTextParser:
     # FASE 2: Parsear un bloque individual
     # ========================================================
     def _parsear_bloque(
-        self, bloque: Dict, resultado: ParseResult
-    ) -> Optional[Dict]:
+        self, bloque: dict, resultado: ParseResult
+    ) -> dict | None:
         """Parsea un bloque de agente individual."""
         nombre = bloque['_nombre']
         lineas = bloque['_lineas']
@@ -242,8 +241,8 @@ class AgentTextParser:
     # FASE 3: Leer bloque multilínea
     # ========================================================
     def _leer_multilinea(
-        self, lineas: List[Tuple[int, str]], start: int
-    ) -> Tuple[str, int]:
+        self, lineas: list[tuple[int, str]], start: int
+    ) -> tuple[str, int]:
         """Lee un bloque multilínea (indentado)."""
         contenido = []
         i = start
@@ -274,7 +273,7 @@ class AgentTextParser:
     # ========================================================
     def _asignar_campo(
         self,
-        agente_dict: Dict,
+        agente_dict: dict,
         campo_raw: str,
         valor: str,
         resultado: ParseResult,
@@ -330,7 +329,7 @@ class AgentTextParser:
     # ========================================================
     def _resolver_tipo(
         self, valor: str, resultado: ParseResult, linea: int
-    ) -> Optional[str]:
+    ) -> str | None:
         """Resuelve el tipo de agente desde un string."""
         valor_lower = valor.lower().strip()
         tipo = self.TYPE_ALIASES.get(valor_lower)
@@ -373,7 +372,7 @@ class AgentTextParser:
     # ========================================================
     # MÉTODO DE CONVENIENCIA
     # ========================================================
-    def parse_to_agents(self, texto: str) -> Tuple[List[Agente], ParseResult]:
+    def parse_to_agents(self, texto: str) -> tuple[list[Agente], ParseResult]:
         """
         Parsea texto y retorna agentes listos para usar.
         

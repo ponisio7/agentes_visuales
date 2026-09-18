@@ -26,11 +26,12 @@ ese punto del flujo (ver `resolver_problema`: `self._plan_actual = plan`
 se asigna justo antes de llamar a `_generar_agentes(plan)`).
 """
 import uuid
-from typing import Any, Dict, List
+from typing import Any
 
 from core.agent import Agente, TipoAgente
 
-from.models import ExecutionPlan, StepPlan
+from .models import ExecutionPlan, StepPlan
+
 
 class PlanBuilder:
     """Construye el ExecutionPlan y los Agente a partir de la respuesta del LLM."""
@@ -40,7 +41,7 @@ class PlanBuilder:
         self.code_corrector = code_corrector
         self.validator = validator
 
-    def construir_plan(self, problema: str, plan_dict: Dict) -> ExecutionPlan:
+    def construir_plan(self, problema: str, plan_dict: dict) -> ExecutionPlan:
         """Construye un ExecutionPlan desde el diccionario del LLM."""
         if 'pasos' not in plan_dict or not plan_dict['pasos']:
             self.logger.warning("Plan sin pasos, creando paso por defecto")
@@ -102,10 +103,10 @@ class PlanBuilder:
 
         return plan
 
-    def generar_agentes(self, plan: ExecutionPlan) -> List[Agente]:
+    def generar_agentes(self, plan: ExecutionPlan) -> list[Agente]:
         """Genera objetos Agente a partir del plan, corrigiendo código Python."""
-        agentes: List[Agente] = []
-        nombre_a_id: Dict[str, str] = {}
+        agentes: list[Agente] = []
+        nombre_a_id: dict[str, str] = {}
 
         for paso in plan.pasos:
             try:
@@ -187,7 +188,7 @@ class PlanBuilder:
 
         # ── 3. Construir kwargs base (comunes a todos los tipos) ──
         config = paso.configuracion or {}
-        kwargs: Dict[str, Any] = {
+        kwargs: dict[str, Any] = {
             "nombre": paso.nombre,
             "tipo": tipo,
             "descripcion": paso.descripcion,
@@ -227,8 +228,8 @@ class PlanBuilder:
     def _kwargs_python(
         self,
         paso: StepPlan,
-        config: Dict[str, Any],
-        kwargs: Dict[str, Any]
+        config: dict[str, Any],
+        kwargs: dict[str, Any]
     ) -> None:
         """Configura un agente Python con corrección automática de código."""
         codigo_original = config.get('codigo', 'resultado = {"status": "ok"}')
@@ -242,8 +243,8 @@ class PlanBuilder:
     def _kwargs_http(
         self,
         paso: StepPlan,
-        config: Dict[str, Any],
-        kwargs: Dict[str, Any]
+        config: dict[str, Any],
+        kwargs: dict[str, Any]
     ) -> None:
         """Configura un agente HTTP."""
         kwargs['url_http'] = config.get('url', '')
@@ -252,7 +253,7 @@ class PlanBuilder:
         kwargs['body_http'] = config.get('body', '') or ''
         kwargs['timeout_http'] = int(config.get('timeout', 30))
 
-    def _kwargs_llm(self, paso: StepPlan, config: Dict, kwargs: Dict):
+    def _kwargs_llm(self, paso: StepPlan, config: dict, kwargs: dict):
         """
         Configura kwargs para un agente LLM.
 
@@ -295,7 +296,7 @@ class PlanBuilder:
         prompt_final = prompt_endurecido # fallback si no hay match
         prompt_id_elegido = 0
         self.logger.info(
-            f"[AB-DEBUG]"
+            "[AB-DEBUG]"
         )
         try:
             from learning.embedding_matcher import obtener_matcher
@@ -404,8 +405,8 @@ class PlanBuilder:
     def _kwargs_shell(
         self,
         paso: StepPlan,
-        config: Dict[str, Any],
-        kwargs: Dict[str, Any]
+        config: dict[str, Any],
+        kwargs: dict[str, Any]
     ) -> None:
         """Configura un agente Shell."""
         kwargs['comando_shell'] = config.get('comando', '')
@@ -415,8 +416,8 @@ class PlanBuilder:
     def _kwargs_file(
         self,
         paso: StepPlan,
-        config: Dict[str, Any],
-        kwargs: Dict[str, Any]
+        config: dict[str, Any],
+        kwargs: dict[str, Any]
     ) -> None:
         """
         Configura un agente File.
@@ -433,8 +434,8 @@ class PlanBuilder:
     def _kwargs_loop(
         self,
         paso: StepPlan,
-        config: Dict[str, Any],
-        kwargs: Dict[str, Any]
+        config: dict[str, Any],
+        kwargs: dict[str, Any]
     ) -> None:
         """Configura un agente Loop."""
         kwargs['fuente_items'] = config.get('fuente_items', '')
@@ -460,7 +461,7 @@ class PlanBuilder:
 #
 # Idempotente: si el prompt ya contiene el marcador, no se duplica.
 # ============================================================
-CONTRATOS_SALIDA_POR_PASO: Dict[str, str] = {
+CONTRATOS_SALIDA_POR_PASO: dict[str, str] = {
     "GenerarCuento": (
         "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
         "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"

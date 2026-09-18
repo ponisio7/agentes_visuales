@@ -3,9 +3,8 @@
 PythonCodeCorrector: corrección automática de código Python generado por el LLM.
 Extraído literalmente de core/problem_solver.py (monolito) — Paso 4.
 """
-import re
 import logging
-from typing import List
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ class PythonCodeCorrector:
     ]
 
     @classmethod
-    def corregir(cls, codigo: str, dependencias: List[str]) -> str:
+    def corregir(cls, codigo: str, dependencias: list[str]) -> str:
         """Corrige el código Python aplicando todos los patrones."""
         if not codigo or not codigo.strip():
             return codigo

@@ -15,25 +15,23 @@ CARACTERÍSTICAS:
 - ✅ Documentación completa
 """
 
-import pytest
 import json
 import os
 import sys
 import tempfile
 import time
-import shutil
-from pathlib import Path
-from unittest.mock import patch, MagicMock
+
+import pytest
+
+from core.agent import Agente, TipoAgente
 
 # ✅ CORREGIDO: Eliminados los imports de _DEFAULTS_* que no existen en config_manager
 from storage.config_manager import (
-    ConfigManager,
     ConfigError,
+    ConfigIntegrityError,
+    ConfigManager,
     ConfigSecurityError,
-    ConfigIntegrityError
 )
-from core.agent import Agente, TipoAgente
-
 
 # ============================================================
 # FIXTURES
@@ -219,7 +217,7 @@ class TestConfigEscrituraAtomica:
         config_manager._escribir_json_atomico(ruta, data)
         
         assert os.path.exists(ruta)
-        with open(ruta, 'r') as f:
+        with open(ruta) as f:
             loaded = json.load(f)
         assert loaded == data
     
@@ -233,7 +231,7 @@ class TestConfigEscrituraAtomica:
         data2 = {"version": "2.0", "data": "new"}
         config_manager._escribir_json_atomico(ruta, data2)
         
-        with open(ruta, 'r') as f:
+        with open(ruta) as f:
             loaded = json.load(f)
         assert loaded == data2
     
@@ -245,7 +243,7 @@ class TestConfigEscrituraAtomica:
         config_manager._escribir_json_atomico(ruta, data)
         
         assert os.path.exists(ruta)
-        with open(ruta, 'r') as f:
+        with open(ruta) as f:
             loaded = json.load(f)
         assert loaded == data
     
@@ -260,7 +258,7 @@ class TestConfigEscrituraAtomica:
         journal_path = os.path.join(config_manager._journal_dir, f"{basename}.journal")
         assert os.path.exists(journal_path)
         
-        with open(journal_path, 'r') as f:
+        with open(journal_path) as f:
             lines = f.readlines()
         assert len(lines) > 0
         entry = json.loads(lines[-1])
@@ -370,7 +368,7 @@ class TestConfigRecuperacion:
         assert recovered is True
         
         # Verificar que el archivo fue restaurado correctamente
-        with open(ruta, 'r') as f:
+        with open(ruta) as f:
             loaded = json.load(f)
         assert loaded == data
     
@@ -431,7 +429,7 @@ class TestConfigLimites:
         journal_path = os.path.join(config_manager._journal_dir, f"{basename}.journal")
         
         if os.path.exists(journal_path):
-            with open(journal_path, 'r') as f:
+            with open(journal_path) as f:
                 lines = f.readlines()
             # ✅ CORREGIDO: _rotate_journal es un método, el límite por defecto es 100
             assert len(lines) <= 100
@@ -496,7 +494,7 @@ class TestConfigValidacion:
         assert os.path.exists(ruta)
         assert "ValidConfig" in ruta
         
-        with open(ruta, 'r') as f:
+        with open(ruta) as f:
             data = json.load(f)
         
         assert data['nombre'] == "ValidConfig"
@@ -631,7 +629,7 @@ class TestConfigExportImport:
         
         assert os.path.exists(ruta)
         
-        with open(ruta, 'r') as f:
+        with open(ruta) as f:
             data = json.load(f)
         
         assert data['version'] == "2.0"

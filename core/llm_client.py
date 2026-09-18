@@ -16,14 +16,14 @@ CARACTERÍSTICAS:
         para que funcione igual desde terminal, menú, cron, systemd, etc.
 """
 
+import json
+import logging
 import os
 import stat
-import logging
-import time
 import threading
+import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
-import json
+from typing import Any, Optional
 
 # Intentar importar OpenAI
 try:
@@ -56,7 +56,7 @@ _VARIABLES_SOPORTADAS = frozenset({
 })
 
 
-def _parsear_linea_env(linea: str) -> Optional[Tuple[str, str]]:
+def _parsear_linea_env(linea: str) -> tuple[str, str] | None:
     """
     Parsea una línea tipo 'export VAR="valor"' o 'VAR=valor'.
     Devuelve (clave, valor) o None si no es una asignación válida.
@@ -103,7 +103,7 @@ def _verificar_permisos_archivo(path: Path) -> None:
         logger.debug(f"No se pudieron verificar permisos de {path}: {e}")
 
 
-def cargar_entorno_desde_archivos() -> Dict[str, str]:
+def cargar_entorno_desde_archivos() -> dict[str, str]:
     """
     Carga variables de entorno desde archivos de configuración de fallback.
 
@@ -123,9 +123,9 @@ def cargar_entorno_desde_archivos() -> Dict[str, str]:
 
         _verificar_permisos_archivo(path)
 
-        encontradas: Dict[str, str] = {}
+        encontradas: dict[str, str] = {}
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 for num_linea, linea in enumerate(f, 1):
                     resultado = _parsear_linea_env(linea)
                     if resultado is None:
@@ -208,7 +208,7 @@ class LLMClient:
 
     def __init__(
         self,
-        api_key: Optional[str] = None,
+        api_key: str | None = None,
         base_url: str = DEFAULT_BASE_URL,
         default_model: str = DEFAULT_MODEL,
         timeout: float = DEFAULT_TIMEOUT,
@@ -350,13 +350,13 @@ class LLMClient:
         self,
         prompt: str,
         system_prompt: str = "",
-        model: Optional[str] = None,
+        model: str | None = None,
         temperature: float = 0.2,
         max_tokens: int = 2000,
-        reasoning_effort: Optional[str] = None,
-        thinking_enabled: Optional[bool] = None,
-        timeout: Optional[float] = None,
-        extra_body: Optional[Dict[str, Any]] = None
+        reasoning_effort: str | None = None,
+        thinking_enabled: bool | None = None,
+        timeout: float | None = None,
+        extra_body: dict[str, Any] | None = None
     ) -> str:
         """
         Envía una consulta al LLM de DeepSeek y devuelve la respuesta.
@@ -497,7 +497,7 @@ class LLMClient:
         system_prompt: str = "",
         temperature: float = 0.2,
         max_tokens: int = 2000
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Consulta al LLM y espera una respuesta en formato JSON.
 
@@ -611,7 +611,7 @@ class LLMClient:
     # ESTADÍSTICAS Y DIAGNÓSTICO
     # ============================================================
 
-    def obtener_estado(self) -> Dict[str, Any]:
+    def obtener_estado(self) -> dict[str, Any]:
         """Obtiene el estado actual del cliente."""
         return {
             'disponible': self.disponible,
@@ -630,7 +630,7 @@ class LLMClient:
 # ============================================================
 
 def crear_cliente(
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     modelo: str = DEFAULT_MODEL
 ) -> LLMClient:
     """Función rápida para crear un cliente LLM."""
@@ -659,7 +659,7 @@ _shared_client_lock = threading.Lock()
 
 
 def obtener_llm_client_compartido(
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     **kwargs: Any
 ) -> "LLMClient":
     """
@@ -694,7 +694,7 @@ if __name__ == "__main__":
         print("\n📦 Creando cliente LLM...")
         client = LLMClient()
 
-        print(f"\n📊 Estado del cliente:")
+        print("\n📊 Estado del cliente:")
         estado = client.obtener_estado()
         for key, value in estado.items():
             print(f"   {key}: {value}")

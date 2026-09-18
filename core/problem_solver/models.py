@@ -4,10 +4,11 @@ Modelos de datos de ProblemSolver: StepPlan, ExecutionPlan.
 Extraído literalmente de core/problem_solver.py (monolito) — Paso 2.
 """
 import uuid
-from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
+from typing import Any
 
 from core.agent import Agente
+
 from .constants import PlanStatus
 
 
@@ -19,12 +20,12 @@ class StepPlan:
     nombre: str = ""
     descripcion: str = ""
     tipo_agente: str = "Python"
-    dependencia_ids: List[str] = field(default_factory=list)
-    configuracion: Dict[str, Any] = field(default_factory=dict)
+    dependencia_ids: list[str] = field(default_factory=list)
+    configuracion: dict[str, Any] = field(default_factory=dict)
     justificacion: str = ""
     es_critico: bool = False
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             'id': self.id,
             'orden': self.orden,
@@ -45,14 +46,14 @@ class ExecutionPlan:
     problema_original: str = ""
     titulo: str = ""
     analisis: str = ""
-    pasos: List[StepPlan] = field(default_factory=list)
+    pasos: list[StepPlan] = field(default_factory=list)
     status: PlanStatus = PlanStatus.DRAFT
     estimacion_tiempo: float = 0.0
-    agentes_generados: List[Agente] = field(default_factory=list)
-    advertencias: List[str] = field(default_factory=list)
-    metadatos: Dict[str, Any] = field(default_factory=dict)
+    agentes_generados: list[Agente] = field(default_factory=list)
+    advertencias: list[str] = field(default_factory=list)
+    metadatos: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             'id': self.id,
             'problema_original': self.problema_original,
@@ -65,8 +66,8 @@ class ExecutionPlan:
             'metadatos': self.metadatos,
         }
 
-    def obtener_agentes_por_nombre(self) -> Dict[str, Agente]:
+    def obtener_agentes_por_nombre(self) -> dict[str, Agente]:
         return {a.nombre: a for a in self.agentes_generados}
 
-    def obtener_pasos_por_nombre(self) -> Dict[str, StepPlan]:
+    def obtener_pasos_por_nombre(self) -> dict[str, StepPlan]:
         return {p.nombre: p for p in self.pasos}

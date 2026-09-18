@@ -14,12 +14,11 @@ Uso:
 """
 
 import os
+import platform
+import stat
 import sys
 import time
-import stat
-import platform
-from pathlib import Path
-from typing import Optional, Tuple, Dict, Any, List
+from typing import Any
 
 logger_name = __name__
 
@@ -120,14 +119,14 @@ def _bullet(c: _Colores, texto: str) -> str:
 # VERIFICACIONES INDIVIDUALES
 # ============================================================
 
-def _verificar_api_key(c: _Colores) -> Tuple[Optional[str], Optional[str], List[str]]:
+def _verificar_api_key(c: _Colores) -> tuple[str | None, str | None, list[str]]:
     """
     Determina de dónde viene la API key.
 
     Returns:
         (api_key, origen, mensajes) donde origen ∈ {'env', 'archivo', None}
     """
-    mensajes: List[str] = []
+    mensajes: list[str] = []
 
     # 1. Variable de entorno
     key_env = os.environ.get("DEEPSEEK_API_KEY")
@@ -156,7 +155,7 @@ def _verificar_api_key(c: _Colores) -> Tuple[Optional[str], Optional[str], List[
 
         # Intentar leer la key
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 for linea in f:
                     resultado = _parsear_linea_env(linea)
                     if resultado is None:
@@ -181,7 +180,7 @@ def _enmascarar_key(key: str) -> str:
     return f"{key[:8]}…{key[-4:]}"
 
 
-def _verificar_proxies(c: _Colores) -> List[str]:
+def _verificar_proxies(c: _Colores) -> list[str]:
     """Devuelve las variables de proxy configuradas."""
     proxies = []
     for var in ("HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY"):
@@ -195,7 +194,7 @@ def _ping_http_deepseek(
     c: _Colores,
     api_key: str,
     timeout: float = 5.0
-) -> Tuple[bool, str, Dict[str, Any]]:
+) -> tuple[bool, str, dict[str, Any]]:
     """
     Hace un ping HTTP real a la API de DeepSeek.
 
@@ -210,7 +209,7 @@ def _ping_http_deepseek(
           - endpoint
           - error_tipo
     """
-    detalles: Dict[str, Any] = {}
+    detalles: dict[str, Any] = {}
 
     try:
         import requests

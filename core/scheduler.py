@@ -13,18 +13,18 @@ MEJORAS IMPLEMENTADAS:
 - ✅ API pública vs interna bien delimitada
 - ✅ LOG DE RESULTADO DE CADA AGENTE al finalizar
 """
-import time
-import threading
 import logging
-from typing import Dict, List, Set, Optional, Tuple, Any
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from PyQt6.QtCore import QObject, pyqtSignal, pyqtSlot, Qt, QTimer
+from typing import Any
+
+from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
 
 from .agent import Agente, EstadoAgente, TipoAgente
 from .bridge import SchedulerBridge
-from .event_bus import obtener_bus, Event, EventType
-from .cancellation import obtener_gestor_cancelacion, CancellationToken
-
+from .cancellation import CancellationToken, obtener_gestor_cancelacion
+from .event_bus import obtener_bus
 
 # ============================================================
 # MÁQUINA DE ESTADOS - TRANSICIONES VÁLIDAS
@@ -127,23 +127,23 @@ class Scheduler(QObject):
         self._max_intentos_plan_b = 2
 
         # ── Estado de agentes ──
-        self.agentes: Dict[str, Agente] = {}
+        self.agentes: dict[str, Agente] = {}
         self.max_concurrent = max_concurrent
-        self.running: Set[str] = set()
-        self.completed: Set[str] = set()
+        self.running: set[str] = set()
+        self.completed: set[str] = set()
 
         # ── Estado de ejecución ──
         self.ejecutando = False
         self.pausado = False
         self._terminado_notificado = False
-        self._cancelados: Set[str] = set()
+        self._cancelados: set[str] = set()
 
         # ── Seguimiento de loops ──
-        self._loops_activos: Set[str] = set()
-        self._loop_items_procesados: Dict[str, int] = {}
+        self._loops_activos: set[str] = set()
+        self._loop_items_procesados: dict[str, int] = {}
 
         # ── Cache de estadísticas ──
-        self._stats_cache: Optional[Dict] = None
+        self._stats_cache: dict | None = None
         self._stats_cache_time: float = 0.0
 
         # ── Sincronización ──
@@ -167,14 +167,14 @@ class Scheduler(QObject):
         self._stats_pending = False
 
         # ── Timestamp de inicio de ejecución ──
-        self._tiempo_inicio_ejecucion: Optional[float] = None
+        self._tiempo_inicio_ejecucion: float | None = None
 
         # ── Event Bus ──
         self._bus = obtener_bus()
 
         # ── Gestor de cancelación ──
         self._gestor_cancelacion = obtener_gestor_cancelacion()
-        self._tokens_activos: Dict[str, CancellationToken] = {}  # agente_id -> token
+        self._tokens_activos: dict[str, CancellationToken] = {}  # agente_id -> token
 
         #logger.debug(f"Scheduler inicializado (max_concurrent={max_concurrent})")
 
@@ -252,17 +252,17 @@ class Scheduler(QObject):
         # Emitir señal FUERA del lock
         self.agente_actualizado.emit(agente_id)
 
-    def agregar_agentes(self, agentes: List[Agente]):
+    def agregar_agentes(self, agentes: list[Agente]):
         """Agrega múltiples agentes."""
         for agente in agentes:
             self.agregar_agente(agente)
 
-    def obtener_agente(self, agente_id: str) -> Optional[Agente]:
+    def obtener_agente(self, agente_id: str) -> Agente | None:
         """Obtiene un agente por ID."""
         with self._lock:
             return self.agentes.get(agente_id)
 
-    def obtener_agente_por_nombre(self, nombre: str) -> Optional[Agente]:
+    def obtener_agente_por_nombre(self, nombre: str) -> Agente | None:
         """Obtiene un agente por nombre."""
         with self._lock:
             for agente in self.agentes.values():
@@ -292,7 +292,7 @@ class Scheduler(QObject):
                     agente.dependencias_ids = ids_resueltos
                     agente.dependencias_nombres = []
 
-    def detectar_ciclos(self) -> Tuple[bool, List[List[str]]]:
+    def detectar_ciclos(self) -> tuple[bool, list[list[str]]]:
         """Detecta ciclos en las dependencias usando DFS."""
         with self._lock:
             visitados = set()
@@ -300,7 +300,7 @@ class Scheduler(QObject):
             ciclos = []
             id_a_nombre = {aid: a.nombre for aid, a in self.agentes.items()}
 
-            def dfs(agente_id: str, path: List[str]):
+            def dfs(agente_id: str, path: list[str]):
                 if agente_id in pila:
                     try:
                         idx = path.index(agente_id)
@@ -334,7 +334,7 @@ class Scheduler(QObject):
 
             return bool(ciclos), ciclos
 
-    def _validar_fuentes_loop(self) -> Tuple[bool, List[str]]:
+    def _validar_fuentes_loop(self) -> tuple[bool, list[str]]:
         """Valida que las fuentes de items de los loops sean válidas."""
         with self._lock:
             errores = []
@@ -366,7 +366,7 @@ class Scheduler(QObject):
     # ============================================================
     # LÓGICA INTERNA DE EJECUCIÓN
     # ============================================================
-    def _obtener_dependencias_pendientes(self, agente: Agente) -> List[str]:
+    def _obtener_dependencias_pendientes(self, agente: Agente) -> list[str]:
         """
         Retorna las dependencias que aún NO están COMPLETADAS.
         Solo COMPLETADO satisface una dependencia.
@@ -480,7 +480,7 @@ class Scheduler(QObject):
 
     # core/scheduler.py - MÉTODO _ejecutar_agente COMPLETO CON CANCELACIÓN
 
-    def _ejecutar_agente(self, agente: Agente, contexto_extra: Dict = None):
+    def _ejecutar_agente(self, agente: Agente, contexto_extra: dict = None):
         """
         Ejecuta un agente en un hilo worker con soporte para cancelación.
         """
@@ -675,7 +675,7 @@ class Scheduler(QObject):
                             )
                         except ValueError:
                             agente.estado = EstadoAgente.TIMEOUT
-                            agente.mensaje = f"⏱️ Timeout"
+                            agente.mensaje = "⏱️ Timeout"
                         agente.progreso = 100
                         agente.error = mensaje
                         self.log_mensaje.emit(
@@ -1185,7 +1185,7 @@ class Scheduler(QObject):
     # SLOT PARA REINTENTOS
     # ============================================================
     @pyqtSlot(str, object)
-    def _on_reintentar_agente(self, agente_id: str, contexto_extra: Dict):
+    def _on_reintentar_agente(self, agente_id: str, contexto_extra: dict):
         """
         Slot para reintentar un agente desde el hilo principal.
         Recibe solo el ID (no el objeto vivo) para evitar data race con el worker.
@@ -1374,7 +1374,7 @@ class Scheduler(QObject):
         self._stats_cache = None
         self._stats_cache_time = 0.0
 
-    def _calcular_estadisticas_internal(self) -> Dict:
+    def _calcular_estadisticas_internal(self) -> dict:
         """Calcula las estadísticas (debe llamarse bajo lock)."""
         agentes = list(self.agentes.values())
         total = len(agentes)
@@ -1392,7 +1392,7 @@ class Scheduler(QObject):
             "loops_total": sum(1 for a in agentes if a.tipo == TipoAgente.LOOP),
         }
 
-    def obtener_estadisticas(self) -> Dict:
+    def obtener_estadisticas(self) -> dict:
         """Obtiene estadísticas con cache para reducir CPU."""
         now = time.time()
         with self._lock:
@@ -1410,7 +1410,7 @@ class Scheduler(QObject):
     # ============================================================
     # EJECUCIÓN INDIVIDUAL
     # ============================================================
-    def ejecutar_agente_individual(self, agente_id: str, contexto: Dict = None) -> bool:
+    def ejecutar_agente_individual(self, agente_id: str, contexto: dict = None) -> bool:
         """Ejecuta un agente individualmente (para pruebas)."""
         with self._lock:
             agente = self.agentes.get(agente_id)
@@ -1449,7 +1449,7 @@ class Scheduler(QObject):
     # ============================================================
     # SEGUIMIENTO DE LOOPS
     # ============================================================
-    def obtener_progreso_loop(self, agente_id: str) -> Optional[Dict]:
+    def obtener_progreso_loop(self, agente_id: str) -> dict | None:
         """Obtiene el progreso de un loop activo."""
         with self._lock:
             if agente_id not in self._loops_activos:
@@ -1459,7 +1459,7 @@ class Scheduler(QObject):
                 "items_procesados": self._loop_items_procesados.get(agente_id, 0),
             }
 
-    def obtener_loops_activos(self) -> List[str]:
+    def obtener_loops_activos(self) -> list[str]:
         """Retorna la lista de IDs de loops activos."""
         with self._lock:
             return list(self._loops_activos)

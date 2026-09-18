@@ -24,7 +24,6 @@ import logging
 import sqlite3
 import threading
 from contextlib import closing
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -48,11 +47,11 @@ MAX_CANDIDATOS = 500         # límite de filas a cargar en cada búsqueda
 # ============================================================
 # SINGLETON THREAD-SAFE
 # ============================================================
-_matcher_instance: Optional["EmbeddingMatcher"] = None
+_matcher_instance: EmbeddingMatcher | None = None
 _matcher_lock = threading.RLock()
 
 
-def obtener_matcher(modelo: str = MODELO_DEFAULT) -> "EmbeddingMatcher":
+def obtener_matcher(modelo: str = MODELO_DEFAULT) -> EmbeddingMatcher:
     """Devuelve el EmbeddingMatcher singleton (crea si no existe)."""
     global _matcher_instance
     with _matcher_lock:
@@ -112,7 +111,7 @@ class EmbeddingMatcher:
     # ------------------------------------------------------------
     # Cálculo de embedding
     # ------------------------------------------------------------
-    def calcular(self, texto: str) -> Optional[bytes]:
+    def calcular(self, texto: str) -> bytes | None:
         """
         Calcula el embedding de un texto y lo serializa a bytes
         (float32). Devuelve None si algo falla.
@@ -148,7 +147,7 @@ class EmbeddingMatcher:
         texto: str,
         umbral: float = UMBRAL_DEFAULT,
         estados_validos: tuple = ("activo", "candidato"),
-    ) -> Optional[Dict]:
+    ) -> dict | None:
         """
         Busca la reescritura más similar al texto dado.
 
@@ -213,7 +212,7 @@ class EmbeddingMatcher:
         self,
         db_path: str,
         estados_validos: tuple,
-    ) -> List[Dict]:
+    ) -> list[dict]:
         """Carga las filas con embedding no nulo de la BD."""
         try:
             with closing(sqlite3.connect(db_path, timeout=5)) as conn:
@@ -238,7 +237,7 @@ class EmbeddingMatcher:
     # ------------------------------------------------------------
     # Utilidad: recodificar embeddings de toda la tabla
     # ------------------------------------------------------------
-    def recodificar_todos(self, db_path: str) -> Dict[str, int]:
+    def recodificar_todos(self, db_path: str) -> dict[str, int]:
         """
         Calcula y guarda el embedding de todas las filas que no lo
         tengan (o que lo tengan con otro modelo).

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 Punto de entrada de Agentes Visuales.
 
@@ -9,11 +8,11 @@ Uso:
     agentes_visuales --check-env --timeout 15
     agentes_visuales --version
 """
-import sys
 import argparse
 import logging
-from logging.handlers import RotatingFileHandler
 import os
+import sys
+from logging.handlers import RotatingFileHandler
 
 __version__ = "1.1.0"
 

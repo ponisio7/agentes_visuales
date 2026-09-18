@@ -8,13 +8,14 @@ Ambos usan aprendizaje ONLINE (partial_fit) para poder actualizarse con
 cada ejecución nueva sin reentrenar desde cero.
 """
 from __future__ import annotations
+
+import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
-import logging
-from sklearn.feature_extraction import DictVectorizer
-from sklearn.linear_model import SGDClassifier, SGDRegressor
+
 import joblib
+from sklearn.feature_extraction import DictVectorizer
+from sklearn.linear_model import SGDRegressor
 
 logger = logging.getLogger(__name__)
 MUESTRAS_MINIMAS_ENTRENAMIENTO_INICIAL = 20
@@ -104,7 +105,7 @@ class FailurePredictor:
         # ni SGDClassifier. Solo necesitamos el path y cargar priors.
         self.ruta_modelos = Path(ruta_modelos)
         self.ruta_modelos.mkdir(parents=True, exist_ok=True)
-        self._priors_por_tipo: Dict[str, List[int]] = {}  # tipo -> [exitos, total]
+        self._priors_por_tipo: dict[str, list[int]] = {}  # tipo -> [exitos, total]
         self._entrenado = False
         self._n_muestras = 0
         self._cargar_si_existe()
@@ -147,7 +148,7 @@ class FailurePredictor:
     # ------------------------------------------------------------------
     # ENTRENAMIENTO
     # ------------------------------------------------------------------
-    def entrenar_inicial(self, features: List[Dict], etiquetas: List[int]):
+    def entrenar_inicial(self, features: list[dict], etiquetas: list[int]):
         """
         Calcula priors por tipo desde cero. Reemplaza los priors
         existentes (no acumula) porque se llama con el historial completo.
@@ -156,7 +157,7 @@ class FailurePredictor:
             return
         from collections import defaultdict
 
-        stats: Dict[str, List[int]] = defaultdict(lambda: [0, 0])
+        stats: dict[str, list[int]] = defaultdict(lambda: [0, 0])
         for f, y in zip(features, etiquetas):
             tipo = f.get("tipo", "Desconocido")
             stats[tipo][1] += 1
@@ -177,7 +178,7 @@ class FailurePredictor:
             tasa = exitos / total if total > 0 else 0.5
             logger.info(f"   {tipo:12s}: {tasa:.0%} ({exitos}/{total})")
 
-    def actualizar(self, features: Dict, etiqueta: int):
+    def actualizar(self, features: dict, etiqueta: int):
         """Aprendizaje online: ajusta el prior del tipo con una muestra."""
         if not self._entrenado:
             return
@@ -195,7 +196,7 @@ class FailurePredictor:
     # ------------------------------------------------------------------
     # PREDICCIÓN
     # ------------------------------------------------------------------
-    def predecir(self, features: Dict) -> ResultadoPrediccion:
+    def predecir(self, features: dict) -> ResultadoPrediccion:
         if not self._entrenado:
             return ResultadoPrediccion(0.5, "baja", 0)
 
@@ -228,7 +229,7 @@ class PlanScorer(ModeloOnlineBase):
     def _crear_modelo(self):
         return SGDRegressor(random_state=42)
 
-    def entrenar_inicial(self, features: List[Dict], recompensas: List[float]):
+    def entrenar_inicial(self, features: list[dict], recompensas: list[float]):
         if len(features) < 1:
             return
         try:
@@ -240,7 +241,7 @@ class PlanScorer(ModeloOnlineBase):
         except Exception as e:
             logger.warning(f"Error entrenando PlanScorer: {e}")
 
-    def actualizar(self, features: Dict, recompensa: float):
+    def actualizar(self, features: dict, recompensa: float):
         if not self._entrenado:
             return
         try:
@@ -254,7 +255,7 @@ class PlanScorer(ModeloOnlineBase):
         except Exception as e:
             logger.debug(f"partial_fit de PlanScorer ignorado: {e}")
 
-    def puntuar(self, features: Dict) -> float:
+    def puntuar(self, features: dict) -> float:
         if not self._entrenado:
             return 0.5
         try:

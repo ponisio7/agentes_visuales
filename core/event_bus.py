@@ -33,10 +33,11 @@ para reducir races sobre el payload.
 import logging
 import threading
 import time
-from typing import Dict, List, Callable, Any, Optional, Set
+from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from collections import defaultdict
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -121,10 +122,10 @@ class EventBus:
             return
         
         self._initialized = True
-        self._suscriptores: Dict[EventType, List[Callable]] = defaultdict(list)
-        self._suscriptores_todos: List[Callable] = []
+        self._suscriptores: dict[EventType, list[Callable]] = defaultdict(list)
+        self._suscriptores_todos: list[Callable] = []
         self._lock = threading.RLock()
-        self._historial: List[Event] = []
+        self._historial: list[Event] = []
         self._max_historial = 1000
         self._activo = True
         
@@ -355,7 +356,7 @@ class EventBus:
             origen=origen
         ))
     
-    def publicar_ejecucion_terminada(self, stats: Dict, origen: str = ""):
+    def publicar_ejecucion_terminada(self, stats: dict, origen: str = ""):
         """Publica evento de ejecución terminada (stats snapshotteados)."""
         self.publicar(Event(
             tipo=EventType.EJECUCION_TERMINADA,
@@ -399,12 +400,12 @@ class EventBus:
     # UTILIDADES
     # ============================================================
     
-    def obtener_historial(self, limit: int = 100) -> List[Event]:
+    def obtener_historial(self, limit: int = 100) -> list[Event]:
         """Obtiene el historial de eventos."""
         with self._lock:
             return self._historial[-limit:]
     
-    def obtener_estadisticas(self) -> Dict:
+    def obtener_estadisticas(self) -> dict:
         """Obtiene estadísticas del bus."""
         with self._lock:
             tipos = defaultdict(int)
@@ -454,7 +455,7 @@ class EventBus:
 # INSTANCIA GLOBAL
 # ============================================================
 
-_bus_instance: Optional[EventBus] = None
+_bus_instance: EventBus | None = None
 
 def obtener_bus() -> EventBus:
     """Obtiene la instancia global del EventBus."""

@@ -1,16 +1,15 @@
 # core/executors/python_executor.py
 """Ejecutor de agentes Python."""
 
-import time
 import logging
-from typing import Dict, Tuple, Optional
+import time
 
 from core.agent import Agente
-from core.sandbox import PythonSandbox, SandboxError
 from core.cancellation import CancellationToken
+from core.sandbox import PythonSandbox, SandboxError
 
-from .security import MAX_CODIGO_LENGTH
 from .helpers import es_resultado_sospechoso
+from .security import MAX_CODIGO_LENGTH
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +34,9 @@ class PythonExecutor:
     def ejecutar(
         cls,
         agente: Agente,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None
+    ) -> tuple[bool, str, dict]:
         if cancellation_token and cancellation_token.esta_cancelado():
             return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
 

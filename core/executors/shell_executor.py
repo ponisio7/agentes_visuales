@@ -1,24 +1,19 @@
 # core/executors/shell_executor.py
 """Ejecutor de agentes Shell con detección de privilegios."""
 
+import logging
 import os
-import time
+import platform
 import shlex
 import shutil
-import logging
 import subprocess
-import platform
-from typing import Dict, Tuple, Optional
+import time
 
 from core.agent import Agente
 from core.cancellation import CancellationToken
 
-from .security import (
-    MAX_SHELL_COMMAND_LENGTH, DANGEROUS_SHELL_COMMANDS, validar_ruta_archivo
-)
-from .content_extractor import (
-    variables_disponibles, sustituir_variables, comando_requiere_root
-)
+from .content_extractor import comando_requiere_root, sustituir_variables, variables_disponibles
+from .security import DANGEROUS_SHELL_COMMANDS, MAX_SHELL_COMMAND_LENGTH, validar_ruta_archivo
 
 logger = logging.getLogger(__name__)
 
@@ -41,9 +36,9 @@ class ShellExecutor:
     def ejecutar(
         cls,
         agente: Agente,
-        contexto: Dict,
-        cancellation_token: Optional[CancellationToken] = None
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict,
+        cancellation_token: CancellationToken | None = None
+    ) -> tuple[bool, str, dict]:
         if cancellation_token and cancellation_token.esta_cancelado():
             return False, "Cancelado antes de ejecutar", {'error': 'cancelled'}
 

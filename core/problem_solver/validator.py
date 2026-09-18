@@ -29,14 +29,13 @@ advertencias de este mismo método. Se replica tal cual para no alterar
 el comportamiento (incluye el nombre del logger que queda en los logs).
 """
 import ast
+import logging
 import re
 
-import logging
-from typing import Dict, List, Optional, Tuple
+from core.agent import TipoAgente
 
 from .constants import CAMPOS_VALIDOS_POR_TIPO
 from .models import ExecutionPlan, StepPlan
-from core.agent import TipoAgente
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +80,7 @@ class PlanValidator:
 
         elif tipo == 'LLM':
             if 'prompt' not in config or not config['prompt']:
-                config['prompt'] = f"Analiza el siguiente contexto:\n{{contexto}}"
+                config['prompt'] = "Analiza el siguiente contexto:\n{contexto}"
             if 'modelo' not in config:
                 config['modelo'] = 'deepseek-v4-flash'
             if 'temperatura' not in config:
@@ -162,7 +161,7 @@ class PlanValidator:
         self,
         paso: StepPlan,
         tipo: TipoAgente,
-        plan_actual: Optional[ExecutionPlan] = None,
+        plan_actual: ExecutionPlan | None = None,
     ) -> None:
         """
         Verifica que todas las claves de 'configuracion' sean válidas
@@ -198,7 +197,7 @@ class PlanValidator:
         if plan_actual is not None:
             plan_actual.advertencias.append(advertencia)
 
-    def validar_plan(self, plan: ExecutionPlan) -> Tuple[bool, List[str]]:
+    def validar_plan(self, plan: ExecutionPlan) -> tuple[bool, list[str]]:
         """Valida el plan generado."""
         errores = []
 

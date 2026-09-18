@@ -28,7 +28,6 @@ import random
 import sqlite3
 from contextlib import closing
 from datetime import datetime
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +65,10 @@ class PromptABEvaluator:
     # ------------------------------------------------------------
     @staticmethod
     def elegir_variante(
-        prompt_activo: Optional[str],
-        prompt_id_activo: Optional[int],
-        prompt_candidato: Optional[str],
-        prompt_id_candidato: Optional[int],
+        prompt_activo: str | None,
+        prompt_id_activo: int | None,
+        prompt_candidato: str | None,
+        prompt_id_candidato: int | None,
     ):
         """
         Decide qué prompt usar en esta ejecución.
@@ -98,7 +97,7 @@ class PromptABEvaluator:
     # ------------------------------------------------------------
     # 2. Registro de uso (background, tras la ejecución)
     # ------------------------------------------------------------
-    def registrar_uso(self, prompt_id: Optional[int], ejecucion_id: int) -> bool:
+    def registrar_uso(self, prompt_id: int | None, ejecucion_id: int) -> bool:
         """
         Registra que una ejecución usó una versión concreta de prompt.
         Idempotente: si ya existe la pareja (prompt_id, ejecucion_id),
@@ -174,7 +173,7 @@ class PromptABEvaluator:
     # ------------------------------------------------------------
     # 4. Evaluación de candidato (background)
     # ------------------------------------------------------------
-    def evaluar_candidato(self, firma: str) -> Optional[str]:
+    def evaluar_candidato(self, firma: str) -> str | None:
         """
         Decide si promover, descartar o dejar en espera al candidato
         de la firma indicada.
@@ -265,7 +264,7 @@ class PromptABEvaluator:
     # Helpers internos
     # ------------------------------------------------------------
     @staticmethod
-    def _stats_version(conn: sqlite3.Connection, prompt_id: int) -> Dict:
+    def _stats_version(conn: sqlite3.Connection, prompt_id: int) -> dict:
         """
         Calcula la media de score y número de usos con score válido
         para una versión concreta.

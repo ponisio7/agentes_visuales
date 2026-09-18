@@ -8,7 +8,6 @@ build_system_prompt() / build_user_prompt() deben ser byte-idénticos
 a los del monolito (verifica con diff, ver plan de refactor).
 """
 import json
-from typing import Dict, Optional
 
 
 class PromptBuilder:
@@ -532,7 +531,7 @@ RESPONDE SOLO CON EL JSON, NADA MÁS."""
     def build_user_prompt(
         cls,
         problema: str,
-        contexto_extra: Optional[Dict] = None,
+        contexto_extra: dict | None = None,
         max_pasos: int = 10,
         nivel_detalle: str = "normal"
     ) -> str:

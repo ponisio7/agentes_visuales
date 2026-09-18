@@ -4,7 +4,6 @@ FileNameNormalizer: normalización de nombres de archivos en agentes File.
 Extraído literalmente de core/problem_solver.py (monolito) — Paso 4.
 """
 import logging
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +36,7 @@ class FileNameNormalizer:
     }
 
     @classmethod
-    def normalizar(cls, plan_dict: Dict) -> Dict:
+    def normalizar(cls, plan_dict: dict) -> dict:
         """Normaliza nombres de archivos en el plan."""
         pasos = plan_dict.get('pasos', [])
         titulo = plan_dict.get('titulo', '')
@@ -60,7 +59,7 @@ class FileNameNormalizer:
         return plan_dict
 
     @classmethod
-    def _inferir_nombre(cls, titulo: str, paso: Dict) -> Optional[str]:
+    def _inferir_nombre(cls, titulo: str, paso: dict) -> str | None:
         """Infiere un nombre de archivo a partir del título y el paso."""
         titulo_lower = titulo.lower()
 

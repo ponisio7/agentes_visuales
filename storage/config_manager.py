@@ -14,17 +14,14 @@ Mejoras implementadas:
 - ✅ Validación de rutas con warning
 """
 
+import dataclasses
 import json
+import logging
 import os
 import re
-import dataclasses
-import shutil
-import time
 import threading
-import logging
-from typing import Dict, List, Optional, Tuple, Any
+import time
 from datetime import datetime
-from pathlib import Path
 
 from core.agent import Agente, TipoAgente
 
@@ -97,8 +94,8 @@ class ConfigManager:
             raise ConfigError(f"No se pudo crear el directorio de configuraciones: {e}")
 
         # Caché de configuraciones cargadas (LRU simple)
-        self._cache: Dict[str, Dict] = {}
-        self._cache_accessed: Dict[str, float] = {}
+        self._cache: dict[str, dict] = {}
+        self._cache_accessed: dict[str, float] = {}
         self._cache_lock = threading.RLock()
 
         # Archivos de journal para recuperación
@@ -192,7 +189,7 @@ class ConfigManager:
     # ESCRITURA ATÓMICA (CORREGIDA)
     # ============================================================
 
-    def _escribir_json_atomico(self, ruta: str, data: Dict, use_journal: bool = True):
+    def _escribir_json_atomico(self, ruta: str, data: dict, use_journal: bool = True):
         """
         Escribe un archivo JSON de forma atómica usando un archivo temporal.
         """
@@ -236,7 +233,7 @@ class ConfigManager:
                     pass
             raise ConfigError(f"Error al escribir archivo: {e}")
 
-    def _validar_archivo_config(self, ruta: str) -> Dict:
+    def _validar_archivo_config(self, ruta: str) -> dict:
         """
         Valida la integridad de un archivo de configuración.
 
@@ -267,7 +264,7 @@ class ConfigManager:
 
         # Leer y validar JSON
         try:
-            with open(ruta, 'r', encoding='utf-8') as f:
+            with open(ruta, encoding='utf-8') as f:
                 data = json.load(f)
         except json.JSONDecodeError as e:
             # Intentar recuperar de journal
@@ -303,7 +300,7 @@ class ConfigManager:
 
         return data
 
-    def _migrar_v1_a_v2(self, data: Dict) -> Dict:
+    def _migrar_v1_a_v2(self, data: dict) -> dict:
         """
         Migra una configuración de versión 1.x a 2.0.
         """
@@ -346,7 +343,7 @@ class ConfigManager:
 
         try:
             # Leer última entrada del journal
-            with open(journal_path, 'r', encoding='utf-8') as f:
+            with open(journal_path, encoding='utf-8') as f:
                 lines = f.readlines()
 
             if not lines:
@@ -366,7 +363,7 @@ class ConfigManager:
 
         return False
 
-    def _write_journal(self, ruta: str, data: Dict, operation: str = 'write'):
+    def _write_journal(self, ruta: str, data: dict, operation: str = 'write'):
         """
         Escribe una entrada en el journal para recuperación.
 
@@ -407,7 +404,7 @@ class ConfigManager:
             max_entries: Número máximo de entradas
         """
         try:
-            with open(journal_path, 'r', encoding='utf-8') as f:
+            with open(journal_path, encoding='utf-8') as f:
                 lines = f.readlines()
 
             if len(lines) > max_entries:
@@ -432,7 +429,7 @@ class ConfigManager:
             self._cache.pop(key, None)
             self._cache_accessed.pop(key, None)
 
-    def _get_from_cache(self, ruta: str) -> Optional[Dict]:
+    def _get_from_cache(self, ruta: str) -> dict | None:
         """Obtener datos de la caché."""
         with self._cache_lock:
             key = self._get_cache_key(ruta)
@@ -441,7 +438,7 @@ class ConfigManager:
                 return self._cache[key]
             return None
 
-    def _put_in_cache(self, ruta: str, data: Dict):
+    def _put_in_cache(self, ruta: str, data: dict):
         """Guardar datos en la caché."""
         with self._cache_lock:
             key = self._get_cache_key(ruta)
@@ -498,7 +495,7 @@ class ConfigManager:
     # OPERACIONES PRINCIPALES
     # ============================================================
 
-    def guardar(self, agentes: Dict[str, Agente], nombre: str, descripcion: str = "") -> str:
+    def guardar(self, agentes: dict[str, Agente], nombre: str, descripcion: str = "") -> str:
         """
         Guarda la configuración completa de agentes.
 
@@ -545,7 +542,7 @@ class ConfigManager:
         logger.info(f"Configuración guardada: {ruta}")
         return ruta
 
-    def cargar(self, ruta: str) -> List[Dict]:
+    def cargar(self, ruta: str) -> list[dict]:
         """
         Carga una configuración desde un archivo.
 
@@ -579,7 +576,7 @@ class ConfigManager:
         except Exception as e:
             raise ConfigError(f"Error al cargar {ruta}: {e}")
 
-    def cargar_por_nombre(self, nombre: str) -> Optional[List[Dict]]:
+    def cargar_por_nombre(self, nombre: str) -> list[dict] | None:
         """
         Carga la configuración más reciente con ese nombre.
 
@@ -609,7 +606,7 @@ class ConfigManager:
         except ConfigError:
             return None
 
-    def listar_configuraciones(self) -> List[str]:
+    def listar_configuraciones(self) -> list[str]:
         """
         Lista todas las configuraciones guardadas.
 
@@ -631,7 +628,7 @@ class ConfigManager:
 
         return sorted(configs)
 
-    def listar_detalles(self) -> List[Dict]:
+    def listar_detalles(self) -> list[dict]:
         """
         Lista configuraciones con metadatos y estadísticas.
 
@@ -790,7 +787,7 @@ class ConfigManager:
 
     # storage/config_manager.py - MÉTODOS EXPORTAR/IMPORTAR CORREGIDOS
 
-    def exportar_a_json(self, agentes: Dict[str, Agente], ruta: str) -> str:
+    def exportar_a_json(self, agentes: dict[str, Agente], ruta: str) -> str:
         """
         Exporta agentes a un archivo JSON para compartir.
         
@@ -828,7 +825,7 @@ class ConfigManager:
         logger.info(f"Exportación completada: {ruta}")
         return ruta
 
-    def importar_desde_json(self, ruta: str, validar_agentes: bool = True) -> List[Dict]:
+    def importar_desde_json(self, ruta: str, validar_agentes: bool = True) -> list[dict]:
         """
         Importa agentes desde un archivo JSON seleccionado por el usuario.
         
@@ -869,7 +866,7 @@ class ConfigManager:
         logger.info(f"Importación completada: {len(agentes)} agentes desde {ruta}")
         return agentes
 
-    def _escribir_json_atomico_sin_restriccion(self, ruta: str, data: Dict, use_journal: bool = True):
+    def _escribir_json_atomico_sin_restriccion(self, ruta: str, data: dict, use_journal: bool = True):
         """
         Escribe un archivo JSON de forma atómica SIN restricción de directorio.
         Usado exclusivamente para exportaciones iniciadas por el usuario.
@@ -915,7 +912,7 @@ class ConfigManager:
     # MÉTODOS PARA LOOP
     # ============================================================
 
-    def listar_loops(self) -> List[Dict]:
+    def listar_loops(self) -> list[dict]:
         """
         Lista todas las configuraciones que contienen agentes LOOP.
 
@@ -952,7 +949,7 @@ class ConfigManager:
 
         return loops
 
-    def validar_configuracion_loop(self, agente_dict: Dict) -> Tuple[bool, str]:
+    def validar_configuracion_loop(self, agente_dict: dict) -> tuple[bool, str]:
         """
         Valida la configuración de un agente LOOP antes de guardar.
 
@@ -994,7 +991,7 @@ class ConfigManager:
     # ============================================================
 
     @staticmethod
-    def _agente_a_dict(agente: Agente) -> Dict:
+    def _agente_a_dict(agente: Agente) -> dict:
         """
         Serializa un Agente completo, excluyendo campos de runtime.
 
@@ -1022,7 +1019,7 @@ class ConfigManager:
     # UTILIDADES ADICIONALES
     # ============================================================
 
-    def obtener_ruta_absoluta(self, nombre_archivo: str) -> Optional[str]:
+    def obtener_ruta_absoluta(self, nombre_archivo: str) -> str | None:
         """
         Obtiene la ruta absoluta de un archivo de configuración.
 
@@ -1056,7 +1053,7 @@ class ConfigManager:
         except ConfigSecurityError:
             return False
 
-    def obtener_tamano(self, nombre_archivo: str) -> Optional[int]:
+    def obtener_tamano(self, nombre_archivo: str) -> int | None:
         """
         Obtiene el tamaño de un archivo de configuración.
 
@@ -1081,7 +1078,7 @@ class ConfigManager:
             self._cache_accessed.clear()
             logger.debug("Caché de configuraciones limpiada")
 
-    def obtener_info(self) -> Dict:
+    def obtener_info(self) -> dict:
         """
         Obtiene información sobre el gestor de configuraciones.
 

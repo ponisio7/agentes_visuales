@@ -6,19 +6,18 @@ AgentExecutor ya NO contiene la lógica de cada tipo: solo enruta
 al ejecutor correspondiente.
 """
 
-import time
 import logging
-from typing import Dict, Tuple, Optional
+import time
 
 from core.agent import Agente, TipoAgente
 from core.cancellation import CancellationToken
 
-from .python_executor import PythonExecutor
-from .shell_executor import ShellExecutor
+from .file_executor import FileExecutor
 from .http_executor import HTTPExecutor
 from .llm_executor import LLMExecutor
-from .file_executor import FileExecutor
 from .loop_executor import LoopExecutor
+from .python_executor import PythonExecutor
+from .shell_executor import ShellExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +50,9 @@ class AgentExecutor:
     def ejecutar(
         cls,
         agente: Agente,
-        contexto: Dict = None,
-        cancellation_token: Optional[CancellationToken] = None
-    ) -> Tuple[bool, str, Dict]:
+        contexto: dict = None,
+        cancellation_token: CancellationToken | None = None
+    ) -> tuple[bool, str, dict]:
         """
         Ejecuta un agente según su tipo.
         """
@@ -98,12 +97,12 @@ class AgentExecutor:
         get_http_cache().clear()
 
     @classmethod
-    def get_http_cache_stats(cls) -> Dict:
+    def get_http_cache_stats(cls) -> dict:
         from .http_executor import get_http_cache
         return get_http_cache().get_stats()
 
     @classmethod
-    def get_status(cls) -> Dict:
+    def get_status(cls) -> dict:
         return {
             'http_cache': cls.get_http_cache_stats(),
             'rate_limiter': 'active',
@@ -115,6 +114,7 @@ class AgentExecutor:
 # ============================================================
 
 import atexit
+
 
 @atexit.register
 def _cleanup_executor():

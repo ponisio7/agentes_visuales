@@ -9,15 +9,14 @@ Uso:
     python run_all_tests.py --verbose          # Más detalle (pytest -vv)
     python run_all_tests.py --watchdog 30      # Avisa si un test tarda > 30s
 """
-import sys
+import argparse
+import importlib.util
 import os
 import subprocess
-import importlib.util
+import sys
 import threading
 import time
-import argparse
 from pathlib import Path
-
 
 # ============================================================
 # COLORES ANSI (con fallback si no hay TTY)
@@ -276,7 +275,7 @@ def main() -> int:
 
     print()
     print(gris(f"📄 Log completo: {log_file}"))
-    print(gris(f"🖥️  QT_QPA_PLATFORM=offscreen  MPLBACKEND=Agg"))
+    print(gris("🖥️  QT_QPA_PLATFORM=offscreen  MPLBACKEND=Agg"))
     if args.single_process:
         print(amarillo("⚠️  Modo single-process: toda la suite en un pytest"))
     else:

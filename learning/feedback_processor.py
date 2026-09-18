@@ -25,14 +25,14 @@ y no lanza excepciones: si algo falla, devuelve None y el llamador
 sigue con el prompt original.
 """
 from __future__ import annotations
+
 import hashlib
 import logging
 import re
 import sqlite3
-from contextlib import closing
 import unicodedata
+from contextlib import closing
 from datetime import datetime
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +107,7 @@ class FeedbackProcessor:
     # ------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------
-    def procesar_feedback(self, feedback_id: int) -> Dict:
+    def procesar_feedback(self, feedback_id: int) -> dict:
         """
         Procesa un feedback y devuelve un dict con el resultado.
 
@@ -211,7 +211,7 @@ class FeedbackProcessor:
         cls,
         db_path: str,
         prompt_original: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Runtime. Devuelve el prompt reescrito si existe, o None.
 
@@ -306,7 +306,7 @@ class FeedbackProcessor:
         prompt_nuevo: str,
         razon: str,
         feedback_id: int,
-    ) -> Optional[int]:
+    ) -> int | None:
         """
         Guarda una reescritura y calcula su embedding para matching
         semántico (Fase 5b).
@@ -378,8 +378,6 @@ class FeedbackProcessor:
         """
         if not prompt:
             return ""
-        import unicodedata
-        import re
 
         # Normalizar: minúsculas, sin acentos
         t = unicodedata.normalize("NFKD", prompt.lower())
@@ -403,7 +401,7 @@ class FeedbackProcessor:
             "produce", "construye", "haz",
             # instrucciones meta comunes
             "devuelve", "responde", "usa", "utiliza", "incluye",
-            "asegurate", "verifica", "no", "solo", "unicamente",
+            "asegurate", "verifica", "solo", "unicamente",
         })
 
         significativas = [

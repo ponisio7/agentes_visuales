@@ -21,10 +21,10 @@ _engine_instance = None
 
 
 def obtener_learning_engine(
-    db_path: Optional[str] = None,
+    db_path: str | None = None,
     llm_client=None,
-    ruta_modelos: Optional[str] = None,
-    modelo_evaluador: Optional[str] = None,
+    ruta_modelos: str | None = None,
+    modelo_evaluador: str | None = None,
 ):
     """
     Devuelve el LearningEngine singleton.

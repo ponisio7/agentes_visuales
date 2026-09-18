@@ -7,12 +7,13 @@ Verifican que:
 3. La inyección es idempotente.
 """
 import sys
+
 sys.path.insert(0, '.')
 
 from core.problem_solver.builder import (
-    _inyectar_contrato_salida,
     CONTRATOS_SALIDA_POR_PASO,
     MARCADOR_CONTRATO,
+    _inyectar_contrato_salida,
 )
 
 

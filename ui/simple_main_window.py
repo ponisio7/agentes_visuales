@@ -11,9 +11,10 @@ Flujo:
 Estética: terminal retro (fósforo verde).
 """
 import os
-import sys
 import sqlite3
-from contextlib import closing        # ← añadir
+import sys
+from contextlib import closing  # ← añadir
+
 # Si se ejecuta como script suelto (python ui/simple_main_window.py),
 # añadir la raíz del proyecto al sys.path para que resuelvan
 # los imports storage.*, core.*, learning.*
@@ -27,20 +28,29 @@ import string
 import time
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QThread, QObject, QTimer, pyqtSignal, pyqtSlot
-from PyQt6.QtGui import QTextCursor, QFont, QPainter, QColor, QPen
+from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QTextCursor
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QPushButton, QLabel, QFrame, QMessageBox,
+    QApplication,
+    QDialog,  # ✅ FASE 2c
+    QDialogButtonBox,
+    QFrame,
     QGraphicsDropShadowEffect,
-    QDialog, QDialogButtonBox,  # ✅ FASE 2c
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
 )
-from typing import Dict, Optional
-from storage.database import Database
-from core.llm_client import obtener_llm_client_compartido
-from core.scheduler import Scheduler
-from core.problem_solver import ProblemSolver, ExecutionPlan
+
 from core.execution_recorder import registrar_ejecucion_en_aprendizaje
+from core.llm_client import obtener_llm_client_compartido
+from core.problem_solver import ExecutionPlan, ProblemSolver
+from core.scheduler import Scheduler
+from storage.database import Database
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +241,7 @@ class FeedbackDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("¿Cómo fue esta ejecución?")
         self.setMinimumWidth(520)
-        self._score: Optional[float] = None
+        self._score: float | None = None
         self._comentario: str = ""
 
         # Estilo consistente con la ventana principal (terminal verde).
@@ -309,7 +319,7 @@ class FeedbackDialog(QDialog):
         caja.rejected.connect(self.reject)
         layout.addWidget(caja)
 
-        self._valoracion_elegida: Optional[str] = None
+        self._valoracion_elegida: str | None = None
 
     def _elegir(self, key: str):
         """Marca visualmente el botón elegido."""
@@ -342,7 +352,7 @@ class FeedbackDialog(QDialog):
         self._comentario = self.comentario.toPlainText().strip()
         self.accept()
 
-    def obtener_resultado(self) -> Optional[Dict]:
+    def obtener_resultado(self) -> dict | None:
         """
         Devuelve {'score': float, 'comentario': str} o None si el usuario
         canceló. La distinción score=None vs score=0.0 es importante:
@@ -426,7 +436,7 @@ class SimpleMainWindow(QMainWindow):
         self._inicializar_learning_engine()
 
         # 3. LLM compartido
-        self.solver: Optional[ProblemSolver] = None
+        self.solver: ProblemSolver | None = None
         try:
             llm = obtener_llm_client_compartido()
             if llm and llm.disponible:
@@ -440,12 +450,12 @@ class SimpleMainWindow(QMainWindow):
         self.scheduler = Scheduler(max_concurrent=4)
 
         # 5. Estado interno
-        self._hilo_plan: Optional[QThread] = None
-        self._worker_plan: Optional[_PlanGenerator] = None
+        self._hilo_plan: QThread | None = None
+        self._worker_plan: _PlanGenerator | None = None
         self._ejecutando = False
         self._ultimo_problema: str = ""
-        self._ultimo_plan: Optional[ExecutionPlan] = None
-        self._tiempo_inicio_ejecucion: Optional[float] = None
+        self._ultimo_plan: ExecutionPlan | None = None
+        self._tiempo_inicio_ejecucion: float | None = None
         self._cursor_on = True
         self._status_base = "listo"
         self._ultima_ejecucion_id: int = 0
@@ -1020,7 +1030,7 @@ class SimpleMainWindow(QMainWindow):
 
         self._guardar_y_procesar_feedback(datos)
 
-    def _guardar_y_procesar_feedback(self, datos: Dict):
+    def _guardar_y_procesar_feedback(self, datos: dict):
         """
         Guarda el feedback en `feedback_usuario` y lanza el procesamiento
         en un hilo de background (no bloquea la UI).
@@ -1072,8 +1082,8 @@ class SimpleMainWindow(QMainWindow):
 
         def worker():
             try:
-                from learning.feedback_processor import FeedbackProcessor
                 from core.llm_client import obtener_llm_client_compartido
+                from learning.feedback_processor import FeedbackProcessor
                 proc = FeedbackProcessor(
                     self.db.db_path, obtener_llm_client_compartido()
                 )

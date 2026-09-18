@@ -8,7 +8,7 @@ así como análisis reactivo del formulario en tiempo real.
 import json
 import logging
 import re
-from typing import Dict, Optional, Any, List
+from typing import Any
 
 from core.agent import TipoAgente
 from core.utils import extraer_json_de_llm  # ✅ NUEVO: importar utilidad
@@ -171,7 +171,7 @@ Genera las sugerencias necesarias para completar o mejorar este agente."""
     # ============================================================
     # GENERACIÓN COMPLETA DE AGENTE
     # ============================================================
-    def generar_agente_completo(self, descripcion: str) -> Dict[str, Any]:
+    def generar_agente_completo(self, descripcion: str) -> dict[str, Any]:
         """
         Genera un agente completo desde una descripción en lenguaje natural.
         Args:
@@ -243,7 +243,7 @@ Usa variables como {contexto} cuando sea apropiado."""
         self,
         tipo: TipoAgente,
         descripcion: str,
-        contexto_agente: Optional[Dict] = None
+        contexto_agente: dict | None = None
     ) -> str:
         """
         Genera contenido específico (código, prompt, comando) según el tipo.
@@ -371,7 +371,7 @@ Reglas:
     # ============================================================
     # SUGERENCIAS INTELIGENTES
     # ============================================================
-    def sugerir_mejoras(self, agente_config: Dict) -> List[str]:
+    def sugerir_mejoras(self, agente_config: dict) -> list[str]:
         """
         Sugiere mejoras para un agente basado en su configuración actual.
         Args:
@@ -417,7 +417,7 @@ Sé conciso y práctico."""
     # ============================================================
     # PROMPTS ESPECÍFICOS POR TIPO
     # ============================================================
-    def _prompt_python(self, contexto: Optional[Dict] = None) -> str:
+    def _prompt_python(self, contexto: dict | None = None) -> str:
         deps_info = ""
         if contexto and contexto.get('dependencias'):
             deps_info = f"\nDependencias disponibles: {', '.join(contexto['dependencias'])}"
@@ -446,7 +446,7 @@ resultado = {{
 }}
 ```"""
 
-    def _prompt_shell(self, contexto: Optional[Dict] = None) -> str:
+    def _prompt_shell(self, contexto: dict | None = None) -> str:
         return """Eres un experto en comandos de terminal Linux/Unix.
 Genera un comando shell que:
 - Sea seguro (no uses rm -rf, sudo, etc. sin razón)
@@ -460,7 +460,7 @@ Ejemplos:
 - find . -name "*.log" -mtime +7
 - cat archivo.txt | sort | uniq -c | sort -rn"""
 
-    def _prompt_http(self, contexto: Optional[Dict] = None) -> str:
+    def _prompt_http(self, contexto: dict | None = None) -> str:
         return """Eres un experto en APIs REST.
 Genera una URL de API pública y funcional que:
 - Sea de una API real y accesible (GitHub, JSONPlaceholder, Open-Meteo, etc.)
@@ -473,7 +473,7 @@ Ejemplos:
 - https://jsonplaceholder.typicode.com/posts
 - https://api.open-meteo.com/v1/forecast?latitude=40.4165&longitude=-3.7026&current_weather=true"""
 
-    def _prompt_llm(self, contexto: Optional[Dict] = None) -> str:
+    def _prompt_llm(self, contexto: dict | None = None) -> str:
         deps_info = ""
         if contexto and contexto.get('dependencias'):
             deps_info = f"\nEl agente recibe datos de: {', '.join(contexto['dependencias'])}"
@@ -493,7 +493,7 @@ Estructura recomendada:
 3. Datos de entrada ("{{contexto}}")
 4. Formato de salida esperado"""
 
-    def _prompt_file(self, contexto: Optional[Dict] = None) -> str:
+    def _prompt_file(self, contexto: dict | None = None) -> str:
         return """Eres un experto en operaciones con archivos.
 Sugiere una operación con archivos útil y práctica.
 
@@ -503,7 +503,7 @@ indicando:
 - Qué tipo de archivo
 - Para qué sirve"""
 
-    def _prompt_loop(self, contexto: Optional[Dict] = None) -> str:
+    def _prompt_loop(self, contexto: dict | None = None) -> str:
         return """Eres un experto en procesamiento de listas.
 Genera código Python que procese un item individual de una lista.
 
@@ -521,7 +521,7 @@ Reglas:
 
 Devuelve SOLO el código, sin markdown ni explicaciones."""
 
-    def _prompt_generico(self, contexto: Optional[Dict] = None) -> str:
+    def _prompt_generico(self, contexto: dict | None = None) -> str:
         return "Genera contenido útil y funcional según la descripción del usuario. Devuelve solo el contenido, sin explicaciones."
 
     # ============================================================

@@ -24,13 +24,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from learning.prompt_ab_evaluator import (
-    PromptABEvaluator,
-    MIN_USOS_PARA_DECIDIR,
-    MIN_USOS_ACTIVO_PARA_COMPARAR,
     MARGEN_PROMOCION,
     MAX_USOS_SIN_DECISION,
+    MIN_USOS_ACTIVO_PARA_COMPARAR,
+    MIN_USOS_PARA_DECIDIR,
+    PromptABEvaluator,
 )
-
 
 DB = "agent_history.db"
 
@@ -150,7 +149,7 @@ def test_promocion():
     )
 
     estado_antes = _leer_estado(firma)
-    print(f"Estado ANTES:")
+    print("Estado ANTES:")
     for r in estado_antes:
         print(f"  id={r['id']} estado={r['estado']} n_usos={r['n_usos']}")
 
@@ -159,7 +158,7 @@ def test_promocion():
     print(f"\nDecisión: {decision}")
 
     estado_despues = _leer_estado(firma)
-    print(f"Estado DESPUÉS:")
+    print("Estado DESPUÉS:")
     for r in estado_despues:
         print(f"  id={r['id']} estado={r['estado']} n_usos={r['n_usos']}")
 
@@ -196,7 +195,7 @@ def test_descarte():
     )
 
     estado_antes = _leer_estado(firma)
-    print(f"Estado ANTES:")
+    print("Estado ANTES:")
     for r in estado_antes:
         print(f"  id={r['id']} estado={r['estado']} n_usos={r['n_usos']}")
 
@@ -205,7 +204,7 @@ def test_descarte():
     print(f"\nDecisión: {decision}")
 
     estado_despues = _leer_estado(firma)
-    print(f"Estado DESPUÉS:")
+    print("Estado DESPUÉS:")
     for r in estado_despues:
         print(f"  id={r['id']} estado={r['estado']} n_usos={r['n_usos']}")
 
@@ -241,7 +240,7 @@ def test_empate_espera():
     )
 
     estado_antes = _leer_estado(firma)
-    print(f"Estado ANTES:")
+    print("Estado ANTES:")
     for r in estado_antes:
         print(f"  id={r['id']} estado={r['estado']} n_usos={r['n_usos']}")
 
@@ -250,7 +249,7 @@ def test_empate_espera():
     print(f"\nDecisión: {decision}")
 
     estado_despues = _leer_estado(firma)
-    print(f"Estado DESPUÉS:")
+    print("Estado DESPUÉS:")
     for r in estado_despues:
         print(f"  id={r['id']} estado={r['estado']} n_usos={r['n_usos']}")
 
@@ -306,7 +305,7 @@ def test_empate_descarte():
 # ────────────────────────────────────────────────────────────
 def main():
     print("\n🧪 TEST SINTÉTICO DEL A/B TESTING\n")
-    print(f"Parámetros:")
+    print("Parámetros:")
     print(f"  MIN_USOS_PARA_DECIDIR         = {MIN_USOS_PARA_DECIDIR}")
     print(f"  MIN_USOS_ACTIVO_PARA_COMPARAR = {MIN_USOS_ACTIVO_PARA_COMPARAR}")
     print(f"  MARGEN_PROMOCION              = {MARGEN_PROMOCION}")

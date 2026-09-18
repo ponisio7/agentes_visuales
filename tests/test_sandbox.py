@@ -23,30 +23,20 @@ CARACTERÍSTICAS:
 - ✅ Pruebas de limpieza de recursos
 """
 
-import pytest
-import time
-import json
-import tempfile
 import os
 import sys
-import threading
-from unittest.mock import MagicMock, patch
+import tempfile
+import time
+
+import pytest
 
 from core.sandbox import (
-    PythonSandbox,
-    SandboxResult,
-    SandboxError,
-    SandboxTimeoutError,
-    SandboxSecurityError,
-    SandboxResourceError,
-    TempFileManager,
-    SandboxCache,
     MAX_TEMP_FILES,
     TEMP_FILE_AGE_LIMIT,
-    CACHE_MAX_SIZE,
-    CACHE_TTL
+    PythonSandbox,
+    SandboxCache,
+    SandboxResult,
 )
-
 
 # ============================================================
 # FIXTURES
@@ -1019,8 +1009,6 @@ class TestSandboxThreadSafety:
         ✅ CORREGIDO: indentación del string eliminada (causaba IndentationError).
         Timeout aumentado a 5s para dar margen bajo carga.
         """
-        import threading
-        import concurrent.futures
 
         codigo = """import time
 import threading
@@ -1044,13 +1032,11 @@ resultado = {'id': threading.get_ident()}
             
             result = PythonSandbox.ejecutar(codigo, {}, timeout=5)
             # Añadir: imprimir el stdout/stderr crudo del sandbox
-            import sys
             print(f"[TEST] exito={result[0]} msg={result[1][:60]!r} res_keys={list(result[2].keys())}", file=sys.stderr)
             return result
 
     def test_cache_concurrente(self):
         """Prueba acceso concurrente a la caché."""
-        import threading
         import concurrent.futures
 
         PythonSandbox.clear_cache()

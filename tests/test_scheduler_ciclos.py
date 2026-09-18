@@ -1,8 +1,8 @@
 # tests/test_scheduler_ciclos.py - VERSIÓN CORREGIDA COMPLETA
 
-import pytest
-from core.scheduler import Scheduler
 from core.agent import Agente
+from core.scheduler import Scheduler
+
 
 class TestSchedulerCiclos:
     """Pruebas específicas para detección de ciclos"""

@@ -15,17 +15,17 @@ El código se fue fragmentando desde el antiguo core/problem_solver.py
     - solver: ProblemSolver (orquestador)
     - cli: helpers de línea de comandos
 """
-from .constants import (
-    PlanStatus,
-    PlanComplexity,
-    CAMPOS_VALIDOS_POR_TIPO,
-)
-from .models import StepPlan, ExecutionPlan
-from .prompt_builder import PromptBuilder
-from .code_corrector import PythonCodeCorrector
-from .file_normalizer import FileNameNormalizer
-from .solver import ProblemSolver
 from .cli import ejecutar_plan_prueba
+from .code_corrector import PythonCodeCorrector
+from .constants import (
+    CAMPOS_VALIDOS_POR_TIPO,
+    PlanComplexity,
+    PlanStatus,
+)
+from .file_normalizer import FileNameNormalizer
+from .models import ExecutionPlan, StepPlan
+from .prompt_builder import PromptBuilder
+from .solver import ProblemSolver
 
 __all__ = [
     "ProblemSolver",

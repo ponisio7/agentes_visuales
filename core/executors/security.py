@@ -6,10 +6,10 @@ Este módulo NO debe importar nada del proyecto para evitar dependencias
 circulares. Solo stdlib.
 """
 
-import os
 import logging
-from urllib.parse import urlparse
+import os
 from typing import Any
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
