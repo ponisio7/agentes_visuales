@@ -86,7 +86,7 @@ class TestConfiguracionYUtilidades:
         assert config.flatten is True
         assert config.comprimir is False
         assert config.separator == "."
-        assert config.encoding == "utf-8-sig"
+        assert config.encoding == "utf-8"
 
     def test_obtener_formatos_soportados(self):
         """Verifica que todos los formatos estén registrados."""

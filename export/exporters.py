@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 import re
 
+from .utils import aplanar_diccionario, aplanar_lista
+
 # Configurar logger
 logger = logging.getLogger(__name__)
 
@@ -41,8 +43,8 @@ MAX_CSV_ROWS = 1000000
 MAX_HTML_ROWS = 10000
 MAX_EXCEL_ROWS = 1048576  # Límite de Excel
 MAX_JSON_SIZE = 100 * 1024 * 1024  # 100 MB
-DEFAULT_ENCODING = "utf-8-sig"
 CHUNK_SIZE = 10000
+STREAM_SNIFF_ROWS = 1000  # filas iniciales para calcular la cabecera CSV
 INDENT = 2
 
 # Colores para HTML
@@ -276,82 +278,18 @@ class ResultExporter:
         separator: str = ".",
         max_depth: int = 10
     ) -> Dict:
-        """
-        Aplana un diccionario anidado.
-        
-        Args:
-            d: Diccionario a aplanar
-            parent_key: Clave padre
-            separator: Separador para claves anidadas
-            max_depth: Profundidad máxima
-            
-        Returns:
-            Dict: Diccionario aplanado
-        """
-        items = []
-        
-        if not d:
-            return {}
-        
-        # Limitar profundidad
-        if max_depth <= 0:
-            return {parent_key: str(d) if parent_key else "..."}
-        
-        for k, v in d.items():
-            new_key = f"{parent_key}{separator}{k}" if parent_key else k
-            
-            if isinstance(v, dict):
-                items.extend(self._aplanar_diccionario(v, new_key, separator, max_depth - 1).items())
-            elif isinstance(v, list):
-                # Para listas, convertir a string con límite
-                if len(v) > 10:
-                    v_str = f"[{len(v)} items: {str(v[:3])[1:-1]}...]"
-                else:
-                    v_str = str(v)
-                items.append((new_key, v_str))
-            else:
-                # Convertir a string para tipos no serializables
-                if v is None:
-                    items.append((new_key, ""))
-                elif isinstance(v, (int, float, bool)):
-                    items.append((new_key, v))
-                else:
-                    items.append((new_key, str(v)))
-        
-        return dict(items)
-    
+        """Delegación en :func:`export.utils.aplanar_diccionario`."""
+        return aplanar_diccionario(d, parent_key, separator, max_depth)
+
     def _aplanar_lista(
         self,
         data: List[Dict],
         flatten: bool = True,
         separator: str = "."
     ) -> List[Dict]:
-        """
-        Aplana una lista de diccionarios.
-        
-        Args:
-            data: Lista de diccionarios
-            flatten: Si se debe aplanar
-            separator: Separador para claves anidadas
-            
-        Returns:
-            List[Dict]: Lista de diccionarios aplanados
-        """
-        if not data:
-            return []
-        
-        if not flatten:
-            return data
-        
-        result = []
-        for item in data:
-            if isinstance(item, dict):
-                result.append(self._aplanar_diccionario(item, separator=separator))
-            else:
-                result.append({"_valor": str(item)})
-        
-        return result
-    
+        """Delegación en :func:`export.utils.aplanar_lista`."""
+        return aplanar_lista(data, flatten, separator)
+
     # ============================================================
     # EXPORTADOR CSV
     # ============================================================
@@ -1060,7 +998,7 @@ class ResultExporter:
             tamaño = os.path.getsize(ruta) if os.path.exists(ruta) else 0
             
             return ExportResult(
-                exito=True,
+                exito=not errores and filas_exportadas > 0,
                 ruta=ruta,
                 formato=formato,
                 filas_exportadas=filas_exportadas,
@@ -1090,56 +1028,76 @@ class ResultExporter:
     ) -> Tuple[int, List[str], List[str]]:
         """
         Exporta CSV desde un generador.
+
+        Para conocer todas las columnas sin materializar el generador
+        completo se inspecciona una ventana inicial de filas. Si más
+        adelante aparece una clave nueva, se omite y se registra una
+        advertencia (comportamiento ``extrasaction="ignore"``).
         """
         errores = []
         advertencias = []
         filas = 0
-        
+
         try:
-            # Obtener primera fila para headers
-            first_row = next(generador, None)
-            if first_row is None:
+            # Ventana inicial para calcular la cabecera completa
+            ventana = []
+            for _ in range(STREAM_SNIFF_ROWS):
+                fila = next(generador, None)
+                if fila is None:
+                    break
+                ventana.append(fila)
+
+            if not ventana:
                 errores.append("No hay datos para exportar")
                 return 0, errores, advertencias
-            
-            # Aplanar
-            if config.flatten:
-                first_row = self._aplanar_diccionario(first_row, separator=config.separator)
-            
-            fieldnames = sorted(first_row.keys())
-            
+
+            def preparar(fila: Dict) -> Dict:
+                if config.flatten:
+                    fila = self._aplanar_diccionario(fila, separator=config.separator)
+                return {k: (v if v is not None else '') for k, v in fila.items()}
+
+            filas_preparadas = [preparar(f) for f in ventana]
+            fieldnames = sorted({k for fila in filas_preparadas for k in fila})
+
             with open(ruta, 'w', newline='', encoding=config.encoding) as f:
-                writer = csv.DictWriter(f, fieldnames=fieldnames, restval='')
+                writer = csv.DictWriter(
+                    f, fieldnames=fieldnames, restval='', extrasaction='ignore'
+                )
                 writer.writeheader()
-                
-                # Escribir primera fila
-                clean_row = {k: v if v is not None else '' for k, v in first_row.items()}
-                writer.writerow(clean_row)
-                filas += 1
-                
-                # Procesar resto
-                for row in generador:
-                    if config.flatten:
-                        row = self._aplanar_diccionario(row, separator=config.separator)
-                    
-                    clean_row = {k: v if v is not None else '' for k, v in row.items()}
+
+                for clean_row in filas_preparadas:
                     writer.writerow(clean_row)
                     filas += 1
-                    
+                    if config.limit_rows and filas >= config.limit_rows:
+                        advertencias.append(f"Limitado a {config.limit_rows} filas")
+                        return filas, errores, advertencias
+
+                claves_conocidas = set(fieldnames)
+                avisado = False
+                for row in generador:
+                    clean_row = preparar(row)
+                    nuevas = set(clean_row) - claves_conocidas
+                    if nuevas and not avisado:
+                        advertencias.append(
+                            "Columnas nuevas ignoradas tras la ventana inicial: "
+                            + ", ".join(sorted(nuevas))
+                        )
+                        avisado = True
+                    writer.writerow(clean_row)
+                    filas += 1
                     if config.limit_rows and filas >= config.limit_rows:
                         advertencias.append(f"Limitado a {config.limit_rows} filas")
                         break
-            
+
             return filas, errores, advertencias
-            
+
         except StopIteration:
-            # No hay datos
             errores.append("No hay datos para exportar")
             return 0, errores, advertencias
         except Exception as e:
             errores.append(f"Error exportando CSV streaming: {str(e)}")
             return filas, errores, advertencias
-    
+
     # ============================================================
     # UTILIDADES
     # ============================================================
