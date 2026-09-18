@@ -29,6 +29,7 @@ import hashlib
 import logging
 import re
 import sqlite3
+from contextlib import closing
 import unicodedata
 from datetime import datetime
 from typing import Dict, Optional
@@ -121,7 +122,7 @@ class FeedbackProcessor:
         no puede distinguir entre tareas.
         """
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA busy_timeout=10000")
 
@@ -222,7 +223,7 @@ class FeedbackProcessor:
             return None
         try:
             firma = cls._firmar(prompt_original)
-            with sqlite3.connect(db_path, timeout=5) as conn:
+            with closing(sqlite3.connect(db_path, timeout=5)) as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute(
                     """SELECT prompt_nuevo FROM prompts_reescritos
@@ -332,7 +333,7 @@ class FeedbackProcessor:
             except Exception as e:
                 logger.warning(f"No se pudo calcular embedding: {e}")
 
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 # Desactivar versiones anteriores de la misma firma.
                 conn.execute(
@@ -408,7 +409,7 @@ class FeedbackProcessor:
         significativas = [
             p for p in palabras
             if p not in stopwords and len(p) > 2
-        ][:1]  # primera palabra significativas
+        ][:6]  # primeras 6 palabras significativas
 
         if not significativas:
             # Fallback: si todo son stopwords, usar las primeras palabras
@@ -425,7 +426,7 @@ class FeedbackProcessor:
         instancie en un contexto donde el schema no se haya aplicado.
         """
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS prompts_reescritos (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -444,6 +445,4 @@ class FeedbackProcessor:
                 """)
                 conn.commit()
         except Exception as e:
-            logger.debug(f"_asegurar_tabla falló: {e}")
-
-    
+            logger.warning(f"_asegurar_tabla falló: {e}", exc_info=True)

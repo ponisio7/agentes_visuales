@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from contextlib import closing        # ← añadir
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -272,7 +273,7 @@ class AdminPanelWindow(QMainWindow):
 
     def _leer_kpis(self) -> Dict:
         """Consulta los KPIs principales."""
-        with sqlite3.connect(self.db_path, timeout=10) as conn:
+        with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=10000")
 
@@ -306,7 +307,7 @@ class AdminPanelWindow(QMainWindow):
 
     def _leer_reescrituras(self) -> List[Dict]:
         """Lee todas las reescrituras con su score medio."""
-        with sqlite3.connect(self.db_path, timeout=10) as conn:
+        with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=10000")
 

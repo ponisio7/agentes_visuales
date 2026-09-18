@@ -233,48 +233,69 @@ class PlanValidator:
 
         return len(errores) == 0, errores
 
-    def _validar_codigo_python(self, paso, nombres_agentes: set) -> list:
+    @staticmethod
+    def _validar_codigo_python_ast(
+        codigo: str,
+        nombre: str,
+        nombres_agentes: set,
+    ) -> list[str]:
         """
-        Valida el código Python de un paso. Devuelve lista de errores.
-        Detecta:
-          - SyntaxError
-          - Nombres de agentes usados como variables sueltas (NameError)
-          - json.loads con placeholder literal sin sustituir
+        Función pura. Valida un bloque de código. Misma regla para PlanValidator y PlanRecovery.
+        Detecta: SyntaxError, NameError por agente, json.loads('{X}'), {{X}}
         """
         errores = []
-        codigo = (paso.configuracion or {}).get("codigo", "") or ""
-        if not codigo.strip():
+        if not codigo or not isinstance(codigo, str) or not codigo.strip():
             return errores
 
-        # 1. Sintaxis
+        # 1. SyntaxError
         try:
             arbol = ast.parse(codigo)
         except SyntaxError as e:
             errores.append(
-                f"BLOQUEANTE: {paso.nombre}: SyntaxError en línea {e.lineno}: {e.msg}"
+                f"BLOQUEANTE: {nombre}: SyntaxError en línea {e.lineno}: {e.msg}"
             )
-            return errores   # sin AST no podemos seguir validando
+            return errores
 
-        # 2. Nombres de agentes como variables sueltas
+        # 2. NameError - agente usado como variable suelta
         for nodo in ast.walk(arbol):
             if isinstance(nodo, ast.Name) and nodo.id in nombres_agentes:
                 errores.append(
-                    f"BLOQUEANTE: {paso.nombre}: usa '{nodo.id}' como variable Python "
+                    f"BLOQUEANTE: {nombre}: usa '{nodo.id}' como variable Python "
                     f"(provocará NameError). Debería ser: "
                     f"contexto.get('{nodo.id}', {{}})"
                 )
 
-        # 3. Placeholder literal en json.loads
-        patron = re.compile(
+        # 3. json.loads con placeholder literal
+        patron_json = re.compile(
             r"json\.loads\s*\(\s*(['\"]{2,3})\s*\{([a-zA-Z_]\w*)\}\s*\1\s*\)"
         )
-        for m in patron.finditer(codigo):
+        for m in patron_json.finditer(codigo):
             errores.append(
-                f"BLOQUEANTE: {paso.nombre}: json.loads con placeholder literal "
+                f"BLOQUEANTE: {nombre}: json.loads con placeholder literal "
                 f"'{{{m.group(2)}}}' sin sustituir"
             )
 
+        # 4. {{X}} - Bloque A.2 integrado
+        if "{{" in codigo:
+            idx = codigo.find("{{")
+            fragmento = codigo[max(0, idx - 20):idx + 40].replace("\n", " ")
+            errores.append(
+                f"BLOQUEANTE: {nombre}: usa sintaxis de plantilla '{{{{...}}}}' "
+                f"en lugar de contexto.get(...). Fragmento: '...{fragmento}...'"
+            )
+
         return errores
+
+    def _validar_codigo_python(self, paso, nombres_agentes: set) -> list:
+        """
+        Delega en la función pura para tener una única fuente de verdad.
+        """
+        codigo = (paso.configuracion or {}).get("codigo", "") or ""
+        return self._validar_codigo_python_ast(
+            codigo=codigo,
+            nombre=paso.nombre,
+            nombres_agentes=nombres_agentes,
+        )
 
     def _detectar_ciclos(self, plan: ExecutionPlan) -> bool:
         """Detecta ciclos en el DAG usando DFS."""

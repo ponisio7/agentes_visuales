@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import random
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -106,7 +107,7 @@ class PromptABEvaluator:
         if not prompt_id or not ejecucion_id:
             return False
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 existe = conn.execute(
                     """SELECT 1 FROM prompt_reescrito_usos
@@ -151,19 +152,19 @@ class PromptABEvaluator:
         if ejecucion_id is None or score is None:
             return False
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 cur = conn.execute(
                     """UPDATE prompt_reescrito_usos
                        SET score = ?
                        WHERE ejecucion_id = ? AND score IS NULL""",
-                    (float(score), ejecucion_id),
+                    (score, ejecucion_id),
                 )
                 conn.commit()
                 if cur.rowcount > 0:
                     logger.debug(
-                        f"AB: score {score:.2f} aplicado a "
-                        f"{cur.rowcount} uso(s) de la ejecución {ejecucion_id}"
+                        f"actualizar_score: {cur.rowcount} filas actualizadas "
+                        f"para ejecucion_id={ejecucion_id} con score={score}"
                     )
                 return cur.rowcount > 0
         except Exception as e:
@@ -171,7 +172,7 @@ class PromptABEvaluator:
             return False
 
     # ------------------------------------------------------------
-    # 4. Evaluación del candidato (background)
+    # 4. Evaluación de candidato (background)
     # ------------------------------------------------------------
     def evaluar_candidato(self, firma: str) -> Optional[str]:
         """
@@ -183,7 +184,7 @@ class PromptABEvaluator:
         if not firma:
             return None
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA busy_timeout=10000")
 

@@ -678,8 +678,13 @@ if __name__ == "__main__":
         }, ensure_ascii=False))
         sys.exit(1)
 '''
-        script = script_plantilla.replace("__CONTEXTO_JSON__", contexto_json)
-        script = script.replace("__CODIGO_USUARIO__", codigo_escapado)
+        #script = script_plantilla.replace("__CONTEXTO_JSON__", contexto_json)
+        #script = script.replace("__CODIGO_USUARIO__", codigo_escapado)
+        script = (
+            script_plantilla
+            .replace("__CONTEXTO_JSON__", contexto_json, 1)   # solo 1 ocurrencia
+            .replace("__CODIGO_USUARIO__", codigo_escapado, 1)
+        )
         return script
     
     # ============================================================
@@ -950,7 +955,12 @@ if __name__ == "__main__":
                 # ── Limpiar callback ──
                 if cancellation_token:
                     cancellation_token.eliminar_callback(cancelar_proceso)
-            
+
+        except SandboxError:
+            # Ya es un error del sandbox correctamente tipado
+            # (SandboxTimeoutError, SandboxSecurityError, etc.);
+            # no lo envolvemos, dejamos que el llamador lo distinga.
+            raise
         except subprocess.TimeoutExpired as e:
             raise SandboxTimeoutError(f"El código excedió {timeout}s")
         except subprocess.SubprocessError as e:

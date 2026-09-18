@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import sqlite3
+from contextlib import closing
 import logging
 from datetime import datetime
 
@@ -70,7 +71,7 @@ class LearningEngine:
         # porque este engine puede invocarse antes de que Database esté
         # inicializado.
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 aplicar_esquema_learning(conn)
                 conn.commit()
@@ -85,7 +86,7 @@ class LearningEngine:
         prompt para que el LLM aprenda a no necesitar la reparación.
         """
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 conn.execute(
                     """INSERT INTO reparaciones_plan (problema, tipo, fecha)
@@ -105,7 +106,7 @@ class LearningEngine:
         Llamar al arrancar la app o desde un botón "🧠 Reentrenar".
         """
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA busy_timeout=10000")
                 features, y_exito, _y_reward = minar_dataset(
@@ -190,7 +191,7 @@ class LearningEngine:
         evaluacion = self.evaluador.evaluar(tarea, resultado_texto)
 
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 conn.execute(
                     """INSERT INTO evaluaciones_llm
@@ -235,7 +236,7 @@ class LearningEngine:
         evaluacion = self.evaluador.evaluar(tarea, resultado_texto)
 
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 conn.execute(
                     """INSERT INTO evaluaciones_llm

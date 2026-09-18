@@ -610,40 +610,31 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
     @staticmethod
     def _validar_sintaxis_agentes(plan: Any) -> tuple[bool, list[str]]:
         """
-        Valida que el código Python de cada agente compile.
-        Devuelve (todos_ok, lista_de_errores).
-
-        - Agentes tipo Python / Loop: compila `codigo_python` o
-          `codigo_por_item`.
-        - Agentes Shell / HTTP / File / LLM: no se validan (no tienen
-          código Python).
+        Valida código de agentes usando el mismo AST que el plan inicial.
+        Detecta SyntaxError, NameError, json.loads placeholder y {{X}}.
         """
+        from core.problem_solver.validator import PlanValidator
+
         errores = []
         agentes = getattr(plan, "agentes_generados", []) or []
+        nombres_agentes = {a.nombre for a in agentes}
 
         for agente in agentes:
             tipo = getattr(getattr(agente, "tipo", None), "value", "?")
-
-            codigos = []
+            pares = []
             if tipo == "Python":
-                codigos.append(("codigo_python", getattr(agente, "codigo_python", "")))
+                pares.append(("codigo_python", getattr(agente, "codigo_python", "") or ""))
             elif tipo == "Loop":
-                codigos.append(("codigo_por_item", getattr(agente, "codigo_por_item", "")))
+                pares.append(("codigo_por_item", getattr(agente, "codigo_por_item", "") or ""))
 
-            for nombre_campo, codigo in codigos:
-                if not codigo or not isinstance(codigo, str):
-                    continue
-                try:
-                    compile(codigo, f"<plan_b:{agente.nombre}:{nombre_campo}>", "exec")
-                except SyntaxError as e:
-                    errores.append(
-                        f"{agente.nombre}.{nombre_campo} (línea {e.lineno}): "
-                        f"{e.msg} → `{(e.text or '').strip()[:80]}`"
+            for nombre_campo, codigo in pares:
+                errores.extend(
+                    PlanValidator._validar_codigo_python_ast(
+                        codigo=codigo,
+                        nombre=f"{agente.nombre}.{nombre_campo}",
+                        nombres_agentes=nombres_agentes,
                     )
-                except Exception as e:
-                    errores.append(
-                        f"{agente.nombre}.{nombre_campo}: error inesperado: {e}"
-                    )
+                )
 
         return (len(errores) == 0, errores)
 

@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional
 from collections import Counter, defaultdict
 import sqlite3
 import logging
+from contextlib import closing
 from core.plan_repairs import GENERADOR_URLS_NOMBRE
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class ExtractorLecciones:
     def extraer(self, max_lecciones: int = MAX_LECCIONES) -> List[Leccion]:
         """Devuelve una lista de lecciones ordenadas por confianza."""
         try:
-            with sqlite3.connect(self.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA busy_timeout=10000")
                 lecciones = []

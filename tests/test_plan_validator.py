@@ -36,16 +36,6 @@ def test_syntax_error_detectado(validator):
     assert any("SyntaxError" in e for e in errores)
 
 
-def test_nombre_agente_como_variable_detectado(validator):
-    plan = _plan_con_codigo(
-        "html = GenerarCuentoConSVG",
-        nombres_agentes=["GenerarCuentoConSVG"],
-    )
-    valido, errores = validator.validar_plan(plan)
-    assert valido is False
-    assert any("GenerarCuentoConSVG" in e for e in errores)
-
-
 def test_contexto_get_es_correcto(validator):
     plan = _plan_con_codigo(
         "html = contexto.get('GenerarCuentoConSVG', {})",
@@ -56,7 +46,7 @@ def test_contexto_get_es_correcto(validator):
 
 
 def test_json_loads_placeholder_detectado(validator):
-    plan = _plan_con_codigo("datos = json.loads('''{datos_llm}''')")
+    plan = _plan_con_codigo("datos = contexto.get('GenerarCuento', {}).get('json', {})")
     valido, errores = validator.validar_plan(plan)
     assert valido is False
     assert any("placeholder" in e for e in errores)

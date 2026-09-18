@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+from contextlib import closing
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -215,7 +216,7 @@ class EmbeddingMatcher:
     ) -> List[Dict]:
         """Carga las filas con embedding no nulo de la BD."""
         try:
-            with sqlite3.connect(db_path, timeout=5) as conn:
+            with closing(sqlite3.connect(db_path, timeout=5)) as conn:
                 conn.row_factory = sqlite3.Row
                 placeholders = ",".join("?" * len(estados_validos))
                 cursor = conn.execute(
@@ -249,7 +250,7 @@ class EmbeddingMatcher:
         saltados = 0
 
         try:
-            with sqlite3.connect(db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(db_path, timeout=10)) as conn:
                 conn.row_factory = sqlite3.Row
                 conn.execute("PRAGMA busy_timeout=10000")
 

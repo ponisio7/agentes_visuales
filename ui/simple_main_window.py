@@ -13,6 +13,7 @@ Estética: terminal retro (fósforo verde).
 import os
 import sys
 import sqlite3
+from contextlib import closing        # ← añadir
 # Si se ejecuta como script suelto (python ui/simple_main_window.py),
 # añadir la raíz del proyecto al sys.path para que resuelvan
 # los imports storage.*, core.*, learning.*
@@ -965,7 +966,7 @@ class SimpleMainWindow(QMainWindow):
         ejecuciones concurrentes, pero es suficiente para disparar el feedback.
         """
         try:
-            with sqlite3.connect(self.db.db_path, timeout=5) as conn:
+            with closing(sqlite3.connect(self.db.db_path, timeout=5)) as conn:
                 conn.row_factory = sqlite3.Row
                 row = conn.execute("SELECT MAX(id) AS ultimo FROM ejecuciones").fetchone()
                 if row and row["ultimo"]:
@@ -1031,7 +1032,7 @@ class SimpleMainWindow(QMainWindow):
         comentario = datos["comentario"]
 
         try:
-            with sqlite3.connect(self.db.db_path, timeout=10) as conn:
+            with closing(sqlite3.connect(self.db.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
                 cur = conn.execute(
                     """INSERT INTO feedback_usuario

@@ -2,6 +2,8 @@
 from __future__ import annotations
 import logging
 import threading
+import sqlite3                        # ← añadir
+from contextlib import closing        # ← añadir
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
@@ -83,8 +85,8 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
                         score_plan = None
                         # obtener_learning_engine ya guardó la evaluación en
                         # `evaluaciones_llm`. Recuperamos la última de este plan.
-                        import sqlite3
-                        with sqlite3.connect(db_path, timeout=5) as conn:
+                        
+                        with closing(sqlite3.connect(db_path, timeout=5)) as conn:
                             conn.row_factory = sqlite3.Row
                             row = conn.execute(
                                 """SELECT score FROM evaluaciones_llm
@@ -105,7 +107,7 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
                                 if not pid:
                                     continue
                                 # Recuperar la firma del prompt reescrito
-                                with sqlite3.connect(db_path, timeout=5) as conn:
+                                with closing(sqlite3.connect(db_path, timeout=5)) as conn:
                                     conn.row_factory = sqlite3.Row
                                     r = conn.execute(
                                         "SELECT firma FROM prompts_reescritos WHERE id = ?",
