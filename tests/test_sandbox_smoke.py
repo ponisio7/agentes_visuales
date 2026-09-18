@@ -36,3 +36,14 @@ def test_docstring_con_triple_comilla():
     ok, msg, meta = PythonSandbox.ejecutar(codigo, {})
     assert ok is True, msg
     assert meta == 42
+
+
+def test_resultados_no_serializables_se_resumen():
+    """bytes/bytearray/sets se resumen en vez de volcarse enteros."""
+    ok, msg, meta = PythonSandbox.ejecutar(
+        "resultado = {'bloque': bytearray(1024), 'conjunto': {2, 1}}",
+        {},
+    )
+    assert ok is True, msg
+    assert meta["bloque"] == "<bytearray de 1024 bytes>"
+    assert meta["conjunto"] == [1, 2]

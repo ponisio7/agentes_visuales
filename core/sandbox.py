@@ -82,6 +82,7 @@ MAX_TEMP_FILES = 100
 TEMP_FILE_AGE_LIMIT = 3600  # 1 hora en segundos
 DEFAULT_TIMEOUT = 30
 MAX_TIMEOUT = 3600  # 1 hora máximo
+MIN_MEMORY_LIMIT_MB = 64  # por debajo el intérprete no arranca con margen
 CACHE_MAX_SIZE = 100
 CACHE_TTL = 300  # 5 minutos
 
@@ -608,6 +609,18 @@ __CODIGO_USUARIO__
 # ============================================================
 # CAPTURA DE RESULTADO
 # ============================================================
+def _default_json(obj):
+    """Serializa tipos no soportados por json sin explotar en memoria."""
+    if isinstance(obj, (bytes, bytearray, memoryview)):
+        return f"<{type(obj).__name__} de {len(obj)} bytes>"
+    if isinstance(obj, (set, frozenset)):
+        try:
+            return sorted(obj)
+        except TypeError:
+            return [str(x) for x in obj]
+    return str(obj)[:2000]
+
+
 def _capturar_resultado():
     """Captura el resultado de la ejecución del código del usuario."""
     try:
@@ -632,14 +645,14 @@ def _capturar_resultado():
         
         # Serializar resultado (convertir tipos no serializables)
         try:
-            resultado_serializado = json.loads(json.dumps(resultado_final, default=str))
+            resultado_serializado = json.loads(json.dumps(resultado_final, default=_default_json))
         except Exception as e_ser:
             # Identificar qué clave específica falla, para no perder el detalle
             claves_problematicas = {}
             if isinstance(resultado_final, dict):
                 for k, v in resultado_final.items():
                     try:
-                        json.dumps(v, default=str)
+                        json.dumps(v, default=_default_json)
                     except Exception as e2:
                         claves_problematicas[k] = {
                             'tipo': type(v).__name__,
@@ -692,6 +705,37 @@ if __name__ == "__main__":
     # ============================================================
     
     # core/sandbox.py - MÉTODO _ejecutar_script COMPLETO CON CANCELACIÓN
+
+    @staticmethod
+    def _comando_con_limite_memoria(
+        script_path: str,
+        memory_limit_mb: Optional[int],
+    ) -> List[str]:
+        """Construye el comando de ejecución aplicando el límite de memoria.
+
+        En POSIX, en lugar de ``preexec_fn`` (no seguro cuando hay hilos), se
+        lanza un pequeño intérprete que fija ``RLIMIT_AS`` y hace ``execv``
+        sobre el script real. Así el límite se aplica antes de ejecutar código
+        del usuario sin usar callbacks después del ``fork``.
+
+        Args:
+            script_path: Ruta del script a ejecutar.
+            memory_limit_mb: Límite en MB, o None para no limitar.
+
+        Returns:
+            Lista de argumentos para ``subprocess.Popen``.
+        """
+        if memory_limit_mb is None or platform.system() == "Windows":
+            return [sys.executable, script_path]
+
+        limite_mb = max(int(memory_limit_mb), MIN_MEMORY_LIMIT_MB)
+        limite_bytes = limite_mb * 1024 * 1024
+        lanzador = (
+            "import os, resource, sys;"
+            f"resource.setrlimit(resource.RLIMIT_AS, ({limite_bytes}, {limite_bytes}));"
+            "os.execv(sys.executable, [sys.executable, sys.argv[1]])"
+        )
+        return [sys.executable, "-c", lanzador, script_path]
 
     @staticmethod
     def _ejecutar_script(
@@ -755,7 +799,7 @@ if __name__ == "__main__":
             
             # ── Crear proceso ──
             proceso = subprocess.Popen(
-                [sys.executable, script_path],
+                PythonSandbox._comando_con_limite_memoria(script_path, memory_limit_mb),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -914,6 +958,13 @@ if __name__ == "__main__":
                                 stderr=stderr
                             )
                 
+                # ── Detección de agotamiento de memoria (RLIMIT_AS) ──
+                if result_code != 0 and "MemoryError" in (stderr or ""):
+                    raise SandboxResourceError(
+                        "memoria insuficiente (MemoryError); ajusta "
+                        "memory_limit_mb o reduce el uso de memoria del código"
+                    )
+
                 # ── Fallback ──
                 if result_code == 0:
                     try:
