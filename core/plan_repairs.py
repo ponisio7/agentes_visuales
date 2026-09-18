@@ -239,9 +239,12 @@ def _parche_imagenes(problema: str, plan) -> str | None:
         plan.pasos.insert(idx_docx, paso_prep)
         nombre_prep = paso_prep.nombre
 
-    # 7. Asegurar que el docx depende del preparador
+    # 7. Asegurar que el docx depende del preparador SIN perder sus otras
+    # dependencias declaradas.
     if nombre_prep not in paso_docx.dependencia_ids:
-        paso_docx.dependencia_ids = [nombre_prep]
+        paso_docx.dependencia_ids = list(dict.fromkeys(
+            list(paso_docx.dependencia_ids) + [nombre_prep]
+        ))
 
     return GENERADOR_URLS_NOMBRE
 

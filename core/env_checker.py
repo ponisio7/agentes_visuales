@@ -295,6 +295,12 @@ def _ping_http_deepseek(
             detalles["error_tipo"] = "connection"
             return False, f"No se pudo conectar a {url}: {str(e)[:120]}", detalles
 
+        except ValueError as e:
+            # p. ej. timeout <= 0: requests lanza ValueError, que NO hereda
+            # de RequestException y escaparía hasta main().
+            detalles["error_tipo"] = "valor_invalido"
+            return False, f"Parámetro inválido en {url}: {str(e)[:120]}", detalles
+
         except requests.exceptions.RequestException as e:
             detalles["error_tipo"] = "request"
             return False, f"Error de petición: {str(e)[:120]}", detalles

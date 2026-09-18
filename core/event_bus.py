@@ -42,6 +42,16 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+def _nombre_callback(callback: Callable) -> str:
+    """Nombre legible de un callback, seguro ante callables sin ``__name__``.
+
+    ``functools.partial`` u otros invocables no exponen ``__name__``; usar
+    ``_nombre_callback(callback)`` directamente lanzaría ``AttributeError`` dentro del
+    manejo de errores y abortaría la publicación del evento.
+    """
+    return getattr(callback, "__name__", None) or repr(callback)
+
+
 # ============================================================
 # TIPOS DE EVENTOS
 # ============================================================
@@ -118,17 +128,18 @@ class EventBus:
             return cls._instance
     
     def __init__(self):
-        if self._initialized:
-            return
-        
-        self._initialized = True
-        self._suscriptores: dict[EventType, list[Callable]] = defaultdict(list)
-        self._suscriptores_todos: list[Callable] = []
-        self._lock = threading.RLock()
-        self._historial: list[Event] = []
-        self._max_historial = 1000
-        self._activo = True
-        
+        with EventBus._lock:
+            if self._initialized:
+                return
+
+            self._initialized = True
+            self._suscriptores: dict[EventType, list[Callable]] = defaultdict(list)
+            self._suscriptores_todos: list[Callable] = []
+            self._lock = threading.RLock()
+            self._historial: list[Event] = []
+            self._max_historial = 1000
+            self._activo = True
+
         logger.info("EventBus inicializado")
     
     # ============================================================
@@ -149,7 +160,7 @@ class EventBus:
         with self._lock:
             if callback not in self._suscriptores[tipo]:
                 self._suscriptores[tipo].append(callback)
-                logger.debug(f"Suscripción añadida: {tipo.name} → {callback.__name__}")
+                logger.debug(f"Suscripción añadida: {tipo.name} → {_nombre_callback(callback)}")
                 return True
             return False
     
@@ -166,7 +177,7 @@ class EventBus:
         with self._lock:
             if callback not in self._suscriptores_todos:
                 self._suscriptores_todos.append(callback)
-                logger.debug(f"Suscripción a todos los eventos: {callback.__name__}")
+                logger.debug(f"Suscripción a todos los eventos: {_nombre_callback(callback)}")
                 return True
             return False
     
@@ -184,7 +195,7 @@ class EventBus:
         with self._lock:
             if callback in self._suscriptores[tipo]:
                 self._suscriptores[tipo].remove(callback)
-                logger.debug(f"Suscripción eliminada: {tipo.name} → {callback.__name__}")
+                logger.debug(f"Suscripción eliminada: {tipo.name} → {_nombre_callback(callback)}")
                 return True
             return False
     
@@ -201,7 +212,7 @@ class EventBus:
         with self._lock:
             if callback in self._suscriptores_todos:
                 self._suscriptores_todos.remove(callback)
-                logger.debug(f"Suscripción a todos los eventos eliminada: {callback.__name__}")
+                logger.debug(f"Suscripción a todos los eventos eliminada: {_nombre_callback(callback)}")
                 return True
             return False
     
@@ -238,13 +249,13 @@ class EventBus:
             try:
                 callback(evento)
             except Exception as e:
-                logger.error(f"Error en callback {callback.__name__}: {e}")
+                logger.error(f"Error en callback {_nombre_callback(callback)}: {e}")
         
         for callback in suscriptores_todos:
             try:
                 callback(evento)
             except Exception as e:
-                logger.error(f"Error en callback universal {callback.__name__}: {e}")
+                logger.error(f"Error en callback universal {_nombre_callback(callback)}: {e}")
         
         logger.debug(f"Evento publicado: {evento.tipo.name} desde {evento.origen}")
         return True
@@ -456,10 +467,13 @@ class EventBus:
 # ============================================================
 
 _bus_instance: EventBus | None = None
+_bus_instance_lock = threading.Lock()
 
 def obtener_bus() -> EventBus:
-    """Obtiene la instancia global del EventBus."""
+    """Obtiene la instancia global del EventBus (thread-safe)."""
     global _bus_instance
     if _bus_instance is None:
-        _bus_instance = EventBus()
+        with _bus_instance_lock:
+            if _bus_instance is None:
+                _bus_instance = EventBus()
     return _bus_instance

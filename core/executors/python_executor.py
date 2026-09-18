@@ -72,7 +72,8 @@ class PythonExecutor:
                 codigo,
                 contexto,
                 timeout=timeout,
-                cancellation_token=cancellation_token
+                cancellation_token=cancellation_token,
+                memory_limit_mb=getattr(agente, 'memory_limit_mb', None),
             )
 
             if exito:

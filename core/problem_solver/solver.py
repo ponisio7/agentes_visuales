@@ -429,7 +429,10 @@ class ProblemSolver:
         try:
             os.makedirs("logs", exist_ok=True)
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"logs/llm_response_{timestamp}_{modelo}.txt"
+            # Microsegundos para no sobrescribir dos respuestas del mismo
+            # modelo en el mismo segundo.
+            sufijo_us = f"{time.time_ns() % 1_000_000:06d}"
+            filename = f"logs/llm_response_{timestamp}_{sufijo_us}_{modelo}.txt"
             with open(filename, "w", encoding="utf-8") as f:
                 f.write("=" * 70 + "\n")
                 f.write(f"MODELO: {modelo}\n")

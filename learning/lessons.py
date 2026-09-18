@@ -201,7 +201,9 @@ class ExtractorLecciones:
             return "max_tokens_bajo"
         if "filenotfound" in error or "no such file" in error:
             return "archivo_no_existe"
-        if "permission" in error or "root" in error or "permiso" in error:
+        if ("permission denied" in error or "permiso denegado" in error
+                or "are you root" in error or "root privileges" in error
+                or "operation not permitted" in error or "pkexec" in error):
             return "permisos_root"
 
         if "indent" in error:
@@ -534,6 +536,7 @@ class ExtractorLecciones:
         for fila in filas:
             n = fila["agentes_total"] or 0
             errores = fila["errores"] or 0
+            estado = (fila["estado"] or "").strip().lower()
             if n <= 3:
                 clave = "corto (1-3 agentes)"
             elif n <= 6:
@@ -541,7 +544,11 @@ class ExtractorLecciones:
             else:
                 clave = "largo (7+ agentes)"
             tramos[clave][1] += 1
-            if errores == 0:
+            # Éxito = sin errores y no cancelado/fallido: antes un plan
+            # cancelado con 0 errores contaba como éxito y sesgaba la lección.
+            if errores == 0 and estado not in (
+                "cancelado", "cancelada", "error", "fallido", "fallida"
+            ):
                 tramos[clave][0] += 1
 
         lecciones = []

@@ -80,14 +80,38 @@ COMANDOS_PRIVILEGIADOS = frozenset({
 # ============================================================
 
 def validar_ruta_archivo(ruta: str) -> bool:
-    """Valida una ruta de archivo."""
-    if not ruta:
+    """Valida una ruta relativa de archivo.
+
+    Rechaza rutas vacías, absolutas, con traversal, el propio directorio
+    actual (``.``), ``..``, ``~`` y nombres ocultos. Así las operaciones
+    del FileExecutor no pueden escapar del directorio de trabajo ni borrar
+    el proyecto (p. ej. ``shutil.rmtree(".")``).
+    """
+    if not ruta or not ruta.strip():
         return False
     if len(ruta) > MAX_FILE_PATH_LENGTH:
         return False
 
+    ruta = ruta.strip()
+    if ruta in (".", "..", "~", "/", "\\"):
+        return False
+    if ruta.startswith("~"):
+        return False
+
     normalized = os.path.normpath(ruta)
-    if normalized.startswith(('..', '/', '\\')):
+    if normalized in (".", "..", os.sep):
+        return False
+
+    # Rutas absolutas (POSIX y Windows, incluido C:\...)
+    if os.path.isabs(normalized):
+        return False
+    drive, _ = os.path.splitdrive(normalized)
+    if drive:
+        return False
+
+    # Componentes '..' explícitos
+    partes = normalized.replace("\\", "/").split("/")
+    if ".." in partes:
         return False
 
     basename = os.path.basename(normalized)

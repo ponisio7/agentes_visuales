@@ -164,7 +164,9 @@ class HTTPExecutor:
             retry = Retry(
                 total=2, backoff_factor=0.5,
                 status_forcelist=[429, 500, 502, 503, 504],
-                allowed_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"]
+                # Solo métodos idempotentes: reintentar POST/PATCH puede
+                # duplicar escrituras con efectos secundarios.
+                allowed_methods=["GET", "HEAD", "OPTIONS", "PUT", "DELETE"]
             )
             adapter = HTTPAdapter(max_retries=retry)
             session.mount('http://', adapter)
@@ -189,7 +191,7 @@ class HTTPExecutor:
                         'allow_redirects': True, 'verify': True,
                     }
                     if metodo in ("POST", "PUT", "PATCH"):
-                        if isinstance(body, dict):
+                        if isinstance(body, (dict, list)):
                             kwargs['json'] = body
                         else:
                             kwargs['data'] = body

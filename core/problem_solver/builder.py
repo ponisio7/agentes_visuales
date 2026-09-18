@@ -25,12 +25,47 @@ ya recibe el `plan` que está construyendo, así que se lo pasa directamente
 ese punto del flujo (ver `resolver_problema`: `self._plan_actual = plan`
 se asigna justo antes de llamar a `_generar_agentes(plan)`).
 """
-import uuid
+from datetime import datetime
 from typing import Any
 
 from core.agent import Agente, TipoAgente
 
 from .models import ExecutionPlan, StepPlan
+
+
+def _a_float(valor: Any, default: float = 0.0) -> float:
+    """Convierte a float de forma segura (LLM puede devolver null/texto)."""
+    try:
+        if valor is None:
+            return default
+        return float(valor)
+    except (TypeError, ValueError):
+        return default
+
+
+def _a_int(valor: Any, default: int) -> int:
+    """Convierte a int de forma segura (acepta float/texto numérico)."""
+    try:
+        if valor is None:
+            return default
+        return int(float(valor))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalizar_dependencias(valor: Any) -> list[str]:
+    """Normaliza 'dependencias' del LLM a una lista de nombres.
+
+    Acepta None, un string (se trata como una sola dependencia, no como
+    una secuencia de caracteres) o una lista/tupla.
+    """
+    if valor is None:
+        return []
+    if isinstance(valor, str):
+        return [valor] if valor.strip() else []
+    if isinstance(valor, (list, tuple, set)):
+        return [str(v) for v in valor if v is not None and str(v).strip()]
+    return []
 
 
 class PlanBuilder:
@@ -70,8 +105,8 @@ class PlanBuilder:
             problema_original=problema,
             titulo=plan_dict.get('titulo', 'Plan sin título'),
             analisis=plan_dict.get('analisis', ''),
-            estimacion_tiempo=float(plan_dict.get('estimacion_tiempo_segundos', 0)),
-            metadatos={'fecha_creacion': str(uuid.uuid4())}
+            estimacion_tiempo=_a_float(plan_dict.get('estimacion_tiempo_segundos'), 0.0),
+            metadatos={'fecha_creacion': datetime.now().isoformat()}
         )
 
         pasos_raw = plan_dict.get('pasos', [])
@@ -86,8 +121,8 @@ class PlanBuilder:
                 nombre=paso_raw.get('nombre', f'Paso_{i+1}'),
                 descripcion=paso_raw.get('descripcion', ''),
                 tipo_agente=paso_raw.get('tipo', 'Python'),
-                dependencia_ids=paso_raw.get('dependencias', []),
-                configuracion=paso_raw.get('configuracion', {}),
+                dependencia_ids=_normalizar_dependencias(paso_raw.get('dependencias')),
+                configuracion=paso_raw.get('configuracion') or {},
                 justificacion=paso_raw.get('justificacion', ''),
                 es_critico=paso_raw.get('es_critico', False),
             )
@@ -238,7 +273,9 @@ class PlanBuilder:
             paso.dependencia_ids
         )
         kwargs['codigo_python'] = codigo_corregido
-        kwargs['timeout_python'] = int(config.get('timeout', 30))
+        kwargs['timeout_python'] = _a_int(config.get('timeout'), 30)
+        if config.get('memory_limit_mb') is not None:
+            kwargs['memory_limit_mb'] = _a_int(config.get('memory_limit_mb'), 0) or None
 
     def _kwargs_http(
         self,
@@ -251,7 +288,7 @@ class PlanBuilder:
         kwargs['metodo_http'] = str(config.get('metodo', 'GET')).upper()
         kwargs['headers_http'] = config.get('headers', {}) or {}
         kwargs['body_http'] = config.get('body', '') or ''
-        kwargs['timeout_http'] = int(config.get('timeout', 30))
+        kwargs['timeout_http'] = _a_int(config.get('timeout'), 30)
 
     def _kwargs_llm(self, paso: StepPlan, config: dict, kwargs: dict):
         """
@@ -274,10 +311,10 @@ class PlanBuilder:
         # ── 1. Leer configuración ──
         prompt_original = config.get('prompt', '')
         kwargs['modelo_llm'] = config.get('modelo', 'deepseek-v4-flash')
-        kwargs['temperatura_llm'] = float(config.get('temperatura', 0.7))
+        kwargs['temperatura_llm'] = _a_float(config.get('temperatura'), 0.7)
 
         # Blindaje: thinking mode consume tokens
-        max_tokens = int(config.get('max_tokens', MIN_TOKENS_SEGUROS) or MIN_TOKENS_SEGUROS)
+        max_tokens = _a_int(config.get('max_tokens'), MIN_TOKENS_SEGUROS) or MIN_TOKENS_SEGUROS
         if max_tokens < MIN_TOKENS_SEGUROS:
             self.logger.warning(
                 f"⚠ Paso LLM '{paso.nombre}': max_tokens={max_tokens} "
@@ -293,11 +330,8 @@ class PlanBuilder:
         prompt_endurecido = self._endurecer_prompt_llm(prompt_original)
 
         # ── 3. ✅ FASE 5b: matching semántico por embeddings ──
-        prompt_final = prompt_endurecido # fallback si no hay match
+        prompt_final = prompt_endurecido  # fallback si no hay match
         prompt_id_elegido = 0
-        self.logger.info(
-            "[AB-DEBUG]"
-        )
         try:
             from learning.embedding_matcher import obtener_matcher
             from learning.prompt_ab_evaluator import PromptABEvaluator
@@ -322,30 +356,10 @@ class PlanBuilder:
                 f"match_candidato={match_candidato is not None}"
             )
 
-            if match_activo and match_candidato:
-                # A/B real: hay activo y candidato
-                prompt_elegido, prompt_id_elegido = PromptABEvaluator.elegir_variante(
-                    prompt_activo=match_activo["prompt"],
-                    prompt_id_activo=match_activo["id"],
-                    prompt_candidato=match_candidato["prompt"],
-                    prompt_id_candidato=match_candidato["id"],
-                )
-                prompt_final = prompt_elegido
-                self.logger.info(
-                    f"✨ AB: '{paso.nombre}' eligió "
-                    f"id={prompt_id_elegido} "
-                    f"(activo_sim={match_activo['similitud']:.3f}, "
-                    f"cand_sim={match_candidato['similitud']:.3f})"
-                )
-            elif match_activo:
-                prompt_final = match_activo["prompt"]
-                prompt_id_elegido = match_activo["id"]
-                self.logger.info(
-                    f"✨ AB: '{paso.nombre}' usa activo "
-                    f"id={match_activo['id']} (sim={match_activo['similitud']:.3f})"
-                )
-
-            # modificado 16 septiembre 2026 12:38 hora Madrid
+            # Una única elección A/B: si hay activo y candidato se sortea;
+            # si solo hay uno se usa ese. Evita llamar dos veces a
+            # elegir_variante (usa random) y quedarse con una variante
+            # distinta a la registrada.
             if match_activo or match_candidato:
                 prompt_elegido, prompt_id_elegido = PromptABEvaluator.elegir_variante(
                     prompt_activo=(match_activo or {}).get("prompt"),
@@ -355,27 +369,27 @@ class PlanBuilder:
                 )
                 if prompt_elegido:
                     prompt_final = prompt_elegido
-                    sim_act = match_activo["similitud"] if match_activo else None
-                    sim_cand = match_candidato["similitud"] if match_candidato else None
-                    self.logger.info(
-                        f"✨ AB: '{paso.nombre}' usa id={prompt_id_elegido} "
-                        f"(sim_activo={sim_act}, sim_candidato={sim_cand})"
-                    )
+                sim_act = match_activo["similitud"] if match_activo else None
+                sim_cand = match_candidato["similitud"] if match_candidato else None
+                self.logger.info(
+                    f"✨ AB: '{paso.nombre}' usa id={prompt_id_elegido} "
+                    f"(sim_activo={sim_act}, sim_candidato={sim_cand})"
+                )
             else:
                 self.logger.debug(
                     f"AB: sin match semántico para '{paso.nombre}'"
                 )
 
         except Exception as e:
-            self.logger.debug(f"AB semántico no disponible: {e}")
+            self.logger.warning(f"AB semántico no disponible: {e}", exc_info=True)
 
-        # ── 4. Asignar al kwargs ── modificado 16 septiembre 2026 12:38 hora Madrid
+        # ── 4. Asignar al kwargs ──
         prompt_final_endurecido = self._endurecer_prompt_llm(prompt_final)
         prompt_con_contrato = _inyectar_contrato_salida(
             prompt_final_endurecido, paso.nombre
         )
         kwargs['prompt_llm'] = prompt_con_contrato
-        kwargs['prompt_reescrito_id'] = int(prompt_id_elegido or 0)
+        kwargs['prompt_reescrito_id'] = _a_int(prompt_id_elegido, 0)
 
     def _endurecer_prompt_llm(self, prompt_original: str) -> str: # modificado 16 septiembre 2026 12:38 hora Madrid
         """
@@ -410,7 +424,7 @@ class PlanBuilder:
     ) -> None:
         """Configura un agente Shell."""
         kwargs['comando_shell'] = config.get('comando', '')
-        kwargs['timeout_shell'] = int(config.get('timeout', 30))
+        kwargs['timeout_shell'] = _a_int(config.get('timeout'), 30)
         kwargs['working_dir'] = config.get('working_dir', '') or ''
 
     def _kwargs_file(
@@ -440,9 +454,9 @@ class PlanBuilder:
         """Configura un agente Loop."""
         kwargs['fuente_items'] = config.get('fuente_items', '')
         kwargs['codigo_por_item'] = config.get('codigo_por_item', '')
-        kwargs['max_iteraciones'] = int(config.get('max_iteraciones', 100))
-        kwargs['timeout_loop'] = int(config.get('timeout_loop', 300))
-        kwargs['timeout_python'] = int(config.get('timeout_python', 30))
+        kwargs['max_iteraciones'] = _a_int(config.get('max_iteraciones'), 100)
+        kwargs['timeout_loop'] = _a_int(config.get('timeout_loop'), 300)
+        kwargs['timeout_python'] = _a_int(config.get('timeout_python'), 30)
         kwargs['continuar_en_error'] = bool(config.get('continuar_en_error', False))
 
 # ============================================================

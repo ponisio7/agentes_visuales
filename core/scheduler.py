@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from PyQt6.QtCore import QObject, Qt, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 
 from .agent import Agente, EstadoAgente, TipoAgente
 from .bridge import SchedulerBridge
@@ -159,12 +159,6 @@ class Scheduler(QObject):
             self._on_reintentar_agente,
             Qt.ConnectionType.QueuedConnection
         )
-
-        # ── Timer para throttling de estadísticas ──
-        self._stats_timer = QTimer()
-        self._stats_timer.setSingleShot(True)
-        self._stats_timer.timeout.connect(self._emitir_stats_throttled)
-        self._stats_pending = False
 
         # ── Timestamp de inicio de ejecución ──
         self._tiempo_inicio_ejecucion: float | None = None
@@ -1204,7 +1198,14 @@ class Scheduler(QObject):
         if self._plan_b_en_progreso:
             return
         stats = self._calcular_estadisticas_internal()
-        total_terminados = stats['completados'] + stats['errores'] + stats['cancelados'] + stats.get('bloqueados', 0)
+        total_terminados = (
+            stats['completados']
+            + stats['errores']
+            + stats['cancelados']
+            + stats['bloqueados']
+            + stats['timeout']
+            + stats['saltados']
+        )
 
         if total_terminados == stats['total'] and stats['total'] > 0:
             if not self._terminado_notificado:
@@ -1247,9 +1248,10 @@ class Scheduler(QObject):
             self._terminado_notificado = False
             self._tiempo_inicio_ejecucion = time.time()
 
-            # Resetear agentes terminados
+            # Resetear agentes en cualquier estado terminal (incluye TIMEOUT,
+            # SALTADO y BLOQUEADO, no solo COMPLETADO/ERROR/CANCELADO).
             for agente in self.agentes.values():
-                if agente.estado in (EstadoAgente.COMPLETADO, EstadoAgente.ERROR, EstadoAgente.CANCELADO):
+                if EstadoAgente.es_terminal(agente.estado):
                     agente.resetear_estado()
                     agente.mensaje = "Reiniciado"
 
@@ -1313,6 +1315,10 @@ class Scheduler(QObject):
                     self._loop_items_procesados.pop(agente.id, None)
 
             self._invalidar_stats_cache()
+            # Los futuros encolados cancelados por cancel_futures=True nunca
+            # ejecutan su 'finally' que descarta el ID de running; limpiarlo
+            # aquí evita que un iniciar() posterior los considere en marcha.
+            self.running.clear()
             old_executor = self._executor
             self._executor = ThreadPoolExecutor(max_workers=self.max_concurrent)
 
@@ -1386,6 +1392,8 @@ class Scheduler(QObject):
             "errores": sum(1 for a in agentes if a.estado == EstadoAgente.ERROR),
             "cancelados": sum(1 for a in agentes if a.estado == EstadoAgente.CANCELADO),
             "bloqueados": sum(1 for a in agentes if a.estado == EstadoAgente.BLOQUEADO),  # ← NUEVO
+            "timeout": sum(1 for a in agentes if a.estado == EstadoAgente.TIMEOUT),
+            "saltados": sum(1 for a in agentes if a.estado == EstadoAgente.SALTADO),
             "loops_activos": len(self._loops_activos),
             "loops_total": sum(1 for a in agentes if a.tipo == TipoAgente.LOOP),
         }
@@ -1400,10 +1408,6 @@ class Scheduler(QObject):
             self._stats_cache = self._calcular_estadisticas_internal()
             self._stats_cache_time = now
             return self._stats_cache
-
-    def _emitir_stats_throttled(self):
-        """Emite estadísticas con throttling (para UI)."""
-        self._stats_pending = False
 
     # ============================================================
     # EJECUCIÓN INDIVIDUAL

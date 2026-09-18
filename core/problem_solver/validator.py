@@ -56,7 +56,10 @@ class PlanValidator:
         que lleguen al constructor de Agente o queden ocultos en el plan.
         """
         tipo = paso.tipo_agente
-        config = paso.configuracion
+        # El LLM puede devolver "configuracion": null; normalizar antes de
+        # mutar para no lanzar AttributeError y abortar todo el plan.
+        config = paso.configuracion or {}
+        paso.configuracion = config
 
         # ── Eliminar campos desconocidos de 'configuracion' ──
         permitidos = self.CAMPOS_VALIDOS_POR_TIPO.get(tipo, set())
@@ -92,7 +95,11 @@ class PlanValidator:
 
             # ✅ Blindaje: subir a un mínimo seguro si viene bajo
             MIN_TOKENS_SEGUROS = 4000
-            if int(config['max_tokens']) < MIN_TOKENS_SEGUROS:
+            try:
+                max_tokens_actual = int(float(config['max_tokens']))
+            except (TypeError, ValueError):
+                max_tokens_actual = 0
+            if max_tokens_actual < MIN_TOKENS_SEGUROS:
                 logger.warning(
                     f"⚠️ Paso LLM '{paso.nombre}': max_tokens={config['max_tokens']} "
                     f"insuficiente para thinking mode. "

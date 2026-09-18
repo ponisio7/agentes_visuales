@@ -85,6 +85,12 @@ MIN_MEMORY_LIMIT_MB = 64  # por debajo el intérprete no arranca con margen
 CACHE_MAX_SIZE = 100
 CACHE_TTL = 300  # 5 minutos
 
+# Serializa la creación de subprocesos. En CPython 3.13 con extensiones
+# nativas (Qt, NumPy, SciPy...) cargadas, varios fork() concurrentes desde
+# hilos distintos pueden provocar un SIGSEGV; lanzar los procesos de uno en
+# uno reduce drásticamente esa carrera.
+_SPAWN_LOCK = threading.Lock()
+
 # Caracteres peligrosos a escapar en el código del usuario
 DANGEROUS_PATTERNS = [
     (r'"""', '\\"\\"\\"'),
@@ -128,6 +134,44 @@ class SandboxSecurityError(SandboxError):
 class SandboxResourceError(SandboxError):
     """Error de recursos (memoria, archivos, etc.)."""
     pass
+
+
+def _leer_salida(fichero, max_bytes: int = MAX_FILE_SIZE) -> str:
+    """Lee el contenido de un fichero temporal de salida del sandbox.
+
+    Se acota a ``max_bytes`` para no cargar en memoria una salida enorme.
+    """
+    try:
+        fichero.flush()
+        fichero.seek(0)
+        return fichero.read(max_bytes)
+    except Exception:
+        return ""
+
+
+def _reapear_proceso(proceso: subprocess.Popen | None, timeout: float = 2.0) -> None:
+    """Mata (si sigue vivo), reap y cierra los pipes de un subproceso.
+
+    Se usa en las rutas de timeout/cancelación para no dejar procesos
+    zombie ni descriptores de fichero abiertos.
+    """
+    if proceso is None:
+        return
+    try:
+        if proceso.poll() is None:
+            proceso.kill()
+    except Exception:
+        pass
+    try:
+        proceso.communicate(timeout=timeout)
+    except Exception:
+        pass
+    for stream in (proceso.stdout, proceso.stderr):
+        try:
+            if stream is not None and not stream.closed:
+                stream.close()
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -789,24 +833,48 @@ if __name__ == "__main__":
                     'PYTHONDONTWRITEBYTECODE': '1',
                     'PYTHONPATH': os.getcwd(),   # ← NUEVO
                 }
-            cwd = os.getcwd()  # en lugar de tempfile.gettempdir()
+            # Se fija cwd explícitamente (en vez de dejarlo a None) para que
+            # subprocess NO use posix_spawn/vfork en Linux. Con extensiones
+            # nativas cargadas y varios hilos activos, el vfork de
+            # posix_spawn comparte el espacio de direcciones y otro hilo que
+            # reserva memoria (p. ej. uuid.uuid4) puede provocar SIGSEGV;
+            # el fork+exec clásico es estable en este escenario.
+            cwd = os.getcwd()
             shell = False
             
             start_time = time.time()
-            
-            # ── Crear proceso ──
-            proceso = subprocess.Popen(
-                PythonSandbox._comando_con_limite_memoria(script_path, memory_limit_mb),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=cwd,
-                env=env,
-                shell=shell,
-                encoding='utf-8',
-                errors='replace'
+
+            # Redirigir stdout/stderr a ficheros temporales en lugar de
+            # tuberías. Con PIPE, si el hijo escribe más de ~64 KB el buffer
+            # se llena, el hijo se bloquea y la ejecución se mata por falso
+            # timeout. communicate() lo evita pero repetirlo en bucle desde
+            # varios hilos provoca SIGSEGV en CPython 3.13; con ficheros no
+            # hay límite de buffer ni necesidad de communicate().
+            stdout_file = tempfile.TemporaryFile(
+                mode='w+', encoding='utf-8', errors='replace'
             )
-            
+            stderr_file = tempfile.TemporaryFile(
+                mode='w+', encoding='utf-8', errors='replace'
+            )
+
+            try:
+                # ── Crear proceso ──
+                # El lock serializa los fork() concurrentes (ver _SPAWN_LOCK).
+                with _SPAWN_LOCK:
+                    proceso = subprocess.Popen(
+                        PythonSandbox._comando_con_limite_memoria(script_path, memory_limit_mb),
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        stdin=subprocess.DEVNULL,
+                        cwd=cwd,
+                        env=env,
+                        shell=shell,
+                    )
+            except Exception:
+                stdout_file.close()
+                stderr_file.close()
+                raise
+
             # ── Callback de cancelación ──
             def cancelar_proceso(token):
                 nonlocal proceso
@@ -820,40 +888,42 @@ if __name__ == "__main__":
                         logger.info(f"Proceso sandbox cancelado: {script_path}")
                 except Exception as e:
                     logger.warning(f"Error cancelando sandbox: {e}")
-            
-            if cancellation_token:
-                cancellation_token.agregar_callback(cancelar_proceso)
-            
+
             try:
-                # ── Esperar con verificación periódica de cancelación ──
+                if cancellation_token:
+                    cancellation_token.agregar_callback(cancelar_proceso)
+
+                # ── Esperar verificando cancelación/timeout ──
                 inicio = time.time()
                 while True:
                     # Verificar cancelación
                     if cancellation_token and cancellation_token.esta_cancelado():
                         cancelar_proceso(cancellation_token)
+                        _reapear_proceso(proceso)
                         raise SandboxTimeoutError("Cancelado por usuario")
-                    
+
                     # Verificar timeout
-                    if time.time() - inicio > timeout:
+                    restante = timeout - (time.time() - inicio)
+                    if restante <= 0:
                         cancelar_proceso(cancellation_token)
+                        _reapear_proceso(proceso)
                         raise SandboxTimeoutError(f"Timeout ({timeout}s)")
-                    
-                    # Verificar si el proceso terminó
-                    if proceso.poll() is not None:
+
+                    try:
+                        # wait() no lee tuberías (no las hay): es seguro
+                        # llamarlo repetidamente.
+                        proceso.wait(timeout=min(0.1, max(restante, 0.01)))
                         break
-                    
-                    time.sleep(0.05)  # Pequeña pausa
-                
-                # Recolectar resultados
-                stdout, stderr = proceso.communicate(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        continue
+
                 result_code = proceso.returncode
-                
                 execution_time = time.time() - start_time
-                
-                # ── Procesar resultado ──
-                stdout = stdout.strip()
-                stderr = stderr.strip()
-                
+
+                # ── Leer salida de los ficheros temporales ──
+                stdout = _leer_salida(stdout_file).strip()
+                stderr = _leer_salida(stderr_file).strip()
+
                 # Guardar debug si hay stderr (filtrando warnings benignos)
                 if stderr:
                     # Filtrar líneas que son solo warnings (no errores reales)
@@ -1003,6 +1073,12 @@ if __name__ == "__main__":
                 # ── Limpiar callback ──
                 if cancellation_token:
                     cancellation_token.eliminar_callback(cancelar_proceso)
+                # ── Cerrar ficheros de salida temporales ──
+                for _f in (stdout_file, stderr_file):
+                    try:
+                        _f.close()
+                    except Exception:
+                        pass
 
         except SandboxError:
             # Ya es un error del sandbox correctamente tipado
@@ -1016,6 +1092,11 @@ if __name__ == "__main__":
         except Exception as e:
             raise SandboxError(f"Error inesperado: {e}")
         finally:
+            # Reap solo si el proceso sigue vivo (en la ruta normal ya se
+            # consumió la salida con communicate()). Evita un segundo
+            # communicate() innecesario sobre pipes ya cerrados.
+            if proceso is not None and proceso.poll() is None:
+                _reapear_proceso(proceso)
             if script_path and os.path.exists(script_path):
                 temp_manager.unregister(script_path)
     

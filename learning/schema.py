@@ -118,5 +118,10 @@ def aplicar_esquema_learning(conn: sqlite3.Connection) -> None:
     ⚠️ NO hace commit() — el llamador (Database._transaction) lo hace.
     """
     for sql in SQL_CREAR_TABLAS:
-        conn.execute(sql)
+        try:
+            conn.execute(sql)
+        except sqlite3.OperationalError as e:
+            # p. ej. un índice sobre una columna que falta en una BD legada:
+            # no debe impedir aplicar el resto del esquema.
+            logger.warning(f"No se pudo aplicar una pieza del esquema learning: {e}")
     logger.debug("Esquema de aprendizaje aplicado (sin commit)")

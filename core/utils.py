@@ -11,6 +11,51 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def extraer_json_balanceado(texto: str) -> str | None:
+    """Extrae el primer objeto/array JSON balanceado de un texto.
+
+    A diferencia de "primer '{' .. último '}'", respeta las llaves dentro
+    de cadenas y se detiene en el cierre que equilibra la apertura, por lo
+    que funciona aunque haya texto adicional o varios JSON concatenados.
+    """
+    if not texto:
+        return None
+
+    inicio = None
+    apertura = None
+    for i, c in enumerate(texto):
+        if c in "[{":
+            inicio = i
+            apertura = c
+            break
+    if inicio is None:
+        return None
+
+    cierre = "]" if apertura == "[" else "}"
+    profundidad = 0
+    en_cadena = False
+    escape = False
+    for i in range(inicio, len(texto)):
+        c = texto[i]
+        if en_cadena:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                en_cadena = False
+            continue
+        if c == '"':
+            en_cadena = True
+        elif c == apertura:
+            profundidad += 1
+        elif c == cierre:
+            profundidad -= 1
+            if profundidad == 0:
+                return texto[inicio:i + 1]
+    return None
+
+
 def extraer_json_de_llm(respuesta: str) -> dict[str, Any] | list | None:
     """
     Extrae un JSON válido de una respuesta del LLM.
@@ -35,35 +80,11 @@ def extraer_json_de_llm(respuesta: str) -> dict[str, Any] | list | None:
     limpio = re.sub(r'\s*```$', '', limpio, flags=re.MULTILINE)
     limpio = limpio.strip()
     
-    # ── 2. Buscar JSON (objeto o array) ──
-    # Buscar el primer { o [
-    inicio_objeto = limpio.find('{')
-    inicio_array = limpio.find('[')
-    
-    # Determinar cuál aparece primero
-    if inicio_objeto == -1 and inicio_array == -1:
-        logger.debug(f"No se encontró JSON en la respuesta: {limpio[:100]}...")
-        return None
-    
-    if inicio_objeto == -1:
-        inicio = inicio_array
-        fin = limpio.rfind(']')
-    elif inicio_array == -1:
-        inicio = inicio_objeto
-        fin = limpio.rfind('}')
-    else:
-        if inicio_objeto < inicio_array:
-            inicio = inicio_objeto
-            fin = limpio.rfind('}')
-        else:
-            inicio = inicio_array
-            fin = limpio.rfind(']')
-    
-    if fin == -1 or fin <= inicio:
+    # ── 2. Buscar el primer valor JSON balanceado ──
+    json_str = extraer_json_balanceado(limpio)
+    if json_str is None:
         logger.debug(f"No se encontró JSON completo: {limpio[:100]}...")
         return None
-    
-    json_str = limpio[inicio:fin + 1]
     
     # ── 3. Intentar parsear directamente ──
     try:

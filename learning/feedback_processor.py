@@ -425,6 +425,9 @@ class FeedbackProcessor:
         """
         try:
             with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
+                # Esquema COMPLETO: debe coincidir con learning/schema.py.
+                # Antes creaba solo 8 columnas y _guardar_reescritura (que
+                # inserta estado/n_usos/embedding/embedding_model) fallaba.
                 conn.execute("""
                     CREATE TABLE IF NOT EXISTS prompts_reescritos (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -434,9 +437,29 @@ class FeedbackProcessor:
                         feedback_id INTEGER NOT NULL,
                         razon TEXT DEFAULT '',
                         fecha TEXT NOT NULL,
-                        activo INTEGER DEFAULT 1
+                        activo INTEGER DEFAULT 1,
+                        estado TEXT DEFAULT 'candidato',
+                        n_usos INTEGER DEFAULT 0,
+                        embedding BLOB,
+                        embedding_model TEXT DEFAULT ''
                     )
                 """)
+                # BD legadas: añadir columnas que falten (idempotente).
+                columnas = {
+                    "estado": "TEXT DEFAULT 'candidato'",
+                    "n_usos": "INTEGER DEFAULT 0",
+                    "embedding": "BLOB",
+                    "embedding_model": "TEXT DEFAULT ''",
+                }
+                existentes = {
+                    fila[1]
+                    for fila in conn.execute("PRAGMA table_info(prompts_reescritos)")
+                }
+                for columna, definicion in columnas.items():
+                    if columna not in existentes:
+                        conn.execute(
+                            f"ALTER TABLE prompts_reescritos ADD COLUMN {columna} {definicion}"
+                        )
                 conn.execute("""
                     CREATE INDEX IF NOT EXISTS idx_prompts_reescritos_firma
                     ON prompts_reescritos(firma, activo)

@@ -195,6 +195,24 @@ def sustituir_variables(texto: str, variables: dict[str, str]) -> str:
     return pattern.sub(lambda m: variables.get(m.group(1), m.group(0)), texto)
 
 
+def sustituir_variables_shell(texto: str, variables: dict[str, str]) -> str:
+    """Como ``sustituir_variables`` pero cita cada valor con ``shlex.quote``.
+
+    Pensada para comandos que se ejecutan con ``shell=True``: evita que el
+    contenido de un agente previo o del LLM inyecte comandos adicionales.
+    """
+    if not texto or "{" not in texto or not variables:
+        return texto
+    import re as _re
+    pattern = _re.compile(
+        r"\{\s*(" + "|".join(_re.escape(k) for k in variables.keys()) + r")\s*\}"
+    )
+    return pattern.sub(
+        lambda m: shlex.quote(str(variables.get(m.group(1), m.group(0)))),
+        texto,
+    )
+
+
 def resolver_ruta_en_contexto(contexto: dict, ruta: str) -> Any:
     """Resuelve una ruta en el contexto (ej: 'Dependencia.clave')."""
     if not ruta:

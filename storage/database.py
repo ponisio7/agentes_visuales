@@ -95,6 +95,22 @@ SCHEMA_DEFINITION = {
     },
 }
 
+
+def _definicion_alter(definicion: str) -> str:
+    """Añade un DEFAULT a columnas NOT NULL para poder usar ALTER TABLE.
+
+    SQLite rechaza ``ADD COLUMN x TEXT NOT NULL`` sobre una tabla con filas
+    si no hay DEFAULT; si la columna falta en una BD existente, la
+    reparación/migración fallaría y la columna nunca se crearía.
+    """
+    definicion = definicion.strip()
+    upper = definicion.upper()
+    if "NOT NULL" not in upper or "DEFAULT" in upper:
+        return definicion
+    if upper.startswith("INTEGER") or upper.startswith("REAL") or upper.startswith("NUMERIC"):
+        return definicion + " DEFAULT 0"
+    return definicion + " DEFAULT ''"
+
 # Índices recomendados (nombre → (tabla, columna))
 INDEX_DEFINITION = {
     "idx_ejecuciones_fecha": ("ejecuciones", "fecha"),
@@ -279,26 +295,39 @@ class Database:
 
     @contextmanager
     def _transaction(self, retries: int = MAX_RETRIES):
-        """Context manager para transacciones con retry automático."""
+        """Context manager para transacciones con retry automático.
+
+        Solo se reintenta el ``BEGIN IMMEDIATE`` cuando la BD está
+        bloqueada; el cuerpo NUNCA se reintenta (podría duplicar efectos
+        secundarios) y siempre se hace ROLLBACK si algo falla dentro.
+        """
         conn = self._get_connection()
-        attempt = 0
-        while attempt < retries:
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(retries):
             try:
                 conn.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < retries - 1:
+                    last_error = e
+                    time.sleep(RETRY_DELAY * (attempt + 1))
+                    logger.debug(f"Reintentando BEGIN de transacción ({attempt + 1}/{retries})")
+                    continue
+                raise
+
+            try:
                 yield conn
                 conn.execute("COMMIT")
                 return
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and attempt < retries - 1:
-                    attempt += 1
-                    time.sleep(RETRY_DELAY * (attempt + 1))
-                    logger.debug(f"Reintentando transacción ({attempt}/{retries})")
-                    continue
-                conn.execute("ROLLBACK")
-                raise
             except Exception:
-                conn.execute("ROLLBACK")
+                if conn.in_transaction:
+                    try:
+                        conn.execute("ROLLBACK")
+                    except sqlite3.Error:
+                        pass
                 raise
+
+        if last_error is not None:
+            raise last_error
         raise RuntimeError("No se pudo completar la transacción después de varios intentos")
 
     # ============================================================
@@ -428,7 +457,8 @@ class Database:
                             )
                             try:
                                 cursor.execute(
-                                    f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion}"
+                                    f"ALTER TABLE {tabla} ADD COLUMN {columna} "
+                                    f"{_definicion_alter(definicion)}"
                                 )
                                 logger.info(f"✅ Columna añadida: {tabla}.{columna}")
                             except sqlite3.OperationalError as e:
@@ -560,15 +590,16 @@ class Database:
                         if columna not in columnas_existentes:
                             try:
                                 cursor.execute(
-                                    f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion}"
+                                    f"ALTER TABLE {tabla} ADD COLUMN {columna} "
+                                    f"{_definicion_alter(definicion)}"
                                 )
                                 resultado['columnas_añadidas'].append(f"{tabla}.{columna}")
                                 logger.info(f"✅ Columna reparada: {tabla}.{columna}")
                             except sqlite3.OperationalError as e:
                                 resultado['errores'].append(f"{tabla}.{columna}: {e}")
 
-                # Recrear índices
-                self._crear_indices()
+                # Recrear índices reutilizando la transacción abierta
+                self._crear_indices(conn)
                 resultado['indices_creados'].append('todos')
 
                 resultado['exito'] = len(resultado['errores']) == 0
@@ -705,6 +736,11 @@ class Database:
 
                 logger.info(f"Migrando base de datos de versión {current_version} a {DB_VERSION}")
 
+                # Si alguna migración falla, NO se actualiza la versión: la
+                # transacción hace rollback y la BD sigue en su versión
+                # anterior (antes se marcaba v8 con el esquema incompleto).
+                fallos: list[str] = []
+
                 # Migración 1 → 2: Añadir columnas básicas
                 if current_version < 2:
                     try:
@@ -725,6 +761,7 @@ class Database:
                             cursor.execute("ALTER TABLE agentes_ejecucion ADD COLUMN orden INTEGER DEFAULT 0")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 1→2: {e}")
+                        fallos.append(f"1→2: {e}")
 
                 # Migración 2 → 3: Auditoría
                 if current_version < 3:
@@ -745,6 +782,7 @@ class Database:
                         ''')
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 2→3: {e}")
+                        fallos.append(f"2→3: {e}")
 
                 # ✅ Migración 3 → 4: Asegurar columnas críticas (cancelados, etc.)
                 if current_version < 4:
@@ -759,6 +797,7 @@ class Database:
                             cursor.execute("ALTER TABLE ejecuciones ADD COLUMN duracion_total REAL DEFAULT 0")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 3→4: {e}")
+                        fallos.append(f"3→4: {e}")
 
                 # ✅ Migración 4 → 5: columna prompt_usado en agentes_ejecucion
                 #    (Fase 1 del sistema de feedback: persistir el prompt real que usó
@@ -775,6 +814,7 @@ class Database:
                             logger.info("✅ Migración 4→5: columna 'prompt_usado' añadida")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 4→5: {e}")
+                        fallos.append(f"4→5: {e}")
 
                 # ✅ Migración 5 → 6: columna descripcion en agentes_ejecucion
                 if current_version < 6:
@@ -788,6 +828,7 @@ class Database:
                             logger.info("✅ Migración 5→6: columna 'descripcion' añadida")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 5→6: {e}")
+                        fallos.append(f"5→6: {e}")
 
                 # ✅ Migración 6 → 7: A/B testing de reescrituras de prompt.
                 #    - Añade columnas `estado` y `n_usos` a prompts_reescritos.
@@ -843,6 +884,7 @@ class Database:
                             logger.info("✅ Migración 6→7: tabla 'prompt_reescrito_usos' creada")
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 6→7: {e}")
+                        fallos.append(f"6→7: {e}")
 
                 # ✅ Migración 7 → 8: embeddings para matching semántico.
                 #    Añade columnas embedding (BLOB) y embedding_model (TEXT) a
@@ -870,6 +912,13 @@ class Database:
                             )
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 7→8: {e}")
+                        fallos.append(f"7→8: {e}")
+
+                if fallos:
+                    raise sqlite3.OperationalError(
+                        "Migraciones fallidas, no se actualiza la versión: "
+                        + "; ".join(fallos)
+                    )
 
                 # Actualizar versión
                 cursor.execute("DELETE FROM version")
@@ -883,43 +932,51 @@ class Database:
             logger.error(f"Error en migración: {e}")
             raise
 
-    def _crear_indices(self):
+    def _crear_indices(self, conn: sqlite3.Connection | None = None):
         """
         Crea índices para optimizar consultas.
         Verifica que las columnas existan antes de crear índices.
+
+        Si se pasa ``conn`` se reutiliza (y su transacción activa), evitando
+        el BEGIN anidado que fallaba al llamar dentro de ``reparar_esquema``.
         """
         try:
-            with self._transaction() as conn:
-                cursor = conn.cursor()
-                columnas_ejecuciones = self._obtener_columnas(conn, 'ejecuciones')
-                columnas_agentes = self._obtener_columnas(conn, 'agentes_ejecucion')
-                columnas_auditoria = self._obtener_columnas(conn, 'auditoria')
-
-                tablas_columnas = {
-                    'ejecuciones': columnas_ejecuciones,
-                    'agentes_ejecucion': columnas_agentes,
-                    'auditoria': columnas_auditoria,
-                }
-
-                for nombre_indice, (tabla, columna) in INDEX_DEFINITION.items():
-                    columnas_tabla = tablas_columnas.get(tabla, set())
-                    if columna in columnas_tabla:
-                        try:
-                            cursor.execute(
-                                f"CREATE INDEX IF NOT EXISTS {nombre_indice} "
-                                f"ON {tabla}({columna})"
-                            )
-                            logger.debug(f"Índice creado/verificado: {nombre_indice}")
-                        except sqlite3.OperationalError as e:
-                            logger.warning(f"Error creando índice {nombre_indice}: {e}")
-                    else:
-                        logger.warning(
-                            f"⚠️ Columna '{columna}' no existe en '{tabla}', "
-                            f"omitiendo índice {nombre_indice}"
-                        )
-
+            if conn is not None:
+                self._crear_indices_en(conn)
+            else:
+                with self._transaction() as conexion:
+                    self._crear_indices_en(conexion)
         except Exception as e:
             logger.error(f"Error creando índices: {e}")
+
+    def _crear_indices_en(self, conn: sqlite3.Connection):
+        cursor = conn.cursor()
+        columnas_ejecuciones = self._obtener_columnas(conn, 'ejecuciones')
+        columnas_agentes = self._obtener_columnas(conn, 'agentes_ejecucion')
+        columnas_auditoria = self._obtener_columnas(conn, 'auditoria')
+
+        tablas_columnas = {
+            'ejecuciones': columnas_ejecuciones,
+            'agentes_ejecucion': columnas_agentes,
+            'auditoria': columnas_auditoria,
+        }
+
+        for nombre_indice, (tabla, columna) in INDEX_DEFINITION.items():
+            columnas_tabla = tablas_columnas.get(tabla, set())
+            if columna in columnas_tabla:
+                try:
+                    cursor.execute(
+                        f"CREATE INDEX IF NOT EXISTS {nombre_indice} "
+                        f"ON {tabla}({columna})"
+                    )
+                    logger.debug(f"Índice creado/verificado: {nombre_indice}")
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Error creando índice {nombre_indice}: {e}")
+            else:
+                logger.warning(
+                    f"⚠️ Columna '{columna}' no existe en '{tabla}', "
+                    f"omitiendo índice {nombre_indice}"
+                )
 
     def _aplicar_esquema_learning(self):
         """
@@ -1823,9 +1880,18 @@ class Database:
             ruta = f"{self.db_path}.backup_{timestamp}"
 
         try:
-            self.verificar_integridad()
-            import shutil
-            shutil.copy2(self.db_path, ruta)
+            integro, mensaje = self.verificar_integridad()
+            if not integro:
+                logger.error(f"Backup abortado: la BD no está íntegra ({mensaje})")
+                return None
+            # API de backup de SQLite: copia consistente que incluye el WAL
+            # (shutil.copy2 ignoraba -wal/-shm y podía dejar el backup a medias).
+            origen = self._get_connection()
+            destino = sqlite3.connect(ruta)
+            try:
+                origen.backup(destino)
+            finally:
+                destino.close()
             logger.info(f"Backup creado: {ruta}")
             return ruta
         except Exception as e:
@@ -1841,14 +1907,20 @@ class Database:
         try:
             self._close_connection()
 
-            # Verificar integridad del backup
+            # Verificar integridad del backup (leyendo el resultado)
+            conn = None
             try:
                 conn = sqlite3.connect(ruta, timeout=1)
-                conn.execute("PRAGMA integrity_check")
-                conn.close()
+                fila = conn.execute("PRAGMA integrity_check").fetchone()
+                if not fila or fila[0] != "ok":
+                    logger.error(f"Backup corrupto: {fila[0] if fila else 'sin resultado'}")
+                    return False
             except Exception as e:
                 logger.error(f"Backup corrupto: {e}")
                 return False
+            finally:
+                if conn is not None:
+                    conn.close()
 
             # Backup de la base actual
             if os.path.exists(self.db_path):
@@ -1863,6 +1935,8 @@ class Database:
             self._initialized = False
             self._closed = False    # ← AÑADIR: permitir reabrir tras restore
             self._init_db()
+            self._migrar_db()
+            self._verificar_esquema()
             logger.info(f"Backup restaurado desde {ruta}")
             return True
 

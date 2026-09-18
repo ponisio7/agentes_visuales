@@ -47,24 +47,30 @@ MAX_CANDIDATOS = 500         # límite de filas a cargar en cada búsqueda
 # ============================================================
 # SINGLETON THREAD-SAFE
 # ============================================================
-_matcher_instance: EmbeddingMatcher | None = None
+_matchers: dict[str, EmbeddingMatcher] = {}
 _matcher_lock = threading.RLock()
 
 
 def obtener_matcher(modelo: str = MODELO_DEFAULT) -> EmbeddingMatcher:
-    """Devuelve el EmbeddingMatcher singleton (crea si no existe)."""
-    global _matcher_instance
+    """Devuelve el EmbeddingMatcher del modelo pedido (lo crea si no existe).
+
+    Se cachea por nombre de modelo: antes se ignoraba el argumento en
+    llamadas posteriores y se devolvía el primer modelo creado, lo que
+    hacía que la búsqueda SQL (filtrada por ``embedding_model``) no
+    encontrara coincidencias.
+    """
     with _matcher_lock:
-        if _matcher_instance is None:
-            _matcher_instance = EmbeddingMatcher(modelo=modelo)
-        return _matcher_instance
+        matcher = _matchers.get(modelo)
+        if matcher is None:
+            matcher = EmbeddingMatcher(modelo=modelo)
+            _matchers[modelo] = matcher
+        return matcher
 
 
 def reset_matcher():
-    """Fuerza la recreación del singleton (útil en tests)."""
-    global _matcher_instance
+    """Fuerza la recreación de los matchers cacheados (útil en tests)."""
     with _matcher_lock:
-        _matcher_instance = None
+        _matchers.clear()
 
 
 # ============================================================

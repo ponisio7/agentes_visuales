@@ -35,7 +35,7 @@ class PlanComplexity(Enum):
 # dependencia declarada; nunca se configura manualmente.
 # ============================================================
 CAMPOS_VALIDOS_POR_TIPO: dict[str, set[str]] = {
-    "Python": {"codigo", "timeout"},
+    "Python": {"codigo", "timeout", "memory_limit_mb"},
     "Shell":  {"comando", "timeout", "working_dir"},
     "HTTP":   {"url", "metodo", "headers", "body", "timeout"},
     "LLM":    {

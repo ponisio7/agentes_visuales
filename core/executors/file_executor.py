@@ -357,6 +357,18 @@ class FileExecutor:
                     cls.actualizar_progreso(agente, 100, "Archivo no encontrado")
                     return False, f"Archivo no encontrado: {ruta_archivo}", {}
 
+                # Defensa extra: nunca borrar el propio directorio de trabajo
+                # ni nada fuera de él (cubre symlinks y rutas resueltas).
+                cwd_real = os.path.realpath(os.getcwd())
+                objetivo_real = os.path.realpath(ruta_archivo)
+                if (objetivo_real == cwd_real
+                        or not objetivo_real.startswith(cwd_real + os.sep)):
+                    cls.actualizar_progreso(agente, 100, "No se permite eliminar")
+                    return False, (
+                        f"No se permite eliminar fuera del directorio de trabajo: "
+                        f"{ruta_archivo}"
+                    ), {}
+
                 if os.path.isdir(ruta_archivo):
                     if (ruta_archivo in DANGEROUS_DIRS or
                             os.path.dirname(ruta_archivo) in DANGEROUS_DIRS):

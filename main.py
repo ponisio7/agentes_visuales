@@ -17,6 +17,14 @@ from logging.handlers import RotatingFileHandler
 __version__ = "1.1.0"
 
 
+def _timeout_positivo(valor: str) -> float:
+    """Convierte ``--timeout`` a float exigiendo un valor > 0."""
+    numero = float(valor)
+    if numero <= 0:
+        raise argparse.ArgumentTypeError("el timeout debe ser mayor que 0")
+    return numero
+
+
 def _construir_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agentes_visuales",
@@ -36,7 +44,7 @@ def _construir_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timeout",
-        type=float,
+        type=_timeout_positivo,
         default=5.0,
         metavar="SEGUNDOS",
         help="Timeout del ping HTTP en --check-env (por defecto: 5.0).",
@@ -83,29 +91,48 @@ def _arrancar_gui() -> int:
     app.setApplicationName("Agentes Visuales")
     app.setApplicationVersion(__version__)
 
-    window = SimpleMainWindow()
+    try:
+        window = SimpleMainWindow()
+    except Exception as e:
+        print(f"❌ Error inicializando la ventana principal: {e}", file=sys.stderr)
+        return 1
     window.show()
     return app.exec()
 
 
 def _configurar_logging():
-    os.makedirs("logs", exist_ok=True)
-    file_handler = RotatingFileHandler(
-        "logs/agentes_visuales.log",
-        maxBytes=10 * 1024 * 1024,  # 10 MB
-        backupCount=5,
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-    ))
-    logging.getLogger().addHandler(file_handler)
+    """Configura el logging raíz (consola + fichero rotativo).
+
+    Se usa ``force=True`` para que ``basicConfig`` no sea un no-op cuando ya
+    existen handlers (p. ej. si la app se reconfigura): de lo contrario el
+    nivel INFO y el handler de consola no se aplicaban.
+    """
+    try:
+        os.makedirs("logs", exist_ok=True)
+    except OSError as e:
+        print(f"⚠️  No se pudo crear el directorio de logs: {e}", file=sys.stderr)
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%H:%M:%S",
+        force=True,
     )
+    try:
+        file_handler = RotatingFileHandler(
+            "logs/agentes_visuales.log",
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=5,
+            encoding="utf-8",
+        )
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+        ))
+        logging.getLogger().addHandler(file_handler)
+    except OSError as e:
+        print(f"⚠️  No se pudo abrir el log de fichero: {e}", file=sys.stderr)
+
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("openai").setLevel(logging.WARNING)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
@@ -117,9 +144,10 @@ def _configurar_logging():
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
 
 def main() -> int:
-    _configurar_logging()
     parser = _construir_parser()
     args = parser.parse_args()
+
+    _configurar_logging()
 
     if args.check_env:
         return _ejecutar_check_env(timeout=args.timeout)

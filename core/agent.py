@@ -323,6 +323,7 @@ class Agente:
     codigo_python: str = ""
     funciones_import: list[str] = field(default_factory=list)
     timeout_python: int = 30
+    memory_limit_mb: int | None = None   # límite RLIMIT_AS del sandbox (None = sin límite)
     
     # ── Shell ──
     comando_shell: str = ""
@@ -869,7 +870,14 @@ class Agente:
         """
         # Crear copia para no modificar el original
         kwargs = data.copy()
-        
+
+        # Compatibilidad con to_dict(): emite 'dependencias' (no
+        # 'dependencias_ids') y 'prompt_usado' (no 'prompt_llm').
+        if 'dependencias' in kwargs and 'dependencias_ids' not in kwargs:
+            kwargs['dependencias_ids'] = kwargs.pop('dependencias')
+        if 'prompt_usado' in kwargs and 'prompt_llm' not in kwargs:
+            kwargs['prompt_llm'] = kwargs.pop('prompt_usado')
+
         # Limpiar campos que no existen en el dataclass
         valid_fields = {f.name for f in fields(cls)}
         kwargs = {k: v for k, v in kwargs.items() if k in valid_fields}
@@ -880,12 +888,28 @@ class Agente:
                 kwargs['tipo'] = TipoAgente.from_string(kwargs['tipo'])
             elif not isinstance(kwargs['tipo'], TipoAgente):
                 kwargs['tipo'] = TipoAgente.PYTHON
-        
+
+        # Convertir estado (to_dict lo serializa como string)
+        if 'estado' in kwargs:
+            if isinstance(kwargs['estado'], str):
+                try:
+                    kwargs['estado'] = EstadoAgente(kwargs['estado'])
+                except ValueError:
+                    kwargs['estado'] = EstadoAgente.PENDIENTE
+            elif not isinstance(kwargs['estado'], EstadoAgente):
+                kwargs['estado'] = EstadoAgente.PENDIENTE
+
         # Asegurar campos de lista
         for campo in ['dependencias_ids', 'dependencias_nombres', 'funciones_import']:
-            if campo in kwargs and not isinstance(kwargs[campo], list):
+            valor = kwargs.get(campo)
+            if isinstance(valor, str):
+                # Un string no es una lista de dependencias: evitar iterar
+                # sus caracteres. Se acepta también una lista con un solo
+                # nombre separada por comas.
+                kwargs[campo] = [p.strip() for p in valor.split(',') if p.strip()]
+            elif not isinstance(valor, list):
                 kwargs[campo] = []
-        
+
         return cls(**kwargs)
     
     # ============================================================

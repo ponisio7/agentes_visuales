@@ -27,6 +27,7 @@ import random
 import string
 import time
 from datetime import datetime
+from html import escape as html_escape
 
 from PyQt6.QtCore import QObject, Qt, QThread, QTimer, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QTextCursor
@@ -676,9 +677,11 @@ class SimpleMainWindow(QMainWindow):
 
     def _log(self, mensaje: str, color: str = GREEN):
         ts = datetime.now().strftime("%H:%M:%S")
+        # El mensaje puede contener salida de agentes o excepciones con
+        # '<'/'&': escapar para no corromper el HTML del QTextEdit.
         self.log.append(
             f'<span style="color:{TXT_MUTED}">[{ts}]</span> '
-            f'<span style="color:{color}">{mensaje}</span>'
+            f'<span style="color:{color}">{html_escape(str(mensaje))}</span>'
         )
         cursor = self.log.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)

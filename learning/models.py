@@ -236,7 +236,9 @@ class PlanScorer(ModeloOnlineBase):
             X = self.vectorizador.fit_transform(features)
             self.modelo.partial_fit(X, recompensas)
             self._entrenado = True
-            self._n_muestras += len(features)
+            # fit_transform parte de cero: el contador se fija, no se suma
+            # (antes se inflaba al reentrenar o cargar desde disco).
+            self._n_muestras = len(features)
             self.guardar()
         except Exception as e:
             logger.warning(f"Error entrenando PlanScorer: {e}")

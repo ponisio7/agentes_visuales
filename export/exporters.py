@@ -25,6 +25,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
+from html import escape as html_escape
 
 from .utils import aplanar_diccionario, aplanar_lista
 
@@ -258,9 +259,8 @@ class ResultExporter:
         extension = extensiones.get(formato, "json")
         nombre_archivo = f"{nombre}.{extension}"
         
-        if config.comprimir:
-            nombre_archivo = f"{nombre_archivo}.zip"
-        
+        # No añadir .zip aquí: la compresión se aplica en exportar() con
+        # _comprimir_archivo(); añadirlo en ambos sitios producía .zip.zip.
         return nombre_archivo
     
     # ============================================================
@@ -455,10 +455,14 @@ class ResultExporter:
                 for header in headers:
                     value = row.get(header, '')
                     if header == 'estado':
-                        value = f'<span style="background-color: {color}; color: white; padding: 2px 8px; border-radius: 4px; font-size: 12px;">{value}</span>'
+                        value = (
+                            f'<span style="background-color: {color}; color: white; '
+                            f'padding: 2px 8px; border-radius: 4px; font-size: 12px;">'
+                            f'{html_escape(str(value))}</span>'
+                        )
                     elif header == 'duracion':
                         value = f"{value:.2f}s" if isinstance(value, (int, float)) else value
-                    rows_html += f'<td style="padding: 8px;">{value}</td>'
+                    rows_html += f'<td style="padding: 8px;">{html_escape(str(value))}</td>'
                 rows_html += '</tr>'
         else:
             rows_html = '<tr><td colspan="100%" style="text-align: center; padding: 40px; color: #999;">No hay datos para mostrar</td></tr>'
@@ -509,7 +513,7 @@ class ResultExporter:
             <table>
                 <thead>
                     <tr>
-                        {"".join(f'<th>{h.replace("_", " ").title()}</th>' for h in headers)}
+                        {"".join(f'<th>{html_escape(h.replace("_", " ").title())}</th>' for h in headers)}
                     </tr>
                 </thead>
                 <tbody>

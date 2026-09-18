@@ -7,6 +7,7 @@ Permite cancelar workers de forma segura y coordinada.
 import logging
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -37,7 +38,7 @@ class CancellationToken:
     Thread-safe.
     """
     
-    id: str = field(default_factory=lambda: f"token_{int(time.time()*1000)}")
+    id: str = field(default_factory=lambda: f"token_{uuid.uuid4().hex}")
     estado: CancellationState = CancellationState.ACTIVE
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     _callbacks: list[Callable] = field(default_factory=list, repr=False)
@@ -60,16 +61,19 @@ class CancellationToken:
             self.estado = CancellationState.CANCELLED
             self._metadata['razon_cancelacion'] = razon
             self._metadata['timestamp_cancelacion'] = time.time()
-            
-            # Ejecutar callbacks de cancelación
-            for callback in self._callbacks:
-                try:
-                    callback(self)
-                except Exception as e:
-                    logger.warning(f"Error en callback de cancelación: {e}")
-            
-            logger.debug(f"Token {self.id} cancelado: {razon}")
-            return True
+            # Copia de los callbacks para ejecutarlos FUERA del lock: un
+            # callback puede reentrar en el token o tardar, y no debe bloquear
+            # a otros hilos (ni provocar deadlocks con el gestor).
+            callbacks = list(self._callbacks)
+        
+        for callback in callbacks:
+            try:
+                callback(self)
+            except Exception as e:
+                logger.warning(f"Error en callback de cancelación: {e}")
+        
+        logger.debug(f"Token {self.id} cancelado: {razon}")
+        return True
     
     def esta_cancelado(self) -> bool:
         """Verifica si se ha solicitado cancelación."""
@@ -172,13 +176,16 @@ class CancellationManager:
         """
         with self._lock:
             token = self._tokens.get(token_id)
-            if not token:
-                return False
-            
-            resultado = token.cancelar(razon)
-            if resultado:
-                self._logger.info(f"Token cancelado: {token_id} ({razon})")
-            return resultado
+
+        if not token:
+            return False
+
+        # Cancelar fuera del lock del gestor: token.cancelar() ejecuta
+        # callbacks de usuario que podrían reentrar en el gestor.
+        resultado = token.cancelar(razon)
+        if resultado:
+            self._logger.info(f"Token cancelado: {token_id} ({razon})")
+        return resultado
     
     def cancelar_todos(self, razon: str = "Cancelación masiva") -> int:
         """
@@ -191,14 +198,16 @@ class CancellationManager:
             int: Número de tokens cancelados
         """
         with self._lock:
-            cancelados = 0
-            for token in list(self._tokens.values()):
-                if token.esta_activo():
-                    token.cancelar(razon)
-                    cancelados += 1
-            
-            self._logger.info(f"Cancelados {cancelados} tokens: {razon}")
-            return cancelados
+            tokens = [t for t in self._tokens.values() if t.esta_activo()]
+
+        # Cancelar fuera del lock (los callbacks pueden reentrar).
+        cancelados = 0
+        for token in tokens:
+            token.cancelar(razon)
+            cancelados += 1
+
+        self._logger.info(f"Cancelados {cancelados} tokens: {razon}")
+        return cancelados
     
     def cancelar_por_agente(self, agente_id: str, razon: str = "Cancelado por usuario") -> bool:
         """
@@ -212,13 +221,19 @@ class CancellationManager:
             bool: True si se canceló correctamente
         """
         with self._lock:
+            objetivo = None
             for token in self._tokens.values():
                 if token.obtener_metadata('agente_id') == agente_id:
-                    if token.esta_activo():
-                        token.cancelar(razon)
-                        self._logger.info(f"Token cancelado para agente {agente_id}: {razon}")
-                        return True
+                    objetivo = token
+                    break
+
+        if objetivo is None or not objetivo.esta_activo():
             return False
+
+        # Cancelar fuera del lock del gestor.
+        objetivo.cancelar(razon)
+        self._logger.info(f"Token cancelado para agente {agente_id}: {razon}")
+        return True
     
     def eliminar_token(self, token_id: str) -> bool:
         """Elimina un token del gestor."""
@@ -263,10 +278,14 @@ class CancellationManager:
 # ============================================================
 
 _cancellation_manager: CancellationManager | None = None
+_cancellation_manager_lock = threading.Lock()
+
 
 def obtener_gestor_cancelacion() -> CancellationManager:
-    """Obtiene la instancia global del gestor de cancelación."""
+    """Obtiene la instancia global del gestor de cancelación (thread-safe)."""
     global _cancellation_manager
     if _cancellation_manager is None:
-        _cancellation_manager = CancellationManager()
+        with _cancellation_manager_lock:
+            if _cancellation_manager is None:
+                _cancellation_manager = CancellationManager()
     return _cancellation_manager

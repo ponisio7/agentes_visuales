@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
@@ -9,6 +10,14 @@ Eres un evaluador de ejecuciones de agentes.
 Evalúa la calidad del resultado final en base al objetivo original.
 Responde SOLO con JSON válido: {"score": 0.0-1.0, "justificacion": "texto breve"}
 """
+
+
+@dataclass
+class Evaluacion:
+    """Resultado de la evaluación de un agente o plan."""
+    score: float
+    justificacion: str
+    modelo: str | None = None
 
 class EvaluadorLLM:
     def __init__(
@@ -23,7 +32,7 @@ class EvaluadorLLM:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
-    def evaluar(self, objetivo: str, resultado: str, traza: str = "") -> tuple[float, str]:
+    def evaluar(self, objetivo: str, resultado: str, traza: str = "") -> Evaluacion:
         prompt = f"""
 OBJETIVO ORIGINAL:
 {objetivo}
@@ -53,6 +62,8 @@ Responde SOLO JSON: {{"score": <float>, "justificacion": "<por qué>"}}
                 kwargs["model"] = self.modelo  # tu LLMClient usa 'model'
             respuesta = self.llm_client.chat(**kwargs)
             data = self._parsear_json(respuesta)
+            if not isinstance(data, dict):
+                raise ValueError(f"El evaluador no devolvió un objeto JSON: {type(data)}")
             score = max(0.0, min(1.0, float(data.get("score", 0.5))))
             justificacion = str(data.get("justificacion", ""))[:500]
         except Exception as e:
@@ -67,7 +78,7 @@ Responde SOLO JSON: {{"score": <float>, "justificacion": "<por qué>"}}
             )
             score, justificacion = 0.5, f"Evaluador no disponible: {e}"
 
-        return score, justificacion
+        return Evaluacion(score=score, justificacion=justificacion, modelo=self.modelo)
 
     @staticmethod
     def _parsear_json(texto: str) -> dict:

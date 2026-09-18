@@ -14,6 +14,7 @@ Mejoras implementadas:
 - ✅ Validación de rutas con warning
 """
 
+import copy
 import dataclasses
 import json
 import logging
@@ -179,8 +180,11 @@ class ConfigManager:
         # Construir ruta absoluta
         ruta = os.path.realpath(os.path.join(self.config_dir, normalized))
 
-        # Verificar que la ruta resultante está dentro de config_dir
-        if not ruta.startswith(self.config_dir + os.sep) and ruta != self.config_dir:
+        # Verificar que la ruta resultante está dentro de config_dir.
+        # Se compara contra el realpath del directorio para no dar falsos
+        # positivos cuando config_dir es o contiene un symlink.
+        config_dir_real = os.path.realpath(self.config_dir)
+        if not ruta.startswith(config_dir_real + os.sep) and ruta != config_dir_real:
             raise ConfigSecurityError(f"Ruta fuera del directorio de configuraciones: '{filename}'")
 
         return ruta
@@ -267,10 +271,17 @@ class ConfigManager:
             with open(ruta, encoding='utf-8') as f:
                 data = json.load(f)
         except json.JSONDecodeError as e:
-            # Intentar recuperar de journal
-            self._recover_from_journal(ruta)
-            # Si no se pudo recuperar, lanzar error
-            raise ConfigIntegrityError(f"JSON inválido: {e}")
+            # Intentar recuperar de journal y reintentar el parseo.
+            if self._recover_from_journal(ruta):
+                try:
+                    with open(ruta, encoding='utf-8') as f:
+                        data = json.load(f)
+                except (json.JSONDecodeError, OSError) as e2:
+                    raise ConfigIntegrityError(
+                        f"JSON inválido tras recuperar de journal: {e2}"
+                    )
+            else:
+                raise ConfigIntegrityError(f"JSON inválido: {e}")
         except UnicodeDecodeError as e:
             raise ConfigIntegrityError(f"Encoding inválido: {e}")
         except OSError as e:
@@ -430,12 +441,14 @@ class ConfigManager:
             self._cache_accessed.pop(key, None)
 
     def _get_from_cache(self, ruta: str) -> dict | None:
-        """Obtener datos de la caché."""
+        """Obtener datos de la caché (copia defensiva)."""
         with self._cache_lock:
             key = self._get_cache_key(ruta)
             if key in self._cache:
                 self._cache_accessed[key] = time.time()
-                return self._cache[key]
+                # Devolver copia: si el llamador muta el dict/lista, no debe
+                # corromper la caché compartida.
+                return copy.deepcopy(self._cache[key])
             return None
 
     def _put_in_cache(self, ruta: str, data: dict):
@@ -519,7 +532,8 @@ class ConfigManager:
             raise ConfigError("El nombre de configuración es obligatorio")
 
         # Construir datos
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ahora = datetime.now()
+        timestamp = ahora.strftime("%Y-%m-%d %H:%M:%S")
         nombre_seguro = self._sanitizar(nombre)
 
         data = {
@@ -531,8 +545,9 @@ class ConfigManager:
             "agentes": [self._agente_a_dict(a) for a in agentes.values()],
         }
 
-        # Generar nombre de archivo (incluyendo timestamp para unicidad)
-        timestamp_file = timestamp.replace(' ', '_').replace(':', '-')
+        # Generar nombre de archivo (incluyendo timestamp con microsegundos
+        # para evitar que dos guardados en el mismo segundo se pisen).
+        timestamp_file = ahora.strftime("%Y-%m-%d_%H-%M-%S-%f")
         filename = f"{nombre_seguro}_{timestamp_file}.json"
         ruta = os.path.join(self.config_dir, filename)
 

@@ -12,7 +12,12 @@ import time
 from core.agent import Agente
 from core.cancellation import CancellationToken
 
-from .content_extractor import comando_requiere_root, sustituir_variables, variables_disponibles
+from .content_extractor import (
+    comando_requiere_root,
+    sustituir_variables,
+    sustituir_variables_shell,
+    variables_disponibles,
+)
 from .security import DANGEROUS_SHELL_COMMANDS, MAX_SHELL_COMMAND_LENGTH, validar_ruta_archivo
 
 logger = logging.getLogger(__name__)
@@ -45,7 +50,8 @@ class ShellExecutor:
         cls.actualizar_progreso(agente, 20, "Preparando comando shell...")
 
         variables = variables_disponibles(agente, contexto)
-        comando = sustituir_variables(agente.comando_shell, variables)
+        # Citar los valores sustituidos para evitar inyección de comandos.
+        comando = sustituir_variables_shell(agente.comando_shell, variables)
         working_dir = sustituir_variables(agente.working_dir, variables)
 
         if not comando:
@@ -153,23 +159,31 @@ class ShellExecutor:
                 cancellation_token.agregar_callback(cancelar_proceso)
 
             try:
-                inicio = time.time()
-                while True:
-                    if cancellation_token and cancellation_token.esta_cancelado():
-                        cancelar_proceso(cancellation_token)
-                        return False, "Cancelado por usuario", {
-                            'error': 'cancelled', 'comando': comando[:100]
-                        }
-                    if time.time() - inicio > timeout_efectivo:
-                        cancelar_proceso(cancellation_token)
-                        return False, f"Timeout ({timeout_efectivo}s)", {
-                            'error': 'timeout', 'comando': comando[:100]
-                        }
-                    if proceso.poll() is not None:
-                        break
-                    time.sleep(0.05)
+                # communicate() drena stdout/stderr y espera hasta el timeout.
+                # Se llama UNA vez (repetirlo en bucle desde varios hilos
+                # provoca SIGSEGV en CPython 3.13); la cancelación la fuerza
+                # el callback terminando el proceso.
+                try:
+                    stdout, stderr = proceso.communicate(timeout=timeout_efectivo)
+                except subprocess.TimeoutExpired:
+                    cancelar_proceso(cancellation_token)
+                    try:
+                        stdout, stderr = proceso.communicate(timeout=2)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            proceso.kill()
+                        except Exception:
+                            pass
+                        stdout, stderr = "", ""
+                    return False, f"Timeout ({timeout_efectivo}s)", {
+                        'error': 'timeout', 'comando': comando[:100]
+                    }
 
-                stdout, stderr = proceso.communicate(timeout=1)
+                if cancellation_token and cancellation_token.esta_cancelado():
+                    return False, "Cancelado por usuario", {
+                        'error': 'cancelled', 'comando': comando[:100]
+                    }
+
                 codigo = proceso.returncode
             finally:
                 if cancellation_token:

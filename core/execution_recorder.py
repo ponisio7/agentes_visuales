@@ -19,14 +19,18 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
             aid = getattr(a, "id", None)
             if aid is not None and aid in vistos_db: continue
             if aid is not None: vistos_db.add(aid)
-            try: agentes_data.append(a.to_dict())
-            except Exception: continue
+            try:
+                agentes_data.append(a.to_dict())
+            except Exception as e:
+                logger.warning(f"No se pudo serializar agente {aid}: {e}")
         for a in scheduler.agentes.values():
             aid = getattr(a, "id", None)
             if aid is not None and aid in vistos_db: continue
             if aid is not None: vistos_db.add(aid)
-            try: agentes_data.append(a.to_dict())
-            except Exception: continue
+            try:
+                agentes_data.append(a.to_dict())
+            except Exception as e:
+                logger.warning(f"No se pudo serializar agente {aid}: {e}")
         ejecucion_id = db.guardar_ejecucion(agentes_data, duracion_total)
     except Exception as e:
         logger.warning(f"No se pudo guardar la ejecución: {e}")
@@ -35,6 +39,9 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
     db_path = db.db_path
     problema_snap = problema or ""
     plan_snap = plan
+    # Se calcula ANTES de lanzar el hilo para no tocar el scheduler vivo
+    # (mutado por la GUI/workers) desde otro hilo.
+    resumen_plan_snap = _construir_resumen_plan(scheduler, plan) if plan is not None else ""
     
     def _worker():
         try:
@@ -69,7 +76,7 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
             # ── Aprendizaje del plan (ya existía) ──
             if plan_snap is not None and problema_snap:
                 try:
-                    resultado_plan = _construir_resumen_plan(scheduler, plan_snap)
+                    resultado_plan = resumen_plan_snap
                     engine.registrar_resultado_plan(
                         ejecucion_id=ejecucion_id, plan=plan_snap,
                         tarea=problema_snap, resultado_texto=resultado_plan
@@ -127,7 +134,7 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
         except Exception as e:
             logger.debug(f"Aprendizaje en background falló: {e}")
 
-    threading.Thread(target=_worker, name="learning-recorder", daemon=False).start()
+    threading.Thread(target=_worker, name="learning-recorder", daemon=True).start()
     return ejecucion_id
 
 def _snapshot_de_agente(a) -> dict[str, Any] | None:
