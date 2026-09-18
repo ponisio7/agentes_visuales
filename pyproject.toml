@@ -1,0 +1,33 @@
+# Configuración de herramientas del proyecto Agentes Visuales.
+# La configuración de pytest vive en pytest.ini.
+
+[tool.ruff]
+# Longitud de línea de referencia (no se exige E501 mientras no se formatee todo).
+line-length = 100
+target-version = "py313"
+
+extend-exclude = [
+    ".venv",
+    "tmp",
+    "backup",
+    ".backups_fix_evaluador_llm",
+    ".backups_fix_tests",
+    ".backups_fix_tests_v2",
+    ".recon",
+    "logs",
+]
+
+[tool.ruff.lint]
+# Reglas activas: errores/estilo básico (E, W), pyflakes (F), orden de imports
+# (I), modernización de sintaxis (UP) y flake8-bugbear (B).
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "E402",    # imports tras sys.path.insert (patrón deliberado en scripts/tests)
+    "E501",    # líneas largas: pendiente de un formateo global
+    "E701",    # varias sentencias tras ':' (estilo heredado)
+    "E702",    # varias sentencias con ';' (estilo heredado)
+    "B904",    # raise sin 'from' dentro de except (estilo heredado)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "storage", "learning", "export", "ui"]
