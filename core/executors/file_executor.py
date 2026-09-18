@@ -449,6 +449,57 @@ class FileExecutor:
                     break
         return titulo, contenido
 
+    CLAVES_TEXTO_VALIDAS = (
+        "cuento", "texto", "contenido", "respuesta_limpia", "respuesta",
+        "historia", "informe", "articulo", "cuerpo", "documento", "markdown",
+    )
+
+    @classmethod
+    def _extraer_texto_o_fallar(
+        cls,
+        contenido: Any,
+        ruta_archivo: str,
+        contexto_formato: str,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Extrae el texto útil de `contenido`. Devuelve (texto, None) si OK,
+        o (None, mensaje_error) si el dict no tiene claves reconocidas.
+
+        NO serializa dicts a JSON como fallback: eso produce PDFs/MDs con
+        JSON basura en lugar del contenido esperado.
+        """
+        if isinstance(contenido, str):
+            return contenido, None
+
+        if isinstance(contenido, dict):
+            for clave in cls.CLAVES_TEXTO_VALIDAS:
+                if clave in contenido and contenido[clave]:
+                    valor = contenido[clave]
+                    if isinstance(valor, str):
+                        return valor, None
+                    # Si la clave existe pero no es str, seguir buscando
+            claves_presentes = [k for k in contenido.keys() if not k.startswith("_")]
+            mensaje = (
+                f"File.escribir_{contexto_formato}: el dict de contenido no tiene "
+                f"ninguna clave de texto reconocida. Claves presentes: {claves_presentes}. "
+                f"Claves esperadas: {list(cls.CLAVES_TEXTO_VALIDAS)}. "
+                f"El agente que produjo este contenido probablemente devolvió "
+                f"un JSON con claves no soportadas. Archivo: {ruta_archivo}"
+            )
+            logger.error(mensaje)
+            return None, mensaje
+
+        if isinstance(contenido, (list, tuple)):
+            mensaje = (
+                f"File.escribir_{contexto_formato}: contenido es {type(contenido).__name__}, "
+                f"no str ni dict. Archivo: {ruta_archivo}"
+            )
+            logger.error(mensaje)
+            return None, mensaje
+
+        # Fallback: convertir a str (números, None, etc.)
+        return str(contenido), None
+
     @classmethod
     def _descargar_imagen_temporal(cls, url: str) -> Optional[str]:
         """
@@ -585,18 +636,38 @@ class FileExecutor:
         titulo = None
         imagenes = []
 
+        # ✅ DESPUÉS
         if isinstance(contenido, dict):
             titulo = contenido.get("titulo") or contenido.get("title")
             imagenes = contenido.get("imagenes") or contenido.get("images") or []
 
-            # El texto puede venir en varias claves
-            for clave in ("cuento", "texto", "contenido", "respuesta_limpia", "respuesta"):
+            CLAVES_TEXTO_VALIDAS = (
+                "cuento", "texto", "contenido", "respuesta_limpia", "respuesta",
+                "historia", "informe", "articulo", "cuerpo", "documento",
+            )
+            for clave in CLAVES_TEXTO_VALIDAS:
                 if clave in contenido and contenido[clave]:
                     contenido = contenido[clave]
                     break
             else:
-                # Si no hay texto explícito, serializar lo que quede
-                contenido = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
+                # ✅ NUEVO: fallar con mensaje claro en lugar de serializar el dict entero
+                claves_presentes = [k for k in contenido.keys() if not k.startswith("_")]
+                mensaje = (
+                    f"File.escribir_docx: el dict de contenido no tiene ninguna "
+                    f"clave de texto reconocida. Claves presentes: {claves_presentes}. "
+                    f"Claves esperadas: {list(CLAVES_TEXTO_VALIDAS)}. "
+                    f"El agente que produjo este contenido probablemente devolvió "
+                    f"un JSON con claves no soportadas."
+                )
+                logger.error(mensaje)
+                cls.actualizar_progreso(agente, 100, "❌ Contrato de contenido roto")
+                return False, mensaje, {
+                    "error": "no_known_text_keys",
+                    "archivo": ruta_archivo,
+                    "claves_presentes": claves_presentes,
+                    "claves_esperadas": list(CLAVES_TEXTO_VALIDAS),
+                    "contenido_preview": str(contenido)[:500],
+                }
 
         if isinstance(contenido, str):
             texto = contenido
@@ -932,22 +1003,14 @@ class FileExecutor:
         if isinstance(contenido, dict):
             titulo = contenido.get("titulo") or contenido.get("title")
             imagenes = contenido.get("imagenes") or contenido.get("images") or []
-            for clave in ("cuento", "texto", "contenido", "markdown",
-                          "respuesta_limpia", "respuesta"):
-                if clave in contenido and contenido[clave]:
-                    contenido = contenido[clave]
-                    break
-            else:
-                contenido = json.dumps(
-                    contenido, indent=2, ensure_ascii=False, default=str
-                )
 
-        if isinstance(contenido, str):
-            texto = contenido
-        elif isinstance(contenido, (dict, list)):
-            texto = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
-        else:
-            texto = str(contenido)
+        texto, error = cls._extraer_texto_o_fallar(contenido, ruta_archivo, "pdf")
+        if error:
+            cls.actualizar_progreso(agente, 100, "❌ Contrato de contenido roto")
+            return False, error, {
+                "error": "no_known_text_keys",
+                "archivo": ruta_archivo,
+            }
 
         if not texto.strip() and not imagenes:
             return False, (
@@ -1065,12 +1128,13 @@ class FileExecutor:
 
         titulo, contenido = cls._extraer_titulo_y_contenido(contenido)
 
-        if isinstance(contenido, str):
-            texto = contenido
-        elif isinstance(contenido, (dict, list)):
-            texto = json.dumps(contenido, indent=2, ensure_ascii=False, default=str)
-        else:
-            texto = str(contenido)
+        texto, error = cls._extraer_texto_o_fallar(contenido, ruta_archivo, "markdown")
+        if error:
+            cls.actualizar_progreso(agente, 100, "❌ Contrato de contenido roto")
+            return False, error, {
+                "error": "no_known_text_keys",
+                "archivo": ruta_archivo,
+            }
 
         if titulo:
             texto = f"# {titulo}\n\n{texto}"
