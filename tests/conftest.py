@@ -8,6 +8,7 @@ varias pruebas.
 """
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -17,8 +18,25 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def limpiar_scheduler(scheduler) -> None:
+    """Detiene un Scheduler y libera su ThreadPoolExecutor.
+
+    Sin este teardown cada test deja vivos hilos del pool y un QTimer, lo
+    que contamina los tests siguientes y contribuye a los segfaults
+    esporádicos de CPython 3.13 + Qt + fork.
+    """
+    try:
+        scheduler.detener()
+    except Exception:
+        pass
+    try:
+        scheduler._executor.shutdown(wait=True, cancel_futures=True)
+    except Exception:
+        pass
+
+
 def esperar_condicion(
-    condicion: callable,
+    condicion: Callable[[], bool],
     timeout: float = 5.0,
     intervalo: float = 0.05,
     qapp=None,
@@ -91,7 +109,8 @@ def scheduler_rapido():
     )
     scheduler.agregar_agentes([a1, a2, a3])
     scheduler.resolver_dependencias()
-    return scheduler
+    yield scheduler
+    limpiar_scheduler(scheduler)
 
 
 @pytest.fixture
@@ -117,4 +136,5 @@ def scheduler_basico():
     )
     scheduler.agregar_agentes([a1, a2, a3])
     scheduler.resolver_dependencias()
-    return scheduler
+    yield scheduler
+    limpiar_scheduler(scheduler)

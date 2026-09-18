@@ -125,6 +125,7 @@ GRUPOS_TESTS = {
         "tests/test_scheduler_orden.py",
         "tests/test_scheduler_ciclos.py",
         "tests/test_scheduler_resolucion.py",
+        "tests/test_scheduler_terminal.py",
         "tests/test_ejecucion_individual.py",
     ],
     "C_integration": [
@@ -136,6 +137,7 @@ GRUPOS_TESTS = {
         # Sandbox (subprocess)
         "tests/test_sandbox.py",
         "tests/test_sandbox_smoke.py",
+        "tests/test_sandbox_robustez.py",
     ],
     "E_loops": [
         # Agentes Loop (scheduler + sandbox)
@@ -144,19 +146,50 @@ GRUPOS_TESTS = {
     "F_ligeros": [
         # Modelos, mocks y validadores sin extensiones nativas pesadas
         "tests/test_agent.py",
+        "tests/test_agent_serialization.py",
+        "tests/test_cancellation.py",
         "tests/test_conexion_a_DeepSeek_manualmente.py",
         "tests/test_contrato_cuento.py",
         "tests/test_contrato_salida.py",
+        "tests/test_database_unit.py",
+        "tests/test_env_checker.py",
+        "tests/test_event_bus.py",
+        "tests/test_execution_recorder.py",
+        "tests/test_executor_helpers.py",
+        "tests/test_file_executor_seguridad.py",
         "tests/test_plan_recovery.py",
         "tests/test_plan_validator.py",
+        "tests/test_security.py",
+        "tests/test_utils_json.py",
         "tests/test_validador.py",
     ],
 }
 
 # Señales que indican que el intérprete murió (no que un test falló). En
 # CPython 3.13 + PyQt6 + extensiones nativas + fork se observa un SIGSEGV
-# esporádico; para esos casos el runner reintenta una vez el grupo.
-SENALES_CAIDA_INTERPRETE = {-11, -6, -4, -8}  # SIGSEGV, SIGABRT, SIGILL, SIGFPE
+# esporádico; para esos casos el runner reintenta el grupo (--retries).
+SENALES_CAIDA_INTERPRETE = {
+    -11, -6, -4, -8,                      # SIGSEGV, SIGABRT, SIGILL, SIGFPE (POSIX)
+    3221225477, 3221225474,               # ACCESS_VIOLATION / ILLEGAL_INSTRUCTION (Windows)
+    3221225725, 3221225786,               # STACK_OVERFLOW / CTRL_C_EVENT (Windows)
+}
+
+# Grupos que crean subprocesos (sandbox) y/o hilos concurrentes. Ahí es
+# donde se acumulan hilos/estado entre tests y aparece el SIGSEGV de
+# CPython 3.13. Si ``pytest-forked`` está instalado se aísla cada test en
+# su propio proceso (ver ``--no-forked`` para desactivarlo).
+GRUPOS_CON_SUBPROCESO = frozenset({
+    "B_scheduler",
+    "C_integration",
+    "D_sandbox",
+    "E_loops",
+})
+
+
+def _tiene_pytest_forked() -> bool:
+    """Indica si ``pytest-forked`` está disponible (aislamiento por test)."""
+    return importlib.util.find_spec("pytest_forked") is not None
+
 
 
 def descubrir_grupos_completos() -> dict[str, list[str]]:
@@ -197,6 +230,8 @@ def ejecutar_comando_pytest(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         env=env,
     )
@@ -224,6 +259,10 @@ def ejecutar_comando_pytest(
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
     finally:
         wd.stop()
 
@@ -249,6 +288,13 @@ def main() -> int:
     parser.add_argument("--no-retry", action="store_true",
                         help="No reintentar grupos que mueran por señal "
                              "(SIGSEGV/SIGABRT) del intérprete")
+    parser.add_argument("--retries", type=int, default=3,
+                        help="Nº máximo de intentos por grupo ante muerte por "
+                             "señal (default: 3). Con --no-retry se ignora.")
+    parser.add_argument("--no-forked", action="store_true",
+                        help="No aislar cada test en su propio proceso con "
+                             "pytest-forked (por defecto se usa si está "
+                             "instalado en los grupos con subprocesos).")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -295,14 +341,24 @@ def main() -> int:
     else:
         print(amarillo("⚠️  Incluyendo TODAS las pruebas (GUI y slow)."))
 
+    usar_forked = _tiene_pytest_forked() and not args.no_forked
+    if usar_forked:
+        print(gris("🧬 pytest-forked disponible: aislando cada test en los "
+                   "grupos con subprocesos."))
+    else:
+        print(gris("ℹ️  pytest-forked no disponible/desactivado: los grupos "
+                   "con subprocesos pueden segfaultear (se reintentan)."))
+
     # ── Preparar comando base ──
-    def _cmd_pytest(paths: list[str]) -> list[str]:
+    def _cmd_pytest(paths: list[str], forked: bool = False) -> list[str]:
         cmd = [sys.executable, "-m", "pytest", "--color=no", "-ra", "--maxfail=1000"]
         cmd += paths
         if args.verbose:
             cmd.append("-vv")
         if not args.include_gui:
             cmd += ["-m", "not gui and not slow"]
+        if forked:
+            cmd.append("--forked")
         return cmd
 
     # ── Ejecutar cada grupo ──
@@ -322,7 +378,11 @@ def main() -> int:
                     print(cyan(f"     • {p}"))
             print(cyan("═" * 70))
 
-            cmd = _cmd_pytest(["tests/"] if nombre_grupo == "ALL" else paths)
+            forked_grupo = usar_forked and nombre_grupo in GRUPOS_CON_SUBPROCESO
+            cmd = _cmd_pytest(
+                ["tests/"] if nombre_grupo == "ALL" else paths,
+                forked=forked_grupo,
+            )
 
             f_out.write("\n" + "=" * 80 + "\n")
             f_out.write(f"GRUPO: {nombre_grupo}\n")
@@ -335,15 +395,18 @@ def main() -> int:
             )
             lineas_totales += lineas_grupo
 
-            # Reintento acotado ante muerte del intérprete por señal. No se
-            # reintentan fallos de tests (rc positivo) ni interrupciones.
-            if (rc in SENALES_CAIDA_INTERPRETE and not interrumpido
-                    and not args.no_retry):
+            # Reintentos acotados ante muerte del intérprete por señal
+            # (flake conocido CPython 3.13 + Qt + fork). No se reintentan
+            # fallos de tests (rc positivo) ni interrupciones del usuario.
+            max_intentos = 1 if args.no_retry else max(1, args.retries)
+            for intento in range(2, max_intentos + 1):
+                if not (rc in SENALES_CAIDA_INTERPRETE and not interrumpido):
+                    break
                 print(amarillo(
                     f"\n   ⚠️  Grupo {nombre_grupo} murió por señal {rc}. "
-                    f"Reintentando una vez (flake conocido CPython 3.13 + Qt)..."
+                    f"Reintento {intento}/{max_intentos}..."
                 ))
-                f_out.write(f"\n[REINTENTO tras señal {rc}]\n")
+                f_out.write(f"\n[REINTENTO {intento} tras señal {rc}]\n")
                 f_out.flush()
                 rc, elapsed_grupo, lineas_grupo, interrumpido = ejecutar_comando_pytest(
                     cmd, env, f_out, args.watchdog, args.watchdog_alerta

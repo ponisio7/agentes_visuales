@@ -20,6 +20,18 @@ from PyQt6.QtWidgets import QApplication
 from core.agent import Agente, EstadoAgente, TipoAgente
 from core.scheduler import Scheduler
 
+
+def _limpiar_scheduler(scheduler) -> None:
+    """Detiene el scheduler y libera su ThreadPoolExecutor (teardown)."""
+    try:
+        scheduler.detener()
+    except Exception:
+        pass
+    try:
+        scheduler._executor.shutdown(wait=True, cancel_futures=True)
+    except Exception:
+        pass
+
 # ============================================================
 # FIXTURES Y UTILIDADES
 # ============================================================
@@ -58,8 +70,9 @@ resultado = {
     
     scheduler.agregar_agentes([a1, a2, a3])
     scheduler.resolver_dependencias()
-    
-    return scheduler
+
+    yield scheduler
+    _limpiar_scheduler(scheduler)
 
 
 @pytest.fixture
@@ -74,8 +87,9 @@ def scheduler_con_agentes_independientes():
             codigo_python=f"resultado = {{'id': {i}, 'status': 'ok'}}"
         )
         scheduler.agregar_agente(agente)
-    
-    return scheduler
+
+    yield scheduler
+    _limpiar_scheduler(scheduler)
 
 
 def esperar_condicion(
