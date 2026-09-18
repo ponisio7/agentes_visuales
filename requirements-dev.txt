@@ -1,0 +1,15 @@
+# Dependencias de desarrollo y pruebas.
+#
+# Uso:
+#     pip install -r requirements-dev.txt
+#
+# Incluye las dependencias de ejecución y añade las herramientas de test/lint.
+-r requirements.txt
+
+pytest>=8.0
+pytest-timeout>=2.3
+pytest-forked>=1.6
+anyio>=4.0
+
+# Linter y modernización de código (config en pyproject.toml)
+ruff>=0.6
