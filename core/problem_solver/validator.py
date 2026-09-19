@@ -164,6 +164,32 @@ class PlanValidator:
             if 'continuar_en_error' not in config:
                 config['continuar_en_error'] = False
 
+        elif tipo == 'Browser':
+            # No se inventan 'url' ni 'acciones': si faltan, la validación
+            # del agente lo reportará como advertencia (mejor transparente
+            # que ejecutar una navegación a una URL inventada).
+            if not isinstance(config.get('acciones'), list):
+                config['acciones'] = []
+            if 'timeout' not in config:
+                config['timeout'] = 30
+            if 'timeout_accion' not in config:
+                config['timeout_accion'] = 10000
+            if 'headless' not in config:
+                config['headless'] = True
+            if 'bloquear_recursos' not in config:
+                config['bloquear_recursos'] = False
+            if 'user_agent' not in config:
+                config['user_agent'] = ''
+
+        elif tipo == 'Search':
+            # Igual que en Browser: 'query' no se inventa.
+            if 'max_resultados' not in config:
+                config['max_resultados'] = 5
+            if 'region' not in config:
+                config['region'] = 'wt-wt'
+            if 'timeout' not in config:
+                config['timeout'] = 30
+
     def validar_campos_configuracion(
         self,
         paso: StepPlan,

@@ -47,4 +47,9 @@ CAMPOS_VALIDOS_POR_TIPO: dict[str, set[str]] = {
         "fuente_items", "codigo_por_item", "max_iteraciones",
         "timeout_loop", "timeout_python", "continuar_en_error",
     },
+    "Browser": {
+        "url", "acciones", "timeout", "timeout_accion",
+        "headless", "bloquear_recursos", "user_agent",
+    },
+    "Search": {"query", "max_resultados", "region", "timeout"},
 }
