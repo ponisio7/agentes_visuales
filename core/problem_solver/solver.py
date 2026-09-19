@@ -56,6 +56,67 @@ html_completo = ensamblar_calculadora_html(
 )
 resultado = {'html': html_completo}
 '''
+# ─────────────────────────────────────────────────────────────
+# Post-procesado: inyectar paso ValidarCoherencia tras EnsamblarHTML
+# ─────────────────────────────────────────────────────────────
+_PATRON_VALIDAR_COHERENCIA = re.compile(
+    r'validar.*coherencia|validar.*html.*generado|coherencia.*html',
+    re.I
+)
+
+# ⚠️ Raw string (r'''...''') para que \b y \s lleguen literales al sandbox.
+_CODIGO_VALIDAR_COHERENCIA = r'''import re
+html = ''
+# Buscar el HTML en el contexto. El paso EnsamblarHTML lo deja en 'html'.
+for clave in list(contexto.keys()):
+    valor = contexto.get(clave, {})
+    if isinstance(valor, dict) and isinstance(valor.get('html'), str):
+        html = valor['html']
+        break
+if not html:
+    raise ValueError('ValidarCoherencia: no se encontro HTML en el contexto')
+# 1) Detectar doble contenedor .calculadora
+n_calc = len(re.findall(r'class="[^"]*\bcalculadora\b[^"]*"', html))
+if n_calc > 1:
+    raise ValueError(
+        'Doble contenedor .calculadora detectado (%d ocurrencias). '
+        'El fragmento HTML no debe incluir el contenedor .calculadora; '
+        'el ensamblador ya lo anade.' % n_calc
+    )
+# 2) data-accion del HTML vs case del JS
+acciones = set(re.findall(r'data-accion="([^"]+)"', html))
+cases = set(re.findall(r"case\s+'([^']+)'", html))
+faltan = acciones - cases
+if faltan:
+    raise ValueError(
+        'Acciones del HTML sin case en el JS: %s. '
+        'Anade los case correspondientes al switch del JS.'
+        % sorted(faltan)
+    )
+# 3) Clases del HTML vs CSS
+clases_html = set()
+for c in re.findall(r'class="([^"]+)"', html):
+    clases_html.update(c.split())
+css_match = re.search(r'<style[^>]*>(.*?)</style>', html, re.S)
+if css_match:
+    clases_css = set(re.findall(r'\.([a-zA-Z][\w-]*)', css_match.group(1)))
+    # Excluir clases que se inyectan por defecto
+    ignorar = {'calculadora'}
+    huerfanas = clases_html - clases_css - ignorar
+    if huerfanas:
+        raise ValueError(
+            'Clases del HTML sin definicion en el CSS: %s. '
+            'Anade las reglas CSS correspondientes o corrige los nombres.'
+            % sorted(huerfanas)
+        )
+resultado = {
+    'valido': True,
+    'acciones_html': len(acciones),
+    'clases_html': len(clases_html),
+    'mensaje': 'Coherencia HTML/CSS/JS verificada',
+}
+'''
+
 
 from .builder import PlanBuilder
 from .code_corrector import PythonCodeCorrector
@@ -119,16 +180,21 @@ class ProblemSolver:
     @staticmethod
     def _postprocesar_plan(plan: dict) -> dict:
         """
-        Sobrescribe el código de pasos Python que ensamblan HTML por la
-        utilidad determinista `core.utils.ensamblar_html`. Evita que el LLM
-        genere código frágil para ese paso.
+        Post-procesado determinista:
+        1. Reemplaza el código de pasos Python que ensamblan HTML por
+            la utilidad `core.utils.ensamblar_html`.
+        2. Inyecta un paso `ValidarCoherencia` tras `EnsamblarHTML`
+            si el plan no lo tiene ya.
         """
         pasos = plan.get('pasos') or plan.get('steps') or []
         if not isinstance(pasos, list):
             return plan
 
         reemplazados = []
-        for paso in pasos:
+        indice_ensamblar = None
+
+        # ── Pase 1: reemplazar código de EnsamblarHTML ──
+        for i, paso in enumerate(pasos):
             if not isinstance(paso, dict):
                 continue
             if paso.get('tipo') != 'Python':
@@ -140,14 +206,52 @@ class ProblemSolver:
             config = paso.setdefault('configuracion', {})
             config['codigo'] = _CODIGO_ENSAMBLAR_HTML
             reemplazados.append(nombre)
+            indice_ensamblar = i
 
         if reemplazados:
             logger.info(
                 "Post-procesado del plan: código de ensamblado HTML reemplazado "
                 "en: %s", ', '.join(reemplazados)
             )
-        return plan
 
+        # ── Pase 2: inyectar ValidarCoherencia tras EnsamblarHTML ──
+        if indice_ensamblar is not None:
+            ya_existe = any(
+                isinstance(p, dict)
+                and _PATRON_VALIDAR_COHERENCIA.search(p.get('nombre', '') or '')
+                for p in pasos
+            )
+            if not ya_existe:
+                nombre_ensamblar = pasos[indice_ensamblar].get('nombre', 'EnsamblarHTML')
+                nuevo_paso = {
+                    'orden': pasos[indice_ensamblar].get('orden', 0) + 1,
+                    'nombre': 'ValidarCoherencia',
+                    'descripcion': (
+                        'Verifica que el HTML, CSS y JS ensamblados sean '
+                        'coherentes: data-accion con case en JS, clases del HTML '
+                        'definidas en CSS, sin doble contenedor .calculadora.'
+                    ),
+                    'tipo': 'Python',
+                    'dependencias': [nombre_ensamblar],
+                    'configuracion': {
+                        'codigo': _CODIGO_VALIDAR_COHERENCIA,
+                    },
+                    'justificacion': (
+                        'Detección temprana de incoherencias HTML/CSS/JS '
+                        'antes de escribir el archivo final.'
+                    ),
+                }
+                pasos.insert(indice_ensamblar + 1, nuevo_paso)
+                # Reasignar 'orden' a todos los pasos
+                for i, p in enumerate(pasos):
+                    if isinstance(p, dict):
+                        p['orden'] = i + 1
+                logger.info(
+                    "Post-procesado del plan: paso 'ValidarCoherencia' "
+                    "inyectado tras '%s'", nombre_ensamblar
+                )
+
+        return plan
 
 
     # ============================================================
