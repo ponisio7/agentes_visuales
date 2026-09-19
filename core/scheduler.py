@@ -1067,6 +1067,35 @@ class Scheduler(QObject):
                 duracion = resultado.get('duracion_total', 0)
                 return f"{total} items | ✅{exitos} ❌{errores} | {duracion:.1f}s"
 
+            # ── Browser ──
+            elif tipo == TipoAgente.BROWSER and isinstance(resultado, dict):
+                titulo = (resultado.get('titulo') or '')[:40]
+                url = (resultado.get('url_final') or '')[:40]
+                datos = resultado.get('datos_extraidos') or {}
+                acciones = resultado.get('acciones_ejecutadas') or []
+                ok_acciones = sum(1 for a in acciones if isinstance(a, dict) and a.get('ok'))
+                preview = f"{titulo} | {url}"
+                if datos:
+                    preview += f" | extraído: {list(datos)[:3]}"
+                if acciones:
+                    preview += f" | acciones {ok_acciones}/{len(acciones)}"
+                if resultado.get('error'):
+                    preview += f" | error: {str(resultado['error'])[:max_len]}"
+                return preview
+
+            # ── Search ──
+            elif tipo == TipoAgente.SEARCH and isinstance(resultado, dict):
+                query = (resultado.get('query') or '')[:40]
+                if resultado.get('error'):
+                    return f"'{query}' | error: {str(resultado['error'])[:max_len]}"
+                total = resultado.get('total', 0)
+                urls = [
+                    (r.get('href') or '')[:40]
+                    for r in (resultado.get('resultados') or [])[:2]
+                    if isinstance(r, dict)
+                ]
+                return f"'{query}' | {total} resultados | {urls}"
+
             # ── Python ──
             elif tipo == TipoAgente.PYTHON:
                 if isinstance(resultado, dict):
