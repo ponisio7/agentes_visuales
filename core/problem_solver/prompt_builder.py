@@ -309,7 +309,7 @@ class PromptBuilder:
         },
         "LLM": {
             "prompt": "instrucción para el modelo",
-            "modelo": "deepseek-v4-flash",
+            "modelo": "deepseek-v4-pro",
             "temperatura": 0.7,
             "max_tokens": 4000,
             "reasoning_effort": "low",

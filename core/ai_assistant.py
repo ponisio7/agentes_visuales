@@ -84,7 +84,7 @@ Campos que puedes devolver (solo los que deban cambiarse):
   "headers_http": {{}},
   "body_http": "",
   "prompt_llm": "...",
-  "modelo_llm": "deepseek-v4-flash",
+  "modelo_llm": "deepseek-v4-pro",
   "temperatura_llm": 0.7,
   "max_tokens_llm": 1000,
   "operacion_file": "leer|escribir|copiar|mover|eliminar",

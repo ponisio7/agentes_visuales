@@ -349,7 +349,7 @@ class PlanBuilder:
 
         # ── 1. Leer configuración ──
         prompt_original = config.get('prompt', '')
-        kwargs['modelo_llm'] = config.get('modelo', 'deepseek-v4-flash')
+        kwargs['modelo_llm'] = config.get('modelo', 'deepseek-v4-pro')
         kwargs['temperatura_llm'] = _a_float(config.get('temperatura'), 0.7)
 
         # Blindaje: thinking mode consume tokens
