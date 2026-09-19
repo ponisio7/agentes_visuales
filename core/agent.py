@@ -122,6 +122,8 @@ class TipoAgente(Enum):
     HTTP = "HTTP"
     FILE = "File"
     LOOP = "Loop"
+    BROWSER = "Browser"
+    SEARCH = "Search"
    
     @classmethod
     def categoria(cls, tipo: 'TipoAgente') -> str:
@@ -133,6 +135,8 @@ class TipoAgente(Enum):
             cls.HTTP: "Red",
             cls.FILE: "Archivos",
             cls.LOOP: "Estructura",
+            cls.BROWSER: "Red",
+            cls.SEARCH: "Búsqueda",
         }
         return categorias.get(tipo, "Otro")
     
@@ -146,6 +150,8 @@ class TipoAgente(Enum):
             cls.HTTP: "🌐",
             cls.FILE: "📄",
             cls.LOOP: "🔄",
+            cls.BROWSER: "🧭",
+            cls.SEARCH: "🔎",
         }
         return iconos.get(tipo, "📦")
     
@@ -358,6 +364,21 @@ class Agente:
     max_iteraciones: int = 100
     timeout_loop: int = 300
     continuar_en_error: bool = False
+
+    # ── Browser: navegación web con Playwright (Chromium) ──
+    url_browser: str = ""
+    acciones_browser: list[dict[str, Any]] = field(default_factory=list)
+    timeout_browser: int = 30            # timeout global del paso (segundos)
+    timeout_accion_browser: int = 10000  # timeout por acción (milisegundos)
+    headless_browser: bool = True
+    bloquear_recursos_browser: bool = False  # no cargar imágenes/fuentes/CSS
+    user_agent_browser: str = ""         # vacío = user-agent realista por defecto
+
+    # ── Search: búsqueda web (DuckDuckGo, sin API key) ──
+    query_search: str = ""
+    max_resultados_search: int = 5
+    region_search: str = "wt-wt"
+    timeout_search: int = 30
     
     # ============================================================
     # CAMPOS DE ESTADO (excluidos al guardar)
@@ -562,6 +583,12 @@ class Agente:
         elif self.tipo == TipoAgente.FILE:
             return self._validar_file()
         
+        elif self.tipo == TipoAgente.BROWSER:
+            return self._validar_browser()
+        
+        elif self.tipo == TipoAgente.SEARCH:
+            return self._validar_search()
+        
         return True, ""
     
     def _validar_python(self) -> tuple[bool, str]:
@@ -681,6 +708,88 @@ class Agente:
             if not valido:
                 return False, f"File: {mensaje}"
         
+        return True, ""
+
+    def _validar_browser(self) -> tuple[bool, str]:
+        """Valida configuración de Browser."""
+        if not self.url_browser or not self.url_browser.strip():
+            return False, "Browser: 'url_browser' es obligatoria"
+
+        valido, mensaje = AgenteValidator.validar_url(self.url_browser)
+        if not valido:
+            return False, f"Browser: {mensaje}"
+
+        if self.timeout_browser < 1:
+            return False, (
+                f"Browser: 'timeout_browser' debe ser >= 1 "
+                f"(actual: {self.timeout_browser})"
+            )
+
+        if self.timeout_accion_browser < 1:
+            return False, (
+                f"Browser: 'timeout_accion_browser' debe ser >= 1 ms "
+                f"(actual: {self.timeout_accion_browser})"
+            )
+
+        if not isinstance(self.acciones_browser, list):
+            return False, "Browser: 'acciones_browser' debe ser una lista"
+
+        acciones_validas = {
+            "esperar", "extraer", "click", "rellenar",
+            "scroll", "screenshot", "ejecutar_js", "navegar",
+        }
+        formatos_extraccion = {"html", "text", "attr"}
+        for i, accion in enumerate(self.acciones_browser):
+            if not isinstance(accion, dict):
+                return False, f"Browser: la acción #{i + 1} debe ser un dict"
+            tipo = accion.get("tipo")
+            if not tipo:
+                return False, f"Browser: la acción #{i + 1} no tiene 'tipo'"
+            if tipo not in acciones_validas:
+                return False, (
+                    f"Browser: acción '{tipo}' no soportada. "
+                    f"Válidas: {sorted(acciones_validas)}"
+                )
+            if tipo in ("esperar", "click", "rellenar") and not accion.get("selector"):
+                return False, f"Browser: la acción '{tipo}' requiere 'selector'"
+            if tipo == "rellenar" and "valor" not in accion:
+                return False, "Browser: la acción 'rellenar' requiere 'valor'"
+            if tipo == "navegar" and not accion.get("url"):
+                return False, "Browser: la acción 'navegar' requiere 'url'"
+            if tipo == "ejecutar_js" and not accion.get("script"):
+                return False, "Browser: la acción 'ejecutar_js' requiere 'script'"
+            if tipo == "extraer":
+                formato = accion.get("formato", "text")
+                if formato not in formatos_extraccion:
+                    return False, (
+                        f"Browser: formato de extracción '{formato}' no soportado. "
+                        f"Válidos: {sorted(formatos_extraccion)}"
+                    )
+                if formato == "attr" and not accion.get("atributo"):
+                    return False, (
+                        "Browser: la extracción con formato 'attr' requiere "
+                        "'atributo'"
+                    )
+
+        return True, ""
+
+    def _validar_search(self) -> tuple[bool, str]:
+        """Valida configuración de Search."""
+        if not self.query_search or not self.query_search.strip():
+            return False, "Search: 'query_search' es obligatoria"
+
+        if self.max_resultados_search < 1:
+            return False, (
+                f"Search: 'max_resultados_search' debe ser >= 1 "
+                f"(actual: {self.max_resultados_search})"
+            )
+
+        if self.timeout_search < 1:
+            return False, (
+                f"Search: 'timeout_search' debe ser >= 1 "
+                f"(actual: {self.timeout_search})"
+            )
+
         return True, ""
     
     def _validar_loop(self, agentes_disponibles: dict[str, 'Agente'] | None = None) -> tuple[bool, str]:
@@ -1079,6 +1188,17 @@ class Agente:
                 'max_iteraciones': 100,
                 'timeout_loop': 300,
                 'continuar_en_error': False,
+            },
+            TipoAgente.BROWSER: {
+                'timeout_browser': 30,
+                'timeout_accion_browser': 10000,
+                'headless_browser': True,
+                'bloquear_recursos_browser': False,
+            },
+            TipoAgente.SEARCH: {
+                'max_resultados_search': 5,
+                'region_search': 'wt-wt',
+                'timeout_search': 30,
             },
         }
 
