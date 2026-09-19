@@ -1,3 +1,4 @@
+from __future__ import annotations
 # core/executors/file_executor.py
 """Ejecutor de agentes File."""
 
@@ -29,6 +30,15 @@ logger = logging.getLogger(__name__)
 
 # ── Extensiones con formato de escritura especializado ──
 EXTENSIONES_ESCRITURA_ESPECIALIZADA = {".docx", ".xlsx", ".pdf", ".md", ".markdown"}
+
+# ── Extensiones que deben escribirse como TEXTO PLANO ──
+# Si el contenido llega como dict y la extensión está aquí, hay que
+# desenvolver el dict para extraer el string útil (NO serializar a JSON).
+EXTENSIONES_TEXTO_PLANO = {
+    ".html", ".htm", ".xml", ".svg", ".css", ".js",
+    ".txt", ".csv", ".tsv", ".log", ".yaml", ".yml",
+    ".toml", ".ini", ".cfg", ".conf",
+}
 
 
 def _escapar_xml(texto: str) -> str:
@@ -258,14 +268,38 @@ class FileExecutor:
                         agente, ruta_archivo, contenido, contexto, cancellation_token
                     )
 
+                extension_actual = os.path.splitext(ruta_archivo)[1].lower()
+
                 if isinstance(contenido, str):
                     contenido_str = contenido
+
+                elif isinstance(contenido, (dict, list)) and extension_actual in EXTENSIONES_TEXTO_PLANO:
+                    # ✅ FIX 3: para extensiones web/plano, desenvolver el dict
+                    # en lugar de serializar a JSON.
+                    contenido_str = cls._desenvolver_contenido_web(contenido)
+                    if contenido_str is None:
+                        claves = list(contenido.keys()) if isinstance(contenido, dict) else f'list[{len(contenido)}]'
+                        mensaje_error = (
+                            f"File.escribir: no se pudo extraer texto útil del dict/list "
+                            f"para '{ruta_archivo}'. Claves: {claves}"
+                        )
+                        logger.error(mensaje_error)
+                        cls.actualizar_progreso(agente, 100, "❌ Contrato de contenido roto")
+                        return False, mensaje_error, {
+                            "error": "no_known_text_keys",
+                            "archivo": ruta_archivo,
+                            "claves_presentes": claves,
+                        }
+
                 elif isinstance(contenido, (dict, list)):
+                    # Para .json u otras extensiones estructuradas: sí serializar a JSON
                     contenido_str = json.dumps(
                         contenido, indent=2, default=str, ensure_ascii=False
                     )
+
                 elif isinstance(contenido, (int, float, bool)):
                     contenido_str = str(contenido)
+
                 else:
                     contenido_str = str(contenido)
 
@@ -413,6 +447,80 @@ class FileExecutor:
                 'error': 'unexpected', 'archivo': ruta_archivo,
                 'operacion': operacion, 'detalle': str(e)
             }
+
+    @staticmethod
+    def _desenvolver_contenido_web(contenido: Any) -> str | None:
+        """
+        Desenvuelve un dict/list buscando la primera clave de contenido textual
+        útil para formatos web/plano. Devuelve None si no encuentra nada.
+
+        Estrategia:
+          1. Si es str, devolverlo tal cual (con intento de parseo JSON si parece JSON).
+          2. Si es dict, buscar claves conocidas de contenido web/texto.
+          3. Si es dict con UNA sola clave, devolver su valor si es str.
+          4. Si es list de strings, unirlos con saltos de línea.
+          5. Si es list de dicts, desenvolver el primero.
+          6. Si nada funciona, devolver None.
+        """
+        if isinstance(contenido, str):
+            # ✅ Si el string parece JSON, intentar desenrollarlo
+            s = contenido.strip()
+            if s.startswith('{'):
+                try:
+                    data = json.loads(s)
+                    if isinstance(data, dict):
+                        for clave in ("html", "css", "js", "svg", "xml", "contenido", "texto", "body"):
+                            if clave in data and isinstance(data[clave], str):
+                                return data[clave]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return contenido
+
+        if isinstance(contenido, dict):
+            CLAVES_WEB = (
+                # Contenido web/texto crudo
+                "html", "css", "js", "javascript", "svg", "xml",
+                "contenido", "content", "texto", "text",
+                "body", "cuerpo", "codigo", "code",
+                "source", "fuente",
+                # Respuestas de agente
+                "json", "respuesta_limpia", "respuesta", "resultado", "output",
+                "markdown", "md",
+            )
+            for clave in CLAVES_WEB:
+                if clave in contenido and contenido[clave]:
+                    valor = contenido[clave]
+                    if isinstance(valor, str):
+                        # Recursivo: si ese valor es JSON string con html dentro, desenvolverlo
+                        rec = FileExecutor._desenvolver_contenido_web(valor)
+                        # Si rec es distinto y parece haber resuelto JSON interno, preferirlo
+                        # pero si rec == valor (no era JSON), devolver valor
+                        return rec if rec is not None else valor
+                    # Anidamiento un nivel más: {"html": {"html": "..."}}
+                    anidado = FileExecutor._desenvolver_contenido_web(valor)
+                    if anidado is not None:
+                        return anidado
+
+            # Fallback: si el dict tiene UNA sola clave str, usar su valor
+            if len(contenido) == 1:
+                unico = next(iter(contenido.values()))
+                if isinstance(unico, str):
+                    return unico
+
+            return None
+
+        if isinstance(contenido, (list, tuple)):
+            # Lista de strings → unirlos con saltos de línea
+            if all(isinstance(x, str) for x in contenido):
+                return "\n".join(contenido)
+            # Lista de dicts → intentar desenvolver el primero
+            for item in contenido:
+                resultado = FileExecutor._desenvolver_contenido_web(item)
+                if resultado is not None:
+                    return resultado
+            return None
+
+        return None
 
     @staticmethod
     def _aplicar_modo_salida_file(resultado: dict, modo: str, contenido_texto: str) -> dict:
