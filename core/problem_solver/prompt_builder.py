@@ -212,16 +212,27 @@ class PromptBuilder:
             },
         },
         "Browser": {
-            "descripcion": "El executor navega la URL, ejecuta las acciones y devuelve la página final.",
+            "descripcion": (
+                "Con 'url' navega UNA página. Con 'urls_desde' navega varias "
+                "URLs de una lista del contexto y devuelve un resultado agregado."
+            ),
             "claves": {
-                "url_final": "str - URL tras redirecciones y acciones",
-                "titulo": "str - título (<title>) de la página",
-                "html": "str - HTML final de la página",
-                "texto": "str - texto visible del body",
-                "datos_extraidos": "dict - {nombre: valor} de las acciones 'extraer'/'ejecutar_js'",
-                "acciones_ejecutadas": "list - [{tipo, ok, error|detalle}]",
+                # Modo una URL
+                "url_final": "str - URL tras redirecciones y acciones (modo 'url')",
+                "titulo": "str - título (<title>) de la página (modo 'url')",
+                "html": "str - HTML final de la página (modo 'url')",
+                "texto": "str - texto visible del body (modo 'url')",
+                "datos_extraidos": "dict - {nombre: valor} de 'extraer'/'ejecutar_js' (modo 'url')",
+                "acciones_ejecutadas": "list - [{tipo, ok, error|detalle}] (modo 'url')",
                 "screenshots": "list - rutas de las capturas guardadas",
-                "html_truncado": "bool - True si 'html' se recortó por tamaño",
+                "html_truncado": "bool - True si 'html' se recortó por tamaño (modo 'url')",
+                # Modo multi-URL ('urls_desde')
+                "urls_navegadas": "int - nº de URLs procesadas (modo 'urls_desde')",
+                "resultados_por_url": (
+                    "list - [{url, titulo, datos_extraidos, acciones_ejecutadas, error}] "
+                    "(modo 'urls_desde')"
+                ),
+                "errores": "list - [{url, error}] de las URLs que fallaron (modo 'urls_desde')",
                 "error": "str|None - None si todo fue bien",
             },
         },
@@ -316,7 +327,7 @@ class PromptBuilder:
             "continuar_en_error": False,
         },
         "Browser": {
-            "url": "URL a navegar",
+            "url": "URL a navegar (una sola página)",
             "acciones": [
                 {"tipo": "esperar", "selector": "CSS", "timeout": 10000},
                 {"tipo": "extraer", "selector": "CSS", "formato": "html|text|attr",
@@ -327,6 +338,11 @@ class PromptBuilder:
                 {"tipo": "screenshot", "nombre": "captura.png", "full_page": False},
                 {"tipo": "ejecutar_js", "script": "expresión JS", "nombre": "clave"},
                 {"tipo": "navegar", "url": "URL"},
+            ],
+            "urls_desde": "NombreAgente.clave (lista de URLs; alternativa a 'url')",
+            "max_urls": 5,
+            "acciones_por_url": [
+                {"tipo": "extraer", "selector": "CSS", "nombre": "clave", "multiple": True},
             ],
             "timeout": 30,
             "timeout_accion": 10000,
@@ -393,6 +409,20 @@ class PromptBuilder:
         "idioma original. Si el texto ya está en el idioma destino, no hay nada que "
         "traducir. Asegúrate de obtener el texto en su idioma original navegando a "
         "la fuente original, no a un resumen localizado.",
+        "**NAVEGAR VARIAS URLs CON UN SOLO PASO**: Para navegar N URLs de un "
+        "`Search`, usa `urls_desde` en el Browser en lugar de un Loop. Ejemplo:\n"
+        "  tipo: Browser\n"
+        "  configuracion:\n"
+        "    urls_desde: 'Buscar.resultados'\n"
+        "    max_urls: 5\n"
+        "    acciones_por_url:\n"
+        "      - tipo: extraer\n"
+        "        selector: 'h2'\n"
+        "        nombre: elementos\n"
+        "        multiple: true\n"
+        "  NO uses un Loop para navegar: el código Python de un Loop no puede "
+        "invocar Browser. Un solo paso Browser con `urls_desde` recorre la lista "
+        "y devuelve `resultados_por_url`.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'
