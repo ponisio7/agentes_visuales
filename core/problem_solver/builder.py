@@ -476,6 +476,62 @@ class PlanBuilder:
 # Idempotente: si el prompt ya contiene el marcador, no se duplica.
 # ============================================================
 CONTRATOS_SALIDA_POR_PASO: dict[str, str] = {
+        "GenerarEstructuraHTML": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "html": "<fragmento interior del body: divs, botones, inputs... SIN <!DOCTYPE>, <html>, <head>, <body>, <style>, <script>)"\n'
+        "}\n"
+        "\n"
+        "REGLAS DE COHERENCIA (crítico):\n"
+        "- NO incluyas un <div class=\"calculadora\">: el ensamblador ya lo añade.\n"
+        "- Usa SOLO estas clases CSS (existirán en el CSS): .pantalla, .historial, "
+        ".btn, .btn-numero, .btn-operador, .btn-cientifico, .btn-control, .btn-memoria.\n"
+        "- Usa SOLO estos data-accion (existirán como case en el JS): "
+        "clear, clearEntry, backspace, equals, sin, cos, tan, asin, acos, atan, "
+        "log, ln, sqrt, x2, xy, inv, factorial, modo, mc, mr, m+, m-.\n"
+        "- Para los dígitos y operadores básicos usa data-valor con el carácter: "
+        "0-9, ., +, -, *, /, (, ).\n"
+        "\n"
+        "Nombres canónicos OBLIGATORIOS:\n"
+        "  - Pantalla: <div id=\"pantalla\" class=\"pantalla\">0</div>\n"
+        "  - Botones: class=\"btn btn-numero\" / \"btn btn-operador\" / "
+        "\"btn btn-cientifico\" / \"btn btn-control\" / \"btn btn-memoria\"\n"
+        "Solo el contenido interior. Sin markdown fences, sin texto adicional.\n"
+    ),
+    "GenerarCSS": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "css": "/* CSS puro sin <style> */ .calculadora { ... } .pantalla { ... } .btn { ... } ..."\n'
+        "}\n"
+        "\n"
+        "REGLAS DE COHERENCIA (crítico):\n"
+        "- El CSS DEBE definir TODAS estas clases que el HTML usará:\n"
+        "  .calculadora, .pantalla, .historial, .btn, .btn-numero, .btn-operador, "
+        ".btn-cientifico, .btn-control, .btn-memoria\n"
+        "- NO definas clases que el HTML no vaya a usar.\n"
+        "- Define también el layout del grid o flex para los botones.\n"
+        "SOLO CSS puro, SIN etiquetas <style>. Sin markdown fences.\n"
+    ),
+    "GenerarJS": (
+        "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
+        "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
+        "{\n"
+        ' "js": "// JavaScript puro con null/true/false (NO None/True/False) ... "\n'
+        "}\n"
+        "\n"
+        "REGLAS DE COHERENCIA (crítico):\n"
+        "- Usa SIEMPRE sintaxis JavaScript pura: null, true, false, ===, !==. "
+        "NUNCA None, True, False de Python.\n"
+        "- El switch DEBE tener un `case` para CADA `data-accion` del HTML:\n"
+        "  clear, clearEntry, backspace, equals, sin, cos, tan, asin, acos, atan, "
+        "log, ln, sqrt, x2, xy, inv, factorial, modo, mc, mr, m+, m-.\n"
+        "- El id de la pantalla es `pantalla`. Usa document.getElementById('pantalla').\n"
+        "- Los botones están dentro de un contenedor con clase .calculadora.\n"
+        "  Selecciona con document.querySelector('.calculadora') y delega con click.\n"
+        "SOLO JavaScript puro, SIN etiquetas <script>. Sin markdown fences.\n"
+    ),
     "GenerarCuento": (
         "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"
         "Devuelve EXCLUSIVAMENTE un JSON válido con esta forma exacta:\n"
