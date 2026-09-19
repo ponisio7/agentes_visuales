@@ -509,9 +509,10 @@ class FileExecutor:
           1. Si es str, devolverlo tal cual (con intento de parseo JSON si parece JSON).
           2. Si es dict, buscar claves conocidas de contenido web/texto.
           3. Si es dict con UNA sola clave, devolver su valor si es str.
-          4. Si es list de strings, unirlos con saltos de línea.
-          5. Si es list de dicts, desenvolver el primero.
-          6. Si nada funciona, devolver None.
+          4. Si es dict con alguna lista de strings, unir la primera.
+          5. Si es list de strings, unirlos con saltos de línea.
+          6. Si es list de dicts, desenvolver el primero.
+          7. Si nada funciona, devolver None.
         """
         if isinstance(contenido, str):
             # ✅ Si el string parece JSON, intentar desenrollarlo
@@ -557,6 +558,18 @@ class FileExecutor:
                 unico = next(iter(contenido.values()))
                 if isinstance(unico, str):
                     return unico
+
+            # ✅ Fallback genérico: si el dict contiene listas de strings
+            # (p. ej. {'titulares': ['a', 'b'], 'total': 2}), unir la primera
+            # con saltos de línea. No se conocen claves concretas: vale
+            # cualquier lista de strings.
+            listas_de_strings = [
+                v for v in contenido.values()
+                if isinstance(v, list) and v
+                and all(isinstance(x, str) for x in v)
+            ]
+            if listas_de_strings:
+                return "\n".join(listas_de_strings[0])
 
             return None
 
