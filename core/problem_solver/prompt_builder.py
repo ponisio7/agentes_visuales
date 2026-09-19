@@ -308,6 +308,11 @@ class PromptBuilder:
         ".xml), el paso File de escritura DEBE usar esa extensión en "
         "'archivo_destino'. NUNCA uses nombres genéricos como 'salida.txt', "
         "'output.txt' o 'resultado.txt' si el problema especifica un formato.",
+        "**CUBRE TODOS LOS REQUISITOS EXPLÍCITOS**: Si el problema menciona "
+        "requisitos explícitos (N elementos, formato concreto, características "
+        "específicas), asegúrate de que el plan incluye pasos para cumplirlos. "
+        "Antes de responder, repasa el enunciado y comprueba que cada requisito "
+        "tiene al menos un paso que lo produce.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'
