@@ -29,97 +29,6 @@ import time
 
 from core.llm_client import LLMClient
 
-# ─────────────────────────────────────────────────────────────
-# Post-procesado del plan: reemplazo determinista de pasos
-# Python que ensamblan HTML por la utilidad del proyecto.
-# ─────────────────────────────────────────────────────────────
-_PATRON_ENSAMBLAR_HTML = re.compile(r'ensambl.*html|construir.*html|combinar.*html', re.I)
-
-_CODIGO_ENSAMBLAR_HTML = '''from core.utils.ensamblar_html import ensamblar_calculadora_html
-
-# Detectar las claves de los pasos previos por nombre.
-_nombres = list(contexto.keys())
-_html_key = next((n for n in _nombres if 'estructura' in n.lower() or 'html' in n.lower() and 'ensambl' not in n.lower()), None)
-_css_key = next((n for n in _nombres if 'css' in n.lower() or 'estilo' in n.lower()), None)
-_js_key = next((n for n in _nombres if 'js' in n.lower() or 'javascript' in n.lower() or 'script' in n.lower()), None)
-
-if not _html_key or not _css_key or not _js_key:
-    raise ValueError(
-        'EnsamblarHTML: no se pudieron identificar las claves de las partes. '
-        'Claves del contexto: %s' % _nombres
-    )
-
-html_completo = ensamblar_calculadora_html(
-    contexto.get(_html_key, {}),
-    contexto.get(_css_key, {}),
-    contexto.get(_js_key, {}),
-)
-resultado = {'html': html_completo}
-'''
-# ─────────────────────────────────────────────────────────────
-# Post-procesado: inyectar paso ValidarCoherencia tras EnsamblarHTML
-# ─────────────────────────────────────────────────────────────
-_PATRON_VALIDAR_COHERENCIA = re.compile(
-    r'validar.*coherencia|validar.*html.*generado|coherencia.*html',
-    re.I
-)
-
-# ⚠️ Raw string (r'''...''') para que \b y \s lleguen literales al sandbox.
-_CODIGO_VALIDAR_COHERENCIA = r'''import re
-html = ''
-# Buscar el HTML en el contexto. El paso EnsamblarHTML lo deja en 'html'.
-for clave in list(contexto.keys()):
-    valor = contexto.get(clave, {})
-    if isinstance(valor, dict) and isinstance(valor.get('html'), str):
-        html = valor['html']
-        break
-if not html:
-    raise ValueError('ValidarCoherencia: no se encontro HTML en el contexto')
-# 1) Detectar doble contenedor .calculadora
-n_calc = len(re.findall(r'class="[^"]*\bcalculadora\b[^"]*"', html))
-if n_calc > 1:
-    raise ValueError(
-        'Doble contenedor .calculadora detectado (%d ocurrencias). '
-        'El fragmento HTML no debe incluir el contenedor .calculadora; '
-        'el ensamblador ya lo anade.' % n_calc
-    )
-# 2) data-accion del HTML vs case del JS
-acciones = set(re.findall(r'data-accion="([^"]+)"', html))
-cases = set(re.findall(r"case\s+'([^']+)'", html))
-faltan = acciones - cases
-if faltan:
-    raise ValueError(
-        'Acciones del HTML sin case en el JS: %s. '
-        'Cases definidos en el JS: %s. '
-        'Anade los case correspondientes al switch del JS.'
-        % (sorted(faltan), sorted(cases))
-    )
-# 3) Clases del HTML vs CSS
-clases_html = set()
-for c in re.findall(r'class="([^"]+)"', html):
-    clases_html.update(c.split())
-css_match = re.search(r'<style[^>]*>(.*?)</style>', html, re.S)
-if css_match:
-    clases_css = set(re.findall(r'\.([a-zA-Z][\w-]*)', css_match.group(1)))
-    # Excluir clases que se inyectan por defecto
-    ignorar = {'calculadora'}
-    huerfanas = clases_html - clases_css - ignorar
-    if huerfanas:
-        raise ValueError(
-            'Clases del HTML sin definicion en el CSS: %s. '
-            'Clases definidas en el CSS: %s. '
-            'Anade las reglas CSS correspondientes o corrige los nombres '
-            'en el HTML.' % (sorted(huerfanas), sorted(clases_css))
-        )
-resultado = {
-    'valido': True,
-    'acciones_html': len(acciones),
-    'clases_html': len(clases_html),
-    'mensaje': 'Coherencia HTML/CSS/JS verificada',
-}
-'''
-
-
 from .builder import PlanBuilder
 from .code_corrector import PythonCodeCorrector
 from .constants import PlanComplexity
@@ -179,97 +88,6 @@ class ProblemSolver:
 
         self.logger.info("ProblemSolver inicializado correctamente")
 
-    @staticmethod
-    def _postprocesar_plan(plan: dict) -> dict:
-        """
-        Post-procesado determinista:
-        1. Reemplaza el código de pasos Python que ensamblan HTML por
-            la utilidad `core.utils.ensamblar_html`.
-        2. Inyecta un paso `ValidarCoherencia` tras `EnsamblarHTML`
-            si el plan no lo tiene ya.
-        """
-        pasos = plan.get('pasos') or plan.get('steps') or []
-        if not isinstance(pasos, list):
-            return plan
-
-        reemplazados = []
-        indice_ensamblar = None
-
-        # ── Pase 1: reemplazar código de EnsamblarHTML ──
-        for i, paso in enumerate(pasos):
-            if not isinstance(paso, dict):
-                continue
-            if paso.get('tipo') != 'Python':
-                continue
-            nombre = paso.get('nombre', '') or ''
-            if not _PATRON_ENSAMBLAR_HTML.search(nombre):
-                continue
-
-            config = paso.setdefault('configuracion', {})
-            config['codigo'] = _CODIGO_ENSAMBLAR_HTML
-            reemplazados.append(nombre)
-            indice_ensamblar = i
-
-        if reemplazados:
-            logger.info(
-                "Post-procesado del plan: código de ensamblado HTML reemplazado "
-                "en: %s", ', '.join(reemplazados)
-            )
-
-        # ── Pase 2: inyectar ValidarCoherencia tras EnsamblarHTML ──
-        if indice_ensamblar is not None:
-            ya_existe = any(
-                isinstance(p, dict)
-                and _PATRON_VALIDAR_COHERENCIA.search(p.get('nombre', '') or '')
-                for p in pasos
-            )
-            if not ya_existe:
-                nombre_ensamblar = pasos[indice_ensamblar].get('nombre', 'EnsamblarHTML')
-                nuevo_paso = {
-                    'orden': pasos[indice_ensamblar].get('orden', 0) + 1,
-                    'nombre': 'ValidarCoherencia',
-                    'descripcion': (
-                        'Verifica que el HTML, CSS y JS ensamblados sean '
-                        'coherentes: data-accion con case en JS, clases del HTML '
-                        'definidas en CSS, sin doble contenedor .calculadora.'
-                    ),
-                    'tipo': 'Python',
-                    'dependencias': [nombre_ensamblar],
-                    'configuracion': {
-                        'codigo': _CODIGO_VALIDAR_COHERENCIA,
-                    },
-                    'justificacion': (
-                        'Detección temprana de incoherencias HTML/CSS/JS '
-                        'antes de escribir el archivo final.'
-                    ),
-                }
-                pasos.insert(indice_ensamblar + 1, nuevo_paso)
-                # Reasignar 'orden' a todos los pasos
-                for i, p in enumerate(pasos):
-                    if isinstance(p, dict):
-                        p['orden'] = i + 1
-
-                # ✅ FIX F.1: hacer que EscribirArchivoHTML dependa de ValidarCoherencia
-                for p in pasos:
-                    if not isinstance(p, dict):
-                        continue
-                    if p.get('tipo') != 'File':
-                        continue
-                    if p.get('configuracion', {}).get('operacion') != 'escribir':
-                        continue
-                    # Añadir ValidarCoherencia como dependencia si no está
-                    deps = p.setdefault('dependencias', [])
-                    if 'ValidarCoherencia' not in deps:
-                        deps.append('ValidarCoherencia')
-
-                logger.info(
-                    "Post-procesado del plan: paso 'ValidarCoherencia' "
-                    "inyectado tras '%s'", nombre_ensamblar
-                )
-
-        return plan
-
-
     # ============================================================
     # API PÚBLICA
     # ============================================================
@@ -323,9 +141,6 @@ class ProblemSolver:
 
         # 2. Consultar al LLM
         plan_dict = self._consultar_llm_con_reintentos(user_prompt)
-
-        # 2.1 ✅ Post-procesado determinista del plan (ensamblar HTML)
-        plan_dict = self._postprocesar_plan(plan_dict)
 
         # 3. Normalizar nombres de archivos
         plan_dict = self.file_normalizer.normalizar(plan_dict)
