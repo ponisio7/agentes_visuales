@@ -34,8 +34,9 @@ def get_rate_limiter() -> RateLimiter:
 # TROCEADO DE PROMPTS GRANDES Y FUSIÓN DE RESPUESTAS
 # ============================================================
 
-# A partir de este tamaño, el prompt se manda en varias llamadas.
-MAX_PROMPT_CHARS = 24000
+# A partir de este tamaño, el prompt se manda en varias llamadas. El límite
+# real es la salida del modelo: traducir ~20k chars no cabe en max_tokens.
+MAX_PROMPT_CHARS = 12000
 # Tiempo máximo de cada llamada: crece con el tamaño del prompt.
 TIMEOUT_MIN = 60
 TIMEOUT_MAX = 300
