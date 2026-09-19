@@ -379,6 +379,20 @@ class PromptBuilder:
         "  - Si la URL devuelve HTML (una página web), usa Browser.\n"
         "  - Si no sabes si devuelve JSON o HTML, usa Browser (siempre funciona).\n"
         "  - NUNCA hagas json.loads() sobre el body de una URL que devuelve HTML.",
+        "**PATRÓN PARA BUSCAR Y EXTRAER DATOS DE LA WEB**:\n"
+        "  - Si necesitas información actual de la web, sigue este patrón:\n"
+        "    1. `Search` para descubrir URLs relevantes.\n"
+        "    2. `Browser` para navegar a esas URLs y extraer el contenido REAL "
+        "(títulos, párrafos, tablas, etc.).\n"
+        "    3. `LLM` si necesitas traducir, resumir o estructurar el contenido.\n"
+        "    4. `File` para guardar el resultado.\n"
+        "  - Los snippets de `Search` son SOLO pistas (título + descripción corta "
+        "del buscador). NO son el contenido real. Para obtener el contenido real, "
+        "navega a la URL con `Browser`.\n"
+        "  - Si el problema pide 'traducir', el texto a traducir DEBE estar en el "
+        "idioma original. Si el texto ya está en el idioma destino, no hay nada que "
+        "traducir. Asegúrate de obtener el texto en su idioma original navegando a "
+        "la fuente original, no a un resumen localizado.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'
