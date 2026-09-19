@@ -43,13 +43,26 @@ _CLAVES_CONTENIDO_PRIORITARIAS = (
 
 _MAX_PROFUNDIDAD_EXTRACCION = 5
 
-# Claves que indican "este dict es una estructura de documento completa".
-# Si alguna está presente, devolvemos el dict entero sin extraer una sola clave.
+# ✅ FIX 1: separamos "estructura de documento" de "contenido crudo".
+# Antes, 'html' y 'markdown' estaban en _CLAVES_ESTRUCTURA_DOCUMENTO,
+# lo que impedía desenvolver {'html': '...'} y producía JSON basura
+# en los archivos .html.
+
+# Claves que indican "este dict ES un documento estructurado" (no desenvolver).
 _CLAVES_ESTRUCTURA_DOCUMENTO = (
     'titulo', 'title',
-    'cuento', 'texto', 'contenido', 'informe', 'articulo',
-    'html', 'markdown', 'body',
+    'cuento', 'informe', 'articulo',
     'imagenes', 'images',
+    'secciones', 'sections', 'partes',
+)
+
+# Claves que contienen CONTENIDO CRUDO (un string que ES el output).
+_CLAVES_CONTENIDO_CRUDO = (
+    'html', 'markdown', 'md', 'svg', 'xml',
+    'contenido', 'content',
+    'texto', 'text', 'body', 'cuerpo',
+    'respuesta_limpia', 'respuesta',
+    'codigo', 'code', 'source', 'fuente',
 )
 
 
@@ -79,9 +92,17 @@ def extraer_contenido_relevante(
     if not isinstance(valor, dict):
         return str(valor)
 
-    # Si el dict contiene una clave de "estructura de documento",
-    # NO extraemos una sola clave: devolvemos el dict entero.
-    if any(clave in valor for clave in _CLAVES_ESTRUCTURA_DOCUMENTO):
+    # ✅ FIX 1: la condición de "documento completo" ahora exige que
+    # NO haya contenido crudo con valor. Antes bastaba con que
+    # existiera 'html' para devolver el dict entero.
+    tiene_estructura = any(
+        clave in valor for clave in _CLAVES_ESTRUCTURA_DOCUMENTO
+    )
+    tiene_contenido_crudo = any(
+        clave in valor and valor[clave] not in (None, '', [], {})
+        for clave in _CLAVES_CONTENIDO_CRUDO
+    )
+    if tiene_estructura and not tiene_contenido_crudo:
         return valor
 
     if _visitados is None:
@@ -91,9 +112,8 @@ def extraer_contenido_relevante(
         return valor
     _visitados.add(valor_id)
 
-    # Si hay MÚLTIPLES claves prioritarias con contenido útil
-    # (por ejemplo {"cuento": ..., "imagenes": [...]}), no nos quedamos
-    # con una sola: devolvemos el dict ENTERO para no perder información.
+    # Si hay MÚLTIPLES claves prioritarias con contenido útil,
+    # devolvemos el dict ENTERO para no perder información.
     claves_utiles = [
         clave for clave in _CLAVES_CONTENIDO_PRIORITARIAS
         if clave in valor and valor[clave] not in (None, '', [], {})
@@ -170,7 +190,7 @@ def variables_disponibles(agente: Agente, contexto: dict) -> dict[str, str]:
         else:
             variables[clave] = str(valor_extraido)
 
-        # ✅ NUEVO: aplanar claves anidadas
+        # Aplanar claves anidadas
         if isinstance(valor, dict):
             for subclave, subvalor in valor.items():
                 clave_compuesta = f"{clave}.{subclave}"
@@ -196,11 +216,7 @@ def sustituir_variables(texto: str, variables: dict[str, str]) -> str:
 
 
 def sustituir_variables_shell(texto: str, variables: dict[str, str]) -> str:
-    """Como ``sustituir_variables`` pero cita cada valor con ``shlex.quote``.
-
-    Pensada para comandos que se ejecutan con ``shell=True``: evita que el
-    contenido de un agente previo o del LLM inyecte comandos adicionales.
-    """
+    """Como ``sustituir_variables`` pero cita cada valor con ``shlex.quote``."""
     if not texto or "{" not in texto or not variables:
         return texto
     import re as _re
@@ -264,33 +280,15 @@ def extraer_primer_comando(comando: str) -> str | None:
 
 
 def comando_requiere_root(comando: str) -> bool:
-    """
-    Detecta si un comando shell requiere privilegios de root.
-
-    En lugar de analizar solo el primer comando real (frágil con
-    estructuras de control como `if ... then ... fi`), busca CUALQUIER
-    comando privilegiado dentro del comando completo.
-
-    Esto es conservador: si hay alguna duda de si un comando requiere
-    root, devuelve True y se aplicará pkexec. Falso positivo: pide la
-    contraseña de más. Falso negativo: el comando falla por permisos.
-
-    Args:
-        comando: Comando shell (puede tener múltiples subcomandos).
-
-    Returns:
-        bool: True si algún subcomando requiere root.
-    """
+    """Detecta si un comando shell requiere privilegios de root."""
     if not comando:
         return False
 
     comando_stripped = comando.strip()
 
-    # Si ya tiene elevación explícita, no hay que añadir pkexec
     if comando_stripped.startswith(('sudo ', 'pkexec ', 'doas ')):
         return False
 
-    # Parsear tokens
     try:
         tokens = shlex.split(comando_stripped)
     except ValueError:
@@ -307,30 +305,18 @@ def comando_requiere_root(comando: str) -> bool:
     for token in tokens:
         if not token:
             continue
-
-        # Saltar operadores de shell
         if token in ('&&', '||', '|', ';', '&', '(', ')', '{', '}'):
             continue
-
-        # Saltar flags (-y, --yes, etc.)
         if token.startswith('-'):
             continue
-
-        # Saltar redirecciones y tokens con caracteres especiales de shell
         if any(c in token for c in ('>', '<', '`')):
             continue
-
-        # Saltar asignaciones de variables de entorno (VAR=valor)
         if '=' in token and not token.startswith('/'):
             izq, _, _ = token.partition('=')
             if izq.isidentifier():
                 continue
-
-        # Saltar palabras reservadas de shell
         if token in PALABRAS_RESERVADAS:
             continue
-
-        # ¿El token (sin path) es un comando privilegiado?
         base = os.path.basename(token)
         if base in COMANDOS_PRIVILEGIADOS:
             return True
