@@ -24,9 +24,38 @@ el monolito.
 import json
 import logging
 import os
+import re
 import time
 
 from core.llm_client import LLMClient
+
+# ─────────────────────────────────────────────────────────────
+# Post-procesado del plan: reemplazo determinista de pasos
+# Python que ensamblan HTML por la utilidad del proyecto.
+# ─────────────────────────────────────────────────────────────
+_PATRON_ENSAMBLAR_HTML = re.compile(r'ensambl.*html|construir.*html|combinar.*html', re.I)
+
+_CODIGO_ENSAMBLAR_HTML = '''from core.utils.ensamblar_html import ensamblar_calculadora_html
+
+# Detectar las claves de los pasos previos por nombre.
+_nombres = list(contexto.keys())
+_html_key = next((n for n in _nombres if 'estructura' in n.lower() or 'html' in n.lower() and 'ensambl' not in n.lower()), None)
+_css_key = next((n for n in _nombres if 'css' in n.lower() or 'estilo' in n.lower()), None)
+_js_key = next((n for n in _nombres if 'js' in n.lower() or 'javascript' in n.lower() or 'script' in n.lower()), None)
+
+if not _html_key or not _css_key or not _js_key:
+    raise ValueError(
+        'EnsamblarHTML: no se pudieron identificar las claves de las partes. '
+        'Claves del contexto: %s' % _nombres
+    )
+
+html_completo = ensamblar_calculadora_html(
+    contexto.get(_html_key, {}),
+    contexto.get(_css_key, {}),
+    contexto.get(_js_key, {}),
+)
+resultado = {'html': html_completo}
+'''
 
 from .builder import PlanBuilder
 from .code_corrector import PythonCodeCorrector
@@ -87,6 +116,40 @@ class ProblemSolver:
 
         self.logger.info("ProblemSolver inicializado correctamente")
 
+    @staticmethod
+    def _postprocesar_plan(plan: dict) -> dict:
+        """
+        Sobrescribe el código de pasos Python que ensamblan HTML por la
+        utilidad determinista `core.utils.ensamblar_html`. Evita que el LLM
+        genere código frágil para ese paso.
+        """
+        pasos = plan.get('pasos') or plan.get('steps') or []
+        if not isinstance(pasos, list):
+            return plan
+
+        reemplazados = []
+        for paso in pasos:
+            if not isinstance(paso, dict):
+                continue
+            if paso.get('tipo') != 'Python':
+                continue
+            nombre = paso.get('nombre', '') or ''
+            if not _PATRON_ENSAMBLAR_HTML.search(nombre):
+                continue
+
+            config = paso.setdefault('configuracion', {})
+            config['codigo'] = _CODIGO_ENSAMBLAR_HTML
+            reemplazados.append(nombre)
+
+        if reemplazados:
+            logger.info(
+                "Post-procesado del plan: código de ensamblado HTML reemplazado "
+                "en: %s", ', '.join(reemplazados)
+            )
+        return plan
+
+
+
     # ============================================================
     # API PÚBLICA
     # ============================================================
@@ -140,6 +203,9 @@ class ProblemSolver:
 
         # 2. Consultar al LLM
         plan_dict = self._consultar_llm_con_reintentos(user_prompt)
+
+        # 2.1 ✅ Post-procesado determinista del plan (ensamblar HTML)
+        plan_dict = self._postprocesar_plan(plan_dict)
 
         # 3. Normalizar nombres de archivos
         plan_dict = self.file_normalizer.normalizar(plan_dict)
