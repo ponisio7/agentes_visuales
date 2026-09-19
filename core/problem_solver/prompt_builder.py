@@ -14,36 +14,6 @@ class PromptBuilder:
     """
     Construye prompts para el LLM de forma modular y configurable.
     """
-    DOCX_IMAGE_RULES = [
-        "**REGLA OBLIGATORIA**: Si el usuario pide un documento con imágenes "
-        "(menciona 'imágenes', 'ilustraciones', 'con imágenes', 'con dibujos', "
-        "'con N imágenes', etc.), DEBES incluir en el plan TODOS estos pasos. "
-        "NO basta con generar solo el texto del documento.",
-
-        "**ESTRUCTURA OBLIGATORIA** para 'cuento con N imágenes':",
-        "  1. `GenerarCuento` (LLM): produce el cuento Y N descripciones de imágenes.",
-        "     `resultado = {'cuento': '...', 'descripciones_imagenes': ['desc1', 'desc2', ...]}`",
-        "  2. `GenerarURLs` (Python, depende de GenerarCuento): genera N URLs de imágenes.",
-        "     El código debe ser EXACTAMENTE:",
-        "     `resultado = {'urls': [f'https://picsum.photos/800/600?random={i}' for i in range(N)]}`",
-        "     (donde N es el número de imágenes que pidió el usuario).",
-        "  3. `PrepararDocumento` (Python, depende de GenerarCuento y GenerarURLs):",
-        "     combina el cuento con las URLs y descripciones.",
-        "     `resultado = {'titulo': '...', 'cuento': '...', 'imagenes': [{'url': u, 'descripcion': d} for u, d in zip(urls, descripciones)]}`",
-        "  4. `EscribirDOCX` (File, depende de PrepararDocumento): escribe el .docx.",
-        "     `configuracion = {'operacion': 'escribir', 'archivo_destino': '<nombre>.docx'}`",
-
-        "**PROHIBIDO USAR placehold.co**: genera imágenes grises de relleno. "
-        "Para imágenes reales usa `https://picsum.photos/800/600?random=N` (público, sin auth).",
-
-        "**NO HAGAS DESCARGA HTTP DENTRO DE UN AGENTE Python/Loop**: el sandbox no "
-        "tiene red fiable y los timeouts son cortos. El agente `File` de DOCX es "
-        "quien descarga las imágenes si le pasas URLs en 'imagenes'.",
-
-        "**NO INVENTES APIs CON AUTH**: no uses `api.unsplash.com` ni otras APIs "
-        "que requieren API key. Usa solo APIs públicas sin autenticación.",
-    ]
-
     # Reglas para generación de código Python
     PYTHON_RULES = [
         "**CONTRATO DE SALIDA LLM — CÓMO LEERLO**: El resultado de un agente LLM NO es la respuesta directa. Es un dict con:",
@@ -93,10 +63,6 @@ class PromptBuilder:
         "  - ✅ CORRECTO: `entrada = contexto.get('GenerarListaItems', {})`",
         "  - Esto es CRÍTICO: los nombres de agentes NO existen como variables",
         "    en el sandbox. Solo existen dentro del dict `contexto`.",
-        "**GENERACIÓN DE HTML**: Si el problema requiere generar una página web, el agente "
-        "final DEBE devolver `resultado = {'html': '<!DOCTYPE html>...'}`. "
-        "El HTML va dentro de un dict con la clave EXACTA `html`, nunca como string suelto.",
-        "**GENERACIÓN DE MARKDOWN**: Análogo, `resultado = {'markdown': '# Título\\n...'}`.",
         "**EJEMPLO CORRECTO**:",
         "  ```python",
         "  datos_http = contexto.get('ConsultarClima', {})",
@@ -337,29 +303,6 @@ class PromptBuilder:
         "hacer N peticiones HTTP, usa un agente Loop con `continuar_en_error=true` "
         "y un timeout por item. NO hagas un bucle implícito dentro de un "
         "agente Python: bloqueará el sandbox.",
-        # ✅ Fix 4: forzar pasos separados para HTML/CSS/JS
-        "**REGLA ESTRICTA PARA PROBLEMAS QUE GENEREN HTML+CSS+JS**:",
-        "  Si el problema pide una calculadora, un juego, un formulario, o "
-        "cualquier página HTML que requiera CSS y/o JS, el plan DEBE separar "
-        "el trabajo en estos pasos:",
-        "  1. `GenerarEstructuraHTML` (LLM): devuelve SOLO el fragmento interno "
-        "     del body (divs, botones, etc.), SIN `<!DOCTYPE>`, `<html>`, `<head>`, "
-        "     `<body>`, `<style>` ni `<script>`. Solo el contenido interior.",
-        "  2. `GenerarCSS` (LLM, **depende de `GenerarEstructuraHTML`**): "
-        "     devuelve SOLO el CSS. Recibirás el HTML en el contexto: léelo y "
-        "     define TODAS las clases que aparezcan en él.",
-        "  3. `GenerarJS` (LLM): devuelve SOLO el JavaScript, SIN etiquetas `<script>`.",
-        "     Usa SIEMPRE sintaxis JavaScript pura: `null`, `true`, `false` "
-        "     (NO `None`, `True`, `False` de Python).",
-        "  4. `EnsamblarHTML` (Python): une los tres fragmentos anteriores. "
-        "     El sistema REEMPLAZARÁ automáticamente tu código de este paso por "
-        "     una llamada a `core.utils.ensamblar_html.ensamblar_calculadora_html`. "
-        "     Puedes poner cualquier cosa en `codigo`; se ignorará.",
-        "  5. `EscribirArchivoHTML` (File, depende de EnsamblarHTML): escribe el archivo.",
-        "  6. `VerificarArchivo` (Python, depende de EscribirArchivoHTML): valida el archivo.",
-        "",
-        "  ⚠ **NUNCA generes el HTML completo en un solo paso LLM**. Es un error.",
-        "  ⚠ **NUNCA generes un paso Python que ensamble HTML a mano**. Usa `EnsamblarHTML`.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'
@@ -371,44 +314,6 @@ class PromptBuilder:
         "**NUNCA** añadas sintaxis de plantilla como '{{Dependencia.clave}}' en "
         "los valores de 'configuracion': el sistema resuelve dependencias "
         "automáticamente en tiempo de ejecución.",
-    ]
-
-    # ✅ NUEVO: Reglas anti "formato binario a mano" (PDF, DOCX, XLSX, etc.)
-    # Evita que el LLM genere estos formatos concatenando bytes/strings en
-    # Python: un PDF tiene offsets de xref, longitudes de stream y checksums
-    # que el LLM no calcula bien, y el resultado es un archivo corrupto o
-    # un "doble PDF" cuando ese texto se pasa después a un agente File.
-    BINARY_FORMAT_RULES = [
-        "**NUNCA** generes un PDF, .docx o .xlsx 'a mano' concatenando bytes "
-        "o strings en un agente Python (ej: `contenido = '%PDF-1.4\\n...'`). "
-        "Es prácticamente imposible acertar con los offsets de xref, las "
-        "longitudes de stream y los checksums exactos que exige el formato.",
-        "**Patrón CORRECTO** para generar un documento (PDF, Word, etc.): "
-        "1) un agente Python o LLM genera el CONTENIDO como texto plano o "
-        "Markdown (`resultado = {'contenido': 'Hola mundo'}`); 2) un agente "
-        "File con `operacion: \"escribir\"` y `archivo_destino` con la "
-        "extensión correcta recibe ese texto: el sistema hace la conversión "
-        "real al formato binario según la extensión.",
-        "**NUNCA** pases a un agente File un contenido que YA es un PDF/DOCX "
-        "'a mano' (empieza por `%PDF-` o similar): el agente File lo tratará "
-        "como texto plano y lo envolverá en un documento nuevo, produciendo "
-        "un archivo corrupto o inútil.",
-        "**LIBRERÍAS DE PDF DISPONIBLES**: si necesitas generar un PDF "
-        "directamente en Python (caso excepcional), usa `reportlab` (ya "
-        "instalada). NO uses `fpdf` ni `weasyprint` ni `pdfkit`: no están "
-        "disponibles en este entorno.",
-        "**PARA .xlsx**: el resultado DEBE ser DIRECTAMENTE una lista de dicts "
-        "(una entrada por fila, claves = cabeceras) o una lista de listas "
-        "(primera fila = cabeceras). Ejemplo:",
-        "```python",
-        "resultado = {'filas': [",
-        "    {'Categoria': 'Vivienda', 'Monto': 850.0, 'Porcentaje': 34.69},",
-        "    {'Categoria': 'Alimentacion', 'Monto': 420.0, 'Porcentaje': 17.14},",
-        "]}",
-        "```",
-        "⚠️ IMPORTANTE: si envuelves la lista en un dict con la clave 'filas', "
-        "el sistema la expandirá automáticamente. NO serialices la lista a JSON string.",
-        
     ]
 
     @classmethod
@@ -424,7 +329,7 @@ class PromptBuilder:
           - Reglas específicas para Python
           - Reglas específicas para Shell (privilegios)
           - Contratos de salida de cada tipo (claves exactas)
-          - Contratos de HTML/Markdown y cruce de datos
+          - Contrato genérico de cruce de datos
           - Instrucción de formato JSON estricta
         """
         # ── 1. Descripción de tipos de agentes ──
@@ -449,26 +354,11 @@ class PromptBuilder:
         field_rules = "\n".join(
             f"{i+1}. {rule}" for i, rule in enumerate(cls.FIELD_RULES)
         )
-        binary_format_rules = "\n".join(
-            f"  - {rule}" for rule in cls.BINARY_FORMAT_RULES
-        )
-        docx_image_rules = "\n".join(f"  - {rule}" for rule in cls.DOCX_IMAGE_RULES)
         # ── 4. Contratos de salida por tipo (claves exactas) ──
         contratos = cls._formatear_contratos()
 
-        # ── 5. Contratos específicos HTML/Markdown y cruce de datos ──
-        contrato_html = """
-## ⚠️ CONTRATO DE SALIDA PARA HTML / MARKDOWN ⚠️
-
-Si el problema requiere generar una página HTML o un documento Markdown:
-- El agente generador DEBE devolver: `resultado = {"html": "<!DOCTYPE html>..."}`
-  (o `{"markdown": "# Título..."}` según corresponda)
-- NO devuelvas el HTML/Markdown como string suelto: SIEMPRE dentro de un dict
-  con clave EXACTA `html` o `markdown`.
-- NO añadas claves adicionales al dict de resultado de HTML/Markdown.
-- El agente File que escribe el archivo recibirá ese dict y extraerá el string
-  automáticamente; tú solo preocúpate por entregarlo con la clave correcta.
-
+        # ── 5. Contrato genérico de cruce de datos entre agentes ──
+        contrato_cruce_datos = """
 ## ⚠️ CONTRATO DE CRUCE DE DATOS ENTRE AGENTES ⚠️
 
 Cuando dos agentes producen listas paralelas que deben unirse:
@@ -497,14 +387,6 @@ Tu trabajo es analizar un problema complejo y descomponerlo en una orquestación
 ## ⚠️ REGLAS SOBRE CAMPOS DE 'configuracion' ⚠️
 
 {field_rules}
-
-## ⚠️ REGLA CRÍTICA SOBRE FORMATOS BINARIOS (PDF, DOCX, XLSX) ⚠️
-
-{binary_format_rules}
-
-## ⚠️ REGLAS CRÍTICAS PARA DOCUMENTOS CON IMÁGENES ⚠️
-
-{docx_image_rules}
 
 ## ⚠️ REGLAS CRÍTICAS PARA CÓDIGO PYTHON ⚠️
 
@@ -539,7 +421,7 @@ Ejemplos de errores comunes a EVITAR:
 
 {contratos}
 
-{contrato_html}
+{contrato_cruce_datos}
 
 ## ⚠️ INSTRUCCIÓN CRÍTICA DE FORMATO ⚠️
 
@@ -600,10 +482,9 @@ NIVEL DE DETALLE: {nivel_detalle}
         prompt += """
             ANTES DE RESPONDER, verifica tu plan contra estos puntos:
             1. ¿He incluido un paso para CADA requisito explícito del problema?
-            2. Si el usuario pidió "N imágenes", ¿hay un paso que genere exactamente N URLs?
-            3. ¿El paso final de File (si aplica) recibe un dict con las claves correctas?
-            4. ¿Las dependencias forman un DAG válido (sin ciclos, sin nombres inexistentes)?
-            5. ¿El JSON es válido y no tiene comas finales ni texto adicional?
+            2. ¿El paso final de File (si aplica) recibe un dict con las claves correctas?
+            3. ¿Las dependencias forman un DAG válido (sin ciclos, sin nombres inexistentes)?
+            4. ¿El JSON es válido y no tiene comas finales ni texto adicional?
 
             Genera el plan de ejecución en formato JSON. Responde ÚNICAMENTE con el JSON, sin texto adicional.
             """
