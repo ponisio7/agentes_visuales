@@ -535,6 +535,15 @@ CONTRATOS_SALIDA_POR_PASO: dict[str, str] = {
         "- Los botones están dentro de un contenedor con clase .calculadora.\n"
         "  Selecciona con document.querySelector('.calculadora') y delega con click.\n"
         "SOLO JavaScript puro, SIN etiquetas <script>. Sin markdown fences.\n"
+        "- Lista CERRADA de `data-accion` permitidos. NO inventes otras:\n"
+        "  clear, clearEntry, backspace, equals, sin, cos, tan, asin, acos, atan, "
+        "  log, ln, sqrt, x2, xy, inv, factorial, modo, mc, mr, m+, m-\n"
+        "- El switch DEBE tener un `case` para CADA uno de la lista anterior.\n"
+        "- Si el HTML usa una `data-accion` que no está en la lista, es un error "
+        "  del paso GenerarEstructuraHTML; pero tú debes cubrir toda la lista "
+        "  por si acaso.\n"
+        "- NO uses `data-accion=\"enter\"`, `data-accion=\"run\"` ni similares. "
+        "  Los botones ENTER/RUN deben usar `data-accion=\"equals\"`.\n"
     ),
     "GenerarCuento": (
         "\n\nCONTRATO DE SALIDA OBLIGATORIO:\n"

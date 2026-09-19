@@ -138,7 +138,7 @@ class ProblemSolver:
     """
 
     # Modelos a probar en orden (configurable)
-    DEFAULT_MODELS = ["deepseek-v4-flash", "deepseek-v4-pro"]
+    DEFAULT_MODELS = [ "deepseek-v4-pro", "deepseek-v4-flash"]
     DEFAULT_TEMPERATURE = 0.1
     DEFAULT_MAX_TOKENS = 5000
     DEFAULT_REASONING_EFFORT = "low"
@@ -248,6 +248,20 @@ class ProblemSolver:
                 for i, p in enumerate(pasos):
                     if isinstance(p, dict):
                         p['orden'] = i + 1
+
+                # ✅ FIX F.1: hacer que EscribirArchivoHTML dependa de ValidarCoherencia
+                for p in pasos:
+                    if not isinstance(p, dict):
+                        continue
+                    if p.get('tipo') != 'File':
+                        continue
+                    if p.get('configuracion', {}).get('operacion') != 'escribir':
+                        continue
+                    # Añadir ValidarCoherencia como dependencia si no está
+                    deps = p.setdefault('dependencias', [])
+                    if 'ValidarCoherencia' not in deps:
+                        deps.append('ValidarCoherencia')
+
                 logger.info(
                     "Post-procesado del plan: paso 'ValidarCoherencia' "
                     "inyectado tras '%s'", nombre_ensamblar
@@ -477,7 +491,7 @@ class ProblemSolver:
             respuesta = self.llm_client.chat(
                 prompt=user_prompt,
                 system_prompt=system_prompt,
-                model="deepseek-v4-flash",
+                model="deepseek-v4-pro",
                 temperature=0.2,
                 max_tokens=4000
             )
