@@ -546,27 +546,35 @@ class TestSchedulerControl:
     """Pruebas de control de ejecución (pausa, detención, limpieza)."""
     
     def test_pausar_reanudar(self, scheduler_basico):
-        """Prueba pausar y reanudar la ejecución."""
+        """Pausar y reanudar la ejecución (determinista).
+
+        ``pausar()`` es un toggle incondicional de ``pausado``. Si la
+        ejecución termina entre las dos llamadas, el camino de finalización
+        del scheduler resetea ``pausado`` a False y la segunda llamada
+        devuelve True donde el test esperaba False (fallo intermitente).
+
+        Para eliminar la carrera se espera a que la ejecución termine ANTES
+        de alternar el estado: sin hilos mutando ``pausado``, el toggle es
+        determinista. No se cambia la API pública del Scheduler.
+        """
         scheduler = scheduler_basico
-        # Hacer que los agentes duren lo suficiente para la prueba
-        for a in scheduler.agentes.values():
-            a.duracion = 2.0
-        
+
         scheduler.iniciar()
-        time.sleep(0.1)
-        
+        assert esperar_condicion(
+            lambda: not scheduler.ejecutando and not scheduler.running,
+            timeout=10.0,
+        ), "la ejecución no terminó a tiempo"
+
         # Pausar
         pausado = scheduler.pausar()
         assert pausado is True
         assert scheduler.pausado is True
-        
-        time.sleep(0.1)
-        
+
         # Reanudar (toggle)
         pausado = scheduler.pausar()
         assert pausado is False
         assert scheduler.pausado is False
-        
+
         # Limpieza
         scheduler.detener()
     
