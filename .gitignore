@@ -41,6 +41,13 @@ RESUMEN_SESION_*.md
 .venv/
 __pycache__/
 *.pyc
+
+# === Navegadores de Playwright (descarga local, regenerable) ===
+.playwright-browsers/
+
+# === Artefactos de los agentes Browser (screenshots, etc.) ===
+outputs/
+
 # Locks de LibreOffice
 .~lock.*
 

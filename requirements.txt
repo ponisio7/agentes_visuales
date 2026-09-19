@@ -22,3 +22,10 @@ scikit-learn>=1.4.0
 # Formatos adicionales
 fpdf2
 weasyprint>=60.0
+
+# Navegación web y búsqueda (agentes Browser y Search)
+# Tras instalar, Browser necesita el navegador Chromium de Playwright:
+#     python -m playwright install chromium
+# (en Linux puede requerir además: python -m playwright install-deps chromium)
+playwright>=1.40
+duckduckgo-search>=6.0
