@@ -271,7 +271,28 @@ class FileExecutor:
                 extension_actual = os.path.splitext(ruta_archivo)[1].lower()
 
                 if isinstance(contenido, str):
-                    contenido_str = contenido
+                    # ── Fix 5B: si es string JSON con clave 'html', desenvolver
+                    if extension_actual in EXTENSIONES_TEXTO_PLANO and contenido.lstrip().startswith('{'):
+                        desenvuelto = cls._desenvolver_contenido_web(contenido)
+                        if desenvuelto is not None and desenvuelto != contenido:
+                            logger.info(f"File.escribir: string JSON desenvuelto (Fix 5B) para {ruta_archivo}")
+                            contenido_str = desenvuelto
+                        else:
+                            contenido_str = contenido
+                    else:
+                        contenido_str = contenido
+
+                    # ── Fix 5A complementario: corregir JS embebido en HTML final
+                    if extension_actual in {".html", ".htm"} and "<script" in contenido_str.lower():
+                        def _corr_js(m):
+                            js_inner = m.group(1)
+                            js_fixed = re.sub(r'\bNone\b', 'null', js_inner)
+                            js_fixed = re.sub(r'\bTrue\b', 'true', js_fixed)
+                            js_fixed = re.sub(r'\bFalse\b', 'false', js_fixed)
+                            if js_fixed != js_inner:
+                                logger.warning(f"File.escribir: JS embebido auto-corregido en {ruta_archivo}")
+                            return f"<script>{js_fixed}</script>"
+                        contenido_str = re.sub(r'<script[^>]*>(.*?)</script>', _corr_js, contenido_str, flags=re.DOTALL | re.IGNORECASE)
 
                 elif isinstance(contenido, (dict, list)) and extension_actual in EXTENSIONES_TEXTO_PLANO:
                     # ✅ FIX 3: para extensiones web/plano, desenvolver el dict
