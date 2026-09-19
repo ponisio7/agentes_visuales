@@ -41,3 +41,8 @@ RESUMEN_SESION_*.md
 .venv/
 __pycache__/
 *.pyc
+# Locks de LibreOffice
+.~lock.*
+
+# Outputs del pipeline (archivos generados por los agentes)
+calculadora*.html
