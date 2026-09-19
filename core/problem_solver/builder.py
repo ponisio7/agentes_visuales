@@ -239,6 +239,8 @@ class PlanBuilder:
             TipoAgente.SHELL: self._kwargs_shell,
             TipoAgente.FILE: self._kwargs_file,
             TipoAgente.LOOP: self._kwargs_loop,
+            TipoAgente.BROWSER: self._kwargs_browser,
+            TipoAgente.SEARCH: self._kwargs_search,
         }
 
         helper = dispatch.get(tipo)
@@ -289,6 +291,36 @@ class PlanBuilder:
         kwargs['headers_http'] = config.get('headers', {}) or {}
         kwargs['body_http'] = config.get('body', '') or ''
         kwargs['timeout_http'] = _a_int(config.get('timeout'), 30)
+
+    def _kwargs_browser(
+        self,
+        paso: StepPlan,
+        config: dict[str, Any],
+        kwargs: dict[str, Any]
+    ) -> None:
+        """Configura un agente Browser (navegación con Playwright)."""
+        acciones = config.get('acciones', [])
+        if not isinstance(acciones, list):
+            acciones = []
+        kwargs['url_browser'] = config.get('url', '') or ''
+        kwargs['acciones_browser'] = acciones
+        kwargs['timeout_browser'] = _a_int(config.get('timeout'), 30)
+        kwargs['timeout_accion_browser'] = _a_int(config.get('timeout_accion'), 10000)
+        kwargs['headless_browser'] = bool(config.get('headless', True))
+        kwargs['bloquear_recursos_browser'] = bool(config.get('bloquear_recursos', False))
+        kwargs['user_agent_browser'] = config.get('user_agent', '') or ''
+
+    def _kwargs_search(
+        self,
+        paso: StepPlan,
+        config: dict[str, Any],
+        kwargs: dict[str, Any]
+    ) -> None:
+        """Configura un agente Search (búsqueda web sin API key)."""
+        kwargs['query_search'] = config.get('query', '') or ''
+        kwargs['max_resultados_search'] = _a_int(config.get('max_resultados'), 5)
+        kwargs['region_search'] = config.get('region', 'wt-wt') or 'wt-wt'
+        kwargs['timeout_search'] = _a_int(config.get('timeout'), 30)
 
     def _kwargs_llm(self, paso: StepPlan, config: dict, kwargs: dict):
         """
