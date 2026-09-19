@@ -7,8 +7,14 @@ Estas utilidades pueden importarse desde el sandbox, desde tests
 unitarios y desde cualquier executor o solver.
 """
 
+from .json_extra import (
+    extraer_json_balanceado,
+    limpiar_codigo,
+)
 from .json_llm import extraer_json_de_llm
 
 __all__ = [
+    "extraer_json_balanceado",
     "extraer_json_de_llm",
+    "limpiar_codigo",
 ]

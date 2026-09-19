@@ -82,6 +82,8 @@ def _limpiar_json_sucio(texto: str) -> str:
     # (solo si no hay comillas dobles ya)
     if '"' not in texto:
         texto = re.sub(r"'", '"', texto)
+    # Claves sin comillas: {a: 1, b: 2} → {"a": 1, "b": 2}
+    texto = re.sub(r'([{,])\s*([A-Za-z_][A-Za-z0-9_]*)\s*:', r'\1"\2":', texto)
     return texto.strip()
 
 
