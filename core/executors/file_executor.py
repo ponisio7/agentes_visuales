@@ -328,6 +328,36 @@ class FileExecutor:
                 if directorio:
                     os.makedirs(directorio, exist_ok=True)
 
+                # ── Aviso genérico: coherencia entre contenido y extensión ──
+                # Solo advierte: NO renombra el archivo ni falla la escritura.
+                # Detecta planes que escriben un contenido cuyo formato no
+                # corresponde con la extensión pedida en 'archivo_destino'.
+                _ini = contenido_str.lstrip()[:512]
+                _ini_low = _ini.lower()
+                if extension_actual == ".txt":
+                    if _ini_low.startswith("<!doctype html") or _ini_low.startswith("<html"):
+                        logger.warning(
+                            f"Contenido HTML en archivo .txt: '{ruta_archivo}' "
+                            f"(la extensión no corresponde al contenido)"
+                        )
+                    elif _ini.startswith("{"):
+                        try:
+                            json.loads(contenido_str)
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+                        else:
+                            logger.warning(
+                                f"Contenido JSON en archivo .txt: '{ruta_archivo}' "
+                                f"(la extensión no corresponde al contenido)"
+                            )
+                elif extension_actual == ".html":
+                    _contenido_low = contenido_str.lower()
+                    if "<html" not in _contenido_low and "<!doctype" not in _contenido_low:
+                        logger.warning(
+                            f"Contenido no-HTML en archivo .html: '{ruta_archivo}' "
+                            f"(no contiene '<html' ni '<!doctype')"
+                        )
+
                 cls.actualizar_progreso(agente, 70, "Escribiendo archivo...")
 
                 chunk_size = 8192
