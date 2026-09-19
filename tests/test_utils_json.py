@@ -113,3 +113,19 @@ class TestLimpiarCodigo:
 
     def test_vacio(self):
         assert limpiar_codigo("") == ""
+
+
+def test_ignora_json_de_plantilla_y_coge_el_siguiente():
+    """El modelo suele echar el ejemplo en su razonamiento antes de responder."""
+    respuesta = (
+        'We need JSON {"datos": [{"url": "...", "texto": "..."}]} bla bla '
+        'y la respuesta es {"datos": [{"url": "http://x", "texto": "hola"}]}'
+    )
+
+    assert extraer_json_de_llm(respuesta) == {
+        "datos": [{"url": "http://x", "texto": "hola"}]
+    }
+
+
+def test_json_solo_plantilla_devuelve_none():
+    assert extraer_json_de_llm('pienso {"a": "..."} y ya está') is None

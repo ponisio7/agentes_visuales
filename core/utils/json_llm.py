@@ -20,11 +20,73 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+_VALORES_PLACEHOLDER = {
+    "", "...", "…", "sin contenido", "sin datos", "n/a", "na", "-", "null", "none",
+}
+
+
+def es_valor_placeholder(valor) -> bool:
+    """¿El valor es un relleno (vacío, '...', 'Sin contenido'...)? """
+    if valor is None:
+        return True
+    if isinstance(valor, str):
+        return valor.strip().lower() in _VALORES_PLACEHOLDER
+    if isinstance(valor, (list, tuple)):
+        return len(valor) == 0 or all(es_valor_placeholder(v) for v in valor)
+    if isinstance(valor, dict):
+        return len(valor) == 0 or all(es_valor_placeholder(v) for v in valor.values())
+    return False
+
+
 def _quitar_fences(texto: str) -> str:
     """Elimina fences markdown ```json ... ``` o ``` ... ```."""
     texto = re.sub(r'^```(?:json|javascript|js)?\s*', '', texto.strip(), flags=re.I)
     texto = re.sub(r'\s*```$', '', texto)
     return texto.strip()
+
+
+def _objetos_json(texto: str) -> list[str]:
+    """
+    Devuelve TODOS los objetos/arrays JSON balanceados del texto, en orden.
+
+    A diferencia de _primer_objeto_json, permite saltar los que sean
+    plantillas y quedarse con la respuesta real que venga después.
+    """
+    objetos = []
+    i = 0
+    largo = len(texto)
+    while i < largo:
+        if texto[i] not in '{[':
+            i += 1
+            continue
+        abierto = texto[i]
+        cerrado = '}' if abierto == '{' else ']'
+        profundidad = 0
+        en_string = False
+        escape = False
+        for j in range(i, largo):
+            c = texto[j]
+            if escape:
+                escape = False
+                continue
+            if c == '\\':
+                escape = True
+                continue
+            if c == '"':
+                en_string = not en_string
+                continue
+            if en_string:
+                continue
+            if c == abierto:
+                profundidad += 1
+            elif c == cerrado:
+                profundidad -= 1
+                if profundidad == 0:
+                    objetos.append(texto[i:j + 1])
+                    i = j
+                    break
+        i += 1
+    return objetos
 
 
 def _primer_objeto_json(texto: str) -> str | None:
@@ -112,10 +174,11 @@ def extraer_json_de_llm(texto: Any) -> dict | list | None:
     limpio = _quitar_fences(texto)
     candidatos.append(limpio)
 
-    # 2) Primer objeto balanceado
-    objeto = _primer_objeto_json(limpio)
-    if objeto and objeto != limpio:
-        candidatos.append(objeto)
+    # 2) Todos los objetos balanceados (el primero puede ser una plantilla
+    #    ecoada en el razonamiento del modelo y no la respuesta real)
+    for objeto in _objetos_json(limpio):
+        if objeto and objeto != limpio:
+            candidatos.append(objeto)
 
     # 3) Limpieza heurística sobre los candidatos
     for c in list(candidatos):
@@ -126,10 +189,14 @@ def extraer_json_de_llm(texto: Any) -> dict | list | None:
             continue
         try:
             data = json.loads(c)
-            if isinstance(data, (dict, list)):
-                return data
         except (json.JSONDecodeError, ValueError):
             continue
+        if isinstance(data, (dict, list)):
+            # Un JSON de plantilla (todo '...'/vacío) suele ser el ejemplo
+            # ecoado por el modelo en su razonamiento: no sirve como respuesta.
+            if es_valor_placeholder(data):
+                continue
+            return data
 
     logger.debug(
         "extraer_json_de_llm: no se pudo parsear. Primeros 200 chars: %r",
@@ -138,4 +205,4 @@ def extraer_json_de_llm(texto: Any) -> dict | list | None:
     return None
 
 
-__all__ = ["extraer_json_de_llm"]
+__all__ = ["es_valor_placeholder", "extraer_json_de_llm"]
