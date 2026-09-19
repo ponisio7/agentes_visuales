@@ -158,8 +158,55 @@ def extraer_contenido_relevante(
 # VARIABLES Y SUSTITUCIÓN
 # ============================================================
 
+# Límites del aplanado de variables: evitan explotar en contextos grandes.
+_MAX_PROFUNDIDAD_VARIABLES = 6
+_MAX_ITEMS_VARIABLES = 20
+_MAX_VARIABLES = 500
+
+
+def _valor_variable(valor: Any) -> str:
+    """Representación de un valor para sustituir en un texto."""
+    if isinstance(valor, str):
+        return valor
+    try:
+        return json.dumps(valor, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(valor)
+
+
+def _aplanar_hijos(valor: Any, prefijo: str, variables: dict[str, str],
+                   profundidad: int = 1) -> None:
+    """
+    Registra rutas anidadas de un valor: ``clave.subclave``, ``clave[0]``,
+    ``clave.0`` y combinaciones (p. ej. ``Dep.items[0].href``).
+
+    Acotado por profundidad, número de items por lista y total de variables.
+    """
+    if profundidad > _MAX_PROFUNDIDAD_VARIABLES or len(variables) >= _MAX_VARIABLES:
+        return
+
+    if isinstance(valor, dict):
+        for clave, subvalor in valor.items():
+            ruta = f"{prefijo}.{clave}"
+            if ruta not in variables and len(variables) < _MAX_VARIABLES:
+                variables[ruta] = _valor_variable(subvalor)
+            _aplanar_hijos(subvalor, ruta, variables, profundidad + 1)
+    elif isinstance(valor, (list, tuple)):
+        for indice, subvalor in enumerate(valor[:_MAX_ITEMS_VARIABLES]):
+            # Se aceptan las dos sintaxis: Dep.lista[0] y Dep.lista.0
+            for ruta in (f"{prefijo}[{indice}]", f"{prefijo}.{indice}"):
+                if ruta not in variables and len(variables) < _MAX_VARIABLES:
+                    variables[ruta] = _valor_variable(subvalor)
+                _aplanar_hijos(subvalor, ruta, variables, profundidad + 1)
+
+
 def variables_disponibles(agente: Agente, contexto: dict) -> dict[str, str]:
-    """Construye el diccionario de variables sustituibles."""
+    """Construye el diccionario de variables sustituibles.
+
+    Además de las variables del agente y de primer nivel del contexto,
+    aplana rutas anidadas con índices (``Dep.items[0].href``) para poder
+    referenciar elementos concretos de listas de resultados.
+    """
     import time as _time
     contexto = contexto or {}
     ahora = _time.localtime()
@@ -190,16 +237,8 @@ def variables_disponibles(agente: Agente, contexto: dict) -> dict[str, str]:
         else:
             variables[clave] = str(valor_extraido)
 
-        # Aplanar claves anidadas
-        if isinstance(valor, dict):
-            for subclave, subvalor in valor.items():
-                clave_compuesta = f"{clave}.{subclave}"
-                if isinstance(subvalor, str):
-                    variables[clave_compuesta] = subvalor
-                else:
-                    variables[clave_compuesta] = json.dumps(
-                        subvalor, default=str, ensure_ascii=False
-                    )
+        # Aplanar claves anidadas (dicts, listas e índices)
+        _aplanar_hijos(valor, clave, variables)
 
     return variables
 
@@ -209,8 +248,12 @@ def sustituir_variables(texto: str, variables: dict[str, str]) -> str:
     if not texto or "{" not in texto or not variables:
         return texto
     import re as _re
+    # Claves más largas primero: evita que una clave corta (p. ej.
+    # "Dep.items[0]") capture el prefijo de otra más específica
+    # ("Dep.items[0].href").
+    claves = sorted(variables.keys(), key=len, reverse=True)
     pattern = _re.compile(
-        r"\{\s*(" + "|".join(_re.escape(k) for k in variables.keys()) + r")\s*\}"
+        r"\{\s*(" + "|".join(_re.escape(k) for k in claves) + r")\s*\}"
     )
     return pattern.sub(lambda m: variables.get(m.group(1), m.group(0)), texto)
 
