@@ -7,6 +7,7 @@ import threading
 import time
 
 from core.agent import Agente
+from core.utils import es_valor_placeholder
 from core.cancellation import CancellationToken
 
 from .cache import RateLimiter
@@ -29,6 +30,101 @@ def get_rate_limiter() -> RateLimiter:
         return _rate_limiter
 
 
+# ============================================================
+# TROCEADO DE PROMPTS GRANDES Y FUSIÓN DE RESPUESTAS
+# ============================================================
+
+# A partir de este tamaño, el prompt se manda en varias llamadas.
+MAX_PROMPT_CHARS = 24000
+# Una variable sustituida mayor que esto justifica trocear por dependencia.
+MIN_CHARS_VARIABLE_GRANDE = 4000
+MARCADOR_OMITIDO = "[contenido omitido: se procesa en otra llamada]"
+
+def json_util(datos) -> bool:
+    """¿El JSON recibido aporta algo (no es None ni solo relleno)?"""
+    if datos is None:
+        return False
+    return not es_valor_placeholder(datos)
+
+
+def _fusionar_valor(a, b):
+    """Combina dos valores del mismo campo de dos respuestas."""
+    a_vacio, b_vacio = es_valor_placeholder(a), es_valor_placeholder(b)
+    if b_vacio and not a_vacio:
+        return a
+    if a_vacio and not b_vacio:
+        return b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return fusionar_json(a, b)
+    if isinstance(a, list) and isinstance(b, list):
+        return _fusionar_listas(a, b)
+    return a
+
+
+def _fusionar_listas(a: list, b: list) -> list:
+    """Une listas sin duplicar items (por su JSON) y sin rellenos."""
+    resultado = []
+    vistos = set()
+    for item in list(a) + list(b):
+        if es_valor_placeholder(item):
+            continue
+        try:
+            clave = json.dumps(item, sort_keys=True, default=str, ensure_ascii=False)
+        except (TypeError, ValueError):
+            clave = str(item)
+        if clave in vistos:
+            continue
+        vistos.add(clave)
+        resultado.append(item)
+    return resultado
+
+
+def fusionar_json(a, b):
+    """Fusiona dos respuestas JSON (misma estructura) en una sola."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if isinstance(a, dict) and isinstance(b, dict):
+        fusion = dict(a)
+        for clave, valor_b in b.items():
+            fusion[clave] = (
+                _fusionar_valor(fusion[clave], valor_b) if clave in fusion else valor_b
+            )
+        return fusion
+    if isinstance(a, list) and isinstance(b, list):
+        return _fusionar_listas(a, b)
+    return _fusionar_valor(a, b)
+
+
+def planificar_chunks(prompt_plantilla: str, variables: dict,
+                      max_chars: int = MAX_PROMPT_CHARS,
+                      min_grande: int = MIN_CHARS_VARIABLE_GRANDE) -> list[str]:
+    """
+    Si el prompt es grande, lo parte en una llamada por variable sustituida
+    grande (manteniendo la instrucción completa en todas). Devuelve [] si no
+    hace falta o no se puede trocear.
+    """
+    import re as _re
+
+    claves = _re.findall(r"\{\s*([^{}\s]+)\s*\}", prompt_plantilla or "")
+    presentes = [k for k in dict.fromkeys(claves) if k in (variables or {})]
+    grandes = [k for k in presentes if len(str(variables[k])) >= min_grande]
+
+    prompt_completo = sustituir_variables(prompt_plantilla, variables)
+    if len(prompt_completo) <= max_chars or len(grandes) < 2:
+        return []
+
+    chunks = []
+    for clave in grandes:
+        variables_chunk = dict(variables)
+        for otra in grandes:
+            if otra != clave:
+                variables_chunk[otra] = MARCADOR_OMITIDO
+        chunks.append(sustituir_variables(prompt_plantilla, variables_chunk))
+    return chunks
+
+
 class LLMExecutor:
     """Llama a la API de DeepSeek con el prompt del agente."""
 
@@ -42,6 +138,131 @@ class LLMExecutor:
                 agente._bridge.agente_actualizado.emit(agente.id)
             except Exception:
                 pass
+
+    @classmethod
+    def _llamar_una_vez(
+        cls,
+        agente,
+        client,
+        modelo: str,
+        contenido_usuario: str,
+        contexto: dict,
+        se_sustituyo_algo: bool,
+        temperatura: float,
+        max_tokens: int,
+        reasoning_effort: str,
+        thinking_enabled: bool,
+        cancellation_token: CancellationToken | None = None,
+    ) -> tuple[bool, str, dict]:
+        """
+        Una única llamada al modelo, con cancelación y timeout.
+
+        Devuelve (ok, mensaje, datos) con 'respuesta', 'finish_reason',
+        'elapsed' y 'tokens' cuando va bien.
+        """
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "Eres un asistente útil y preciso. "
+                    "Responde directamente con lo que se te pide, sin preámbulos."
+                )
+            },
+            {"role": "user", "content": contenido_usuario},
+        ]
+
+        if contexto and not se_sustituyo_algo:
+            contexto_visible = {
+                k: v for k, v in contexto.items()
+                if k not in ('llm_base_url', 'llm_api_key', 'openai_api_key')
+            }
+            if contexto_visible:
+                messages[1]["content"] += (
+                    "\n\nContexto adicional:\n" +
+                    json.dumps(
+                        contexto_visible, indent=2, default=str, ensure_ascii=False
+                    )
+                )
+
+        response = None
+        error = None
+        completed = threading.Event()
+
+        def hacer_llamada():
+            nonlocal response, error
+            try:
+                response = client.chat.completions.create(
+                    model=modelo,
+                    messages=messages,
+                    temperature=temperatura,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    stream=False,
+                    extra_body={
+                        "thinking": {
+                            "type": "enabled" if thinking_enabled else "disabled"
+                        }
+                    },
+                    timeout=60,
+                )
+            except Exception as e:
+                error = e
+            finally:
+                completed.set()
+
+        start_time = time.time()
+        thread = threading.Thread(target=hacer_llamada, daemon=True)
+        thread.start()
+
+        timeout = 60
+        while not completed.is_set():
+            if cancellation_token and cancellation_token.esta_cancelado():
+                return False, "Cancelado por usuario durante la llamada LLM", {
+                    'error': 'cancelled', 'tiempo_espera': time.time() - start_time
+                }
+            if time.time() - start_time > timeout + 5:
+                return False, f"Timeout en llamada LLM ({timeout}s)", {
+                    'error': 'timeout', 'tiempo_espera': timeout
+                }
+            completed.wait(0.1)
+
+        if error:
+            raise error
+        if response is None or not response.choices:
+            raise RuntimeError("No se recibió respuesta de la API")
+
+        eleccion = response.choices[0]
+        respuesta = eleccion.message.content or ""
+        elapsed = time.time() - start_time
+        finish_reason = getattr(eleccion, "finish_reason", None)
+        tokens = {
+            'prompt': response.usage.prompt_tokens if response.usage else 0,
+            'completion': response.usage.completion_tokens if response.usage else 0,
+            'total': response.usage.total_tokens if response.usage else 0,
+        }
+
+        if not respuesta.strip():
+            reasoning = getattr(eleccion.message, "reasoning_content", None)
+            if reasoning:
+                return False, (
+                    "⚠️ LLM solo devolvió razonamiento (no respuesta final). "
+                    f"Aumenta max_tokens (actual: {getattr(agente, 'max_tokens_llm', '?')}) "
+                    f"o divide el paso."
+                ), {
+                    'error': 'only_reasoning', 'modelo': modelo,
+                    'razonamiento_preview': reasoning[:200], 'tokens_uso': tokens,
+                    'finish_reason': finish_reason,
+                }
+            return False, (
+                f"LLM devolvió respuesta vacía (modelo: {modelo}, "
+                f"tokens: {tokens.get('total', '?')})"
+            ), {'error': 'empty_response', 'modelo': modelo,
+                'finish_reason': finish_reason}
+
+        return True, "", {
+            'respuesta': respuesta, 'finish_reason': finish_reason,
+            'elapsed': elapsed, 'tokens': tokens,
+        }
 
     @classmethod
     def ejecutar(
@@ -114,160 +335,132 @@ class LLMExecutor:
 
             client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Eres un asistente útil y preciso. "
-                        "Responde directamente con lo que se te pide, sin preámbulos."
-                    )
-                },
-                {"role": "user", "content": prompt_procesado}
-            ]
-
-            if contexto and not se_sustituyo_algo:
-                contexto_visible = {
-                    k: v for k, v in contexto.items()
-                    if k not in ('llm_base_url', 'llm_api_key', 'openai_api_key')
-                }
-                if contexto_visible:
-                    messages[1]["content"] += (
-                        "\n\nContexto adicional:\n" +
-                        json.dumps(
-                            contexto_visible, indent=2, default=str,
-                            ensure_ascii=False
-                        )
-                    )
-
-            cls.actualizar_progreso(agente, 60, "Esperando respuesta...")
-
-            start_time = time.time()
-            response = None
-            error = None
-            completed = threading.Event()
-
-            def hacer_llamada():
-                nonlocal response, error
-                try:
-                    response = client.chat.completions.create(
-                        model=modelo,
-                        messages=messages,
-                        temperature=agente.temperatura_llm,
-                        max_tokens=max_tokens_efectivos,
-                        reasoning_effort=reasoning_effort,
-                        stream=False,
-                        extra_body={
-                            "thinking": {
-                                "type": "enabled" if thinking_enabled else "disabled"
-                            }
-                        },
-                        timeout=60
-                    )
-                except Exception as e:
-                    error = e
-                finally:
-                    completed.set()
-
-            thread = threading.Thread(target=hacer_llamada, daemon=True)
-            thread.start()
-
-            timeout = 60
-            inicio = time.time()
-            while not completed.is_set():
-                if cancellation_token and cancellation_token.esta_cancelado():
-                    cls.actualizar_progreso(agente, 100, "⛔ Cancelado por usuario")
-                    return False, (
-                        "Cancelado por usuario durante la llamada LLM"
-                    ), {
-                        'error': 'cancelled', 'modelo': modelo,
-                        'tiempo_espera': time.time() - inicio
-                    }
-                if time.time() - inicio > timeout + 5:
-                    cls.actualizar_progreso(agente, 100, "⏱️ Timeout")
-                    return False, f"Timeout en llamada LLM ({timeout}s)", {
-                        'error': 'timeout', 'modelo': modelo,
-                        'tiempo_espera': timeout
-                    }
-                completed.wait(0.1)
-
-            if error:
-                raise error
-            if response is None or not response.choices:
-                raise openai.APIError("No se recibió respuesta de la API")
-
-            elapsed_time = time.time() - start_time
-            respuesta = response.choices[0].message.content if response.choices else ""
-
-            if not respuesta or not respuesta.strip():
-                reasoning = getattr(
-                    response.choices[0].message, 'reasoning_content', None
+            chunks = planificar_chunks(agente.prompt_llm, variables)
+            if chunks:
+                logger.info(
+                    f"[{agente.nombre}] prompt de {len(prompt_procesado)} chars -> "
+                    f"{len(chunks)} llamadas (una por dependencia grande)"
                 )
-                if reasoning:
-                    tokens_info = {}
-                    if response.usage:
-                        tokens_info = {
-                            'prompt': response.usage.prompt_tokens,
-                            'completion': response.usage.completion_tokens,
-                            'total': response.usage.total_tokens
-                        }
-                    return False, (
-                        f"⚠️ LLM solo devolvió razonamiento (no respuesta final). "
-                        f"Aumenta max_tokens (actual: {agente.max_tokens_llm}). "
-                        f"Tokens usados: {tokens_info.get('total', '?')}"
-                    ), {
-                        'error': 'only_reasoning', 'modelo': modelo,
-                        'razonamiento_preview': reasoning[:200],
-                        'tokens_uso': tokens_info
-                    }
-                else:
-                    return False, (
-                        f"LLM devolvió respuesta vacía (modelo: {modelo}, "
-                        f"tokens: {response.usage.total_tokens if response.usage else '?'})"
-                    ), {'error': 'empty_response', 'modelo': modelo}
+                llamadas = []
+                for i, chunk in enumerate(chunks, 1):
+                    cabecera = (
+                        f"(Parte {i} de {len(chunks)}. Responde SOLO con el JSON de los "
+                        f"datos de esta parte, con el mismo esquema; donde falte "
+                        f"contenido usa \"Sin contenido\".)\n\n"
+                    )
+                    llamadas.append(cabecera + chunk)
+            else:
+                llamadas = [prompt_procesado]
 
-            prompt_lower = prompt_procesado.lower()
-            pide_generar = any(
-                kw in prompt_lower for kw in (
-                    "genera", "escribe", "redacta", "crea", "mensaje",
-                    "texto", "resumen", "explica", "describe", "elabora",
-                    "lista", "enumera", "traduce"
+            pide_json = "json" in (agente.prompt_llm or "").lower()
+
+            respuestas: list[str] = []
+            json_fusionado = None
+            finish_reasons: list = []
+            tokens_total = {"prompt": 0, "completion": 0, "total": 0}
+            tiempo_total = 0.0
+
+            for idx, contenido in enumerate(llamadas, 1):
+                cls.actualizar_progreso(
+                    agente,
+                    min(85, 40 + int(40 * idx / max(1, len(llamadas)))),
+                    f"Consultando {modelo} ({idx}/{len(llamadas)})...",
                 )
-            )
+                ok, mensaje, datos = cls._llamar_una_vez(
+                    agente=agente,
+                    client=client,
+                    modelo=modelo,
+                    contenido_usuario=contenido,
+                    contexto=contexto,
+                    se_sustituyo_algo=se_sustituyo_algo,
+                    temperatura=agente.temperatura_llm,
+                    max_tokens=max_tokens_efectivos,
+                    reasoning_effort=reasoning_effort,
+                    thinking_enabled=thinking_enabled,
+                    cancellation_token=cancellation_token,
+                )
+                if not ok:
+                    if len(llamadas) > 1:
+                        mensaje = f"[parte {idx}/{len(llamadas)}] {mensaje}"
+                    cls.actualizar_progreso(agente, 100, mensaje[:60])
+                    return False, mensaje, {
+                        **datos, 'modelo': modelo, 'chunks': len(llamadas),
+                    }
 
-            if pide_generar and len(respuesta.strip()) < 3:
-                tokens_usados = response.usage.total_tokens if response.usage else None
+                respuesta_chunk = datos["respuesta"]
+                respuestas.append(respuesta_chunk)
+                finish_reasons.append(datos.get("finish_reason"))
+                for clave in tokens_total:
+                    tokens_total[clave] += datos.get("tokens", {}).get(clave, 0)
+                tiempo_total += datos.get("elapsed", 0.0)
+
+                json_chunk = parsear_json_robusto(
+                    limpiar_fences_markdown(respuesta_chunk)
+                )
+                if datos.get("finish_reason") == "length" and not json_util(json_chunk):
+                    cls.actualizar_progreso(agente, 100, "❌ Respuesta cortada")
+                    return False, (
+                        f"⚠️ La respuesta del LLM se cortó por max_tokens "
+                        f"({agente.max_tokens_llm}) antes de completar el JSON "
+                        f"(parte {idx}/{len(llamadas)}). Sube max_tokens o divide el paso."
+                    ), {
+                        'error': 'truncated_response', 'modelo': modelo,
+                        'finish_reason': finish_reasons + [datos.get("finish_reason")],
+                        'chunks': len(llamadas),
+                    }
+                if json_chunk is not None and not json_util(json_chunk):
+                    cls.actualizar_progreso(agente, 100, "❌ JSON de plantilla")
+                    return False, (
+                        "⚠️ El LLM devolvió solo la plantilla (valores vacíos o '...') "
+                        f"en la parte {idx}/{len(llamadas)}; no hay contenido que usar."
+                    ), {
+                        'error': 'json_placeholder', 'modelo': modelo,
+                        'chunks': len(llamadas), 'json': json_chunk,
+                    }
+                if json_chunk is None and pide_json:
+                    cls.actualizar_progreso(agente, 100, "❌ Sin JSON")
+                    return False, (
+                        f"⚠️ El LLM no devolvió JSON válido en la parte "
+                        f"{idx}/{len(llamadas)}. Revisa el prompt."
+                    ), {
+                        'error': 'json_no_parseable', 'modelo': modelo,
+                        'chunks': len(llamadas), 'raw_response': respuesta_chunk[:500],
+                    }
+                if json_chunk is not None:
+                    json_fusionado = fusionar_json(json_fusionado, json_chunk)
+
+            if "length" in [fr for fr in finish_reasons if fr] and not json_util(json_fusionado):
+                cls.actualizar_progreso(agente, 100, "❌ Respuesta cortada")
                 return False, (
-                    f"⚠️ El LLM devolvió una respuesta truncada: '{respuesta}'\n"
-                    f"Esto ocurre cuando max_tokens es demasiado bajo "
-                    f"(actual: {agente.max_tokens_llm}) o el modelo gastó "
-                    f"tokens en razonamiento.\n"
-                    f"Sugerencia: aumenta max_tokens a 500 o más."
+                    f"⚠️ La respuesta del LLM se cortó por max_tokens "
+                    f"({agente.max_tokens_llm}) antes de completar el JSON."
                 ), {
                     'error': 'truncated_response', 'modelo': modelo,
-                    'respuesta_truncada': respuesta,
-                    'max_tokens': agente.max_tokens_llm,
-                    'tokens_usados': tokens_usados
+                    'finish_reason': finish_reasons, 'chunks': len(llamadas),
                 }
 
-            palabras_thinking = [
-                "We need", "The user", "I need to", "Let me", "First,",
-                "Okay,", "Alright,", "Hmm,", "So,", "Now,"
-            ]
-            respuesta_lower = respuesta.strip()[:50].lower()
-            es_razonamiento = any(
-                respuesta_lower.startswith(p.lower()) for p in palabras_thinking
-            )
-            if es_razonamiento and len(respuesta) > 300:
-                logger.warning(
-                    f"⚠️ LLM parece haber devuelto razonamiento en lugar "
-                    f"de respuesta. Modelo: {modelo}, Longitud: {len(respuesta)}, "
-                    f"Inicio: {respuesta[:100]}"
+            if pide_json and not json_util(json_fusionado):
+                cls.actualizar_progreso(agente, 100, "❌ JSON no utilizable")
+                return False, (
+                    "⚠️ El LLM no devolvió un JSON utilizable (vacío, plantilla o "
+                    "sin contenido). El paso no puede continuar."
+                ), {
+                    'error': 'json_no_utilizable', 'modelo': modelo,
+                    'chunks': len(llamadas),
+                    'raw_response': (respuestas[-1] if respuestas else "")[:500],
+                }
+
+            if len(llamadas) == 1:
+                respuesta = respuestas[0]
+                respuesta_limpia = limpiar_fences_markdown(respuesta)
+            else:
+                respuesta = (
+                    json.dumps(json_fusionado, ensure_ascii=False, indent=2)
+                    if json_fusionado is not None else "\n\n".join(respuestas)
                 )
+                respuesta_limpia = respuesta
 
-            cls.actualizar_progreso(agente, 90, "Procesando respuesta...")
-
-            respuesta_limpia = limpiar_fences_markdown(respuesta)
-            json_auto = parsear_json_robusto(respuesta_limpia)
+            json_auto = json_fusionado
 
             if json_auto is None and respuesta_limpia.strip().startswith(('{', '[')):
                 error_msg = (
@@ -285,6 +478,18 @@ class LLMExecutor:
                     'max_tokens_actual': agente.max_tokens_llm,
                 }
 
+            palabras_thinking = [
+                "We need", "The user", "I need to", "Let me", "First,",
+                "Okay,", "Alright,", "Hmm,", "So,", "Now,"
+            ]
+            respuesta_lower = respuesta.strip()[:50].lower()
+            if any(respuesta_lower.startswith(p.lower()) for p in palabras_thinking) \
+                    and len(respuesta) > 300:
+                logger.warning(
+                    f"⚠️ LLM parece haber devuelto razonamiento en lugar de "
+                    f"respuesta. Modelo: {modelo}, Longitud: {len(respuesta)}"
+                )
+
             resultado = {
                 "modelo": modelo,
                 "prompt": prompt_procesado,
@@ -294,13 +499,12 @@ class LLMExecutor:
                 "_av_respuesta": respuesta,
                 "_av_respuesta_limpia": respuesta_limpia,
                 "_av_json": json_auto,
-                "tiempo_respuesta": elapsed_time,
-                "tokens_uso": {
-                    "prompt": response.usage.prompt_tokens if response.usage else 0,
-                    "completion": response.usage.completion_tokens if response.usage else 0,
-                    "total": response.usage.total_tokens if response.usage else 0
-                }
+                "tiempo_respuesta": tiempo_total,
+                "tokens_uso": tokens_total,
             }
+            if len(llamadas) > 1:
+                resultado["chunks"] = len(llamadas)
+                resultado["finish_reasons"] = finish_reasons
 
             es_sospechoso, razon = es_resultado_sospechoso(
                 json_auto if json_auto is not None else respuesta_limpia
