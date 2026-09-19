@@ -383,6 +383,9 @@ class Agente:
     headless_browser: bool = True
     bloquear_recursos_browser: bool = False  # no cargar imágenes/fuentes/CSS
     user_agent_browser: str = ""         # vacío = user-agent realista por defecto
+    urls_desde_browser: str = ""         # "Agente.clave" con la lista de URLs a navegar
+    max_urls_browser: int = 5            # máximo de URLs a navegar (modo multi-URL)
+    acciones_por_url_browser: list[dict[str, Any]] = field(default_factory=list)
 
     # ── Search: búsqueda web (DuckDuckGo, sin API key) ──
     query_search: str = ""

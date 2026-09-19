@@ -1069,6 +1069,20 @@ class Scheduler(QObject):
 
             # ── Browser ──
             elif tipo == TipoAgente.BROWSER and isinstance(resultado, dict):
+                # Modo multi-URL ('urls_desde')
+                if 'urls_navegadas' in resultado:
+                    navegadas = resultado.get('urls_navegadas', 0)
+                    errores = resultado.get('errores') or []
+                    urls = [
+                        (r.get('url') or '')[:40]
+                        for r in (resultado.get('resultados_por_url') or [])[:2]
+                        if isinstance(r, dict)
+                    ]
+                    preview = f"{navegadas} URLs | {urls} | errores: {len(errores)}"
+                    if resultado.get('error'):
+                        preview += f" | error: {str(resultado['error'])[:max_len]}"
+                    return preview
+
                 titulo = (resultado.get('titulo') or '')[:40]
                 url = (resultado.get('url_final') or '')[:40]
                 datos = resultado.get('datos_extraidos') or {}

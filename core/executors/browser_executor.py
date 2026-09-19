@@ -50,6 +50,7 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_TIMEOUT = 30            # segundos (timeout global del paso)
 DEFAULT_ACTION_TIMEOUT = 10000  # milisegundos (timeout por acción)
+DEFAULT_MAX_URLS = 5              # máximo de URLs a navegar con 'urls_desde'
 MAX_HTML_CHARS = 2_000_000      # tope defensivo para 'html'
 SCREENSHOTS_DIR = os.path.join("outputs", "screenshots")
 
@@ -66,6 +67,18 @@ ACCIONES_VALIDAS = (
 
 # Tipos de recurso que se pueden bloquear para acelerar la carga.
 RECURSOS_BLOQUEABLES = {"image", "font", "stylesheet", "media"}
+
+
+def _resultado_multi_vacio(error: str | None = None) -> dict:
+    """Contrato de salida vacío del modo multi-URL ('urls_desde')."""
+    return {
+        "urls_navegadas": 0,
+        "resultados_por_url": [],
+        "errores": [],
+        "screenshots": [],
+        "error": error,
+        "duracion": 0.0,
+    }
 
 
 def _resultado_vacio(error: str | None = None) -> dict:
@@ -119,23 +132,34 @@ class BrowserExecutor:
 
         variables = variables_disponibles(agente, contexto)
 
-        url = sustituir_variables(getattr(agente, 'url_browser', '') or "", variables).strip()
-        if not url:
-            cls.actualizar_progreso(agente, 100, "URL vacía")
-            return False, "Browser: 'url_browser' está vacía", _resultado_vacio('empty_url')
+        # ── Modo multi-URL: 'urls_desde' apunta a una lista del contexto ──
+        urls_desde = (getattr(agente, 'urls_desde_browser', '') or "").strip()
+        modo_multi = bool(urls_desde)
+        max_urls = cls._entero(getattr(agente, 'max_urls_browser', None), DEFAULT_MAX_URLS, 1)
+        acciones_por_url = getattr(agente, 'acciones_por_url_browser', None) or []
+        if not isinstance(acciones_por_url, list):
+            acciones_por_url = []
 
-        # Si tras sustituir quedan placeholders, la dependencia no estaba
-        # disponible o la ruta no existe: error claro en vez de navegar a
-        # una URL literal con llaves.
-        if "{" in url and "}" in url:
-            cls.actualizar_progreso(agente, 100, "URL sin resolver")
-            return False, (
-                f"Browser: la URL quedó sin resolver tras sustituir variables: "
-                f"{url[:120]}"
-            ), _resultado_vacio('unresolved_url')
+        # ── Modo una URL ──
+        url = ""
+        if not modo_multi:
+            url = sustituir_variables(getattr(agente, 'url_browser', '') or "", variables).strip()
+            if not url:
+                cls.actualizar_progreso(agente, 100, "URL vacía")
+                return False, "Browser: 'url_browser' está vacía", _resultado_vacio('empty_url')
 
-        if not url.lower().startswith(("http://", "https://", "file://", "about:", "data:")):
-            url = "https://" + url
+            # Si tras sustituir quedan placeholders, la dependencia no estaba
+            # disponible o la ruta no existe: error claro en vez de navegar a
+            # una URL literal con llaves.
+            if "{" in url and "}" in url:
+                cls.actualizar_progreso(agente, 100, "URL sin resolver")
+                return False, (
+                    f"Browser: la URL quedó sin resolver tras sustituir variables: "
+                    f"{url[:120]}"
+                ), _resultado_vacio('unresolved_url')
+
+            if not url.lower().startswith(("http://", "https://", "file://", "about:", "data:")):
+                url = "https://" + url
 
         timeout_s = cls._entero(getattr(agente, 'timeout_browser', None), DEFAULT_TIMEOUT, 1)
         timeout_accion_ms = cls._entero(
@@ -149,8 +173,13 @@ class BrowserExecutor:
         if not isinstance(acciones, list):
             acciones = []
 
+        objetivo_log = (
+            f"urls_desde={urls_desde} max_urls={max_urls}" if modo_multi
+            else f"url={url[:80]}"
+        )
         logger.info(
-            f"Browser '{agente.nombre}': url={url[:80]} acciones={len(acciones)} "
+            f"Browser '{agente.nombre}': {objetivo_log} "
+            f"acciones={len(acciones_por_url if modo_multi else acciones)} "
             f"headless={headless} timeout={timeout_s}s"
         )
 
@@ -164,6 +193,7 @@ class BrowserExecutor:
         html_truncado = False
         error: str | None = None
         cancelado = False
+        resultado_multi: tuple[bool, str, dict] | None = None
 
         page = None
         contexto_browser = None
@@ -189,62 +219,67 @@ class BrowserExecutor:
                 contexto_browser.route("**/*", _bloquear)
 
             page = contexto_browser.new_page()
-            cls.actualizar_progreso(agente, 20, "Navegando...")
 
-            try:
-                page.goto(url, timeout=timeout_s * 1000, wait_until="load")
-            except PlaywrightTimeoutError:
-                # La página no terminó de cargar: seguimos con lo que haya.
-                logger.warning(f"Browser '{agente.nombre}': timeout de carga en {url}")
-                acciones_ejecutadas.append({
-                    "tipo": "navegar", "ok": False,
-                    "error": f"timeout de carga tras {timeout_s}s",
-                })
-
-            # ── Acciones declarativas ──
-            for i, accion in enumerate(acciones, start=1):
-                if cancellation_token and cancellation_token.esta_cancelado():
-                    cancelado = True
-                    break
-                if not isinstance(accion, dict):
-                    acciones_ejecutadas.append({
-                        "tipo": "desconocida", "ok": False,
-                        "error": f"la acción #{i} no es un dict",
-                    })
-                    continue
-
-                registro = cls._ejecutar_accion(
+            if modo_multi:
+                resultado_multi = cls._navegar_varias_urls(
                     page=page,
-                    accion=accion,
+                    agente=agente,
+                    contexto=contexto,
+                    urls_desde=urls_desde,
+                    max_urls=max_urls,
+                    acciones=acciones_por_url,
                     variables=variables,
-                    timeout_accion_ms=timeout_accion_ms,
                     timeout_s=timeout_s,
+                    timeout_accion_ms=timeout_accion_ms,
+                    cancellation_token=cancellation_token,
+                    inicio=inicio,
+                )
+            else:
+                cls.actualizar_progreso(agente, 20, "Navegando...")
+
+                try:
+                    page.goto(url, timeout=timeout_s * 1000, wait_until="load")
+                except PlaywrightTimeoutError:
+                    # La página no terminó de cargar: seguimos con lo que haya.
+                    logger.warning(f"Browser '{agente.nombre}': timeout de carga en {url}")
+                    acciones_ejecutadas.append({
+                        "tipo": "navegar", "ok": False,
+                        "error": f"timeout de carga tras {timeout_s}s",
+                    })
+
+                registros, cancelado = cls._ejecutar_acciones(
+                    page=page,
+                    acciones=acciones,
+                    variables=variables,
+                    timeout_s=timeout_s,
+                    timeout_accion_ms=timeout_accion_ms,
                     agente=agente,
                     datos_extraidos=datos_extraidos,
                     screenshots=screenshots,
+                    cancellation_token=cancellation_token,
+                    progreso=lambda i, n, a: cls.actualizar_progreso(
+                        agente, min(90, 20 + int(70 * i / max(1, n))),
+                        f"Acción {i}/{n}: {a.get('tipo', '?')}",
+                    ),
                 )
-                acciones_ejecutadas.append(registro)
-                cls.actualizar_progreso(
-                    agente, min(90, 20 + int(70 * i / max(1, len(acciones)))),
-                    f"Acción {i}/{len(acciones)}: {accion.get('tipo', '?')}",
-                )
+                acciones_ejecutadas.extend(registros)
 
-            cls.actualizar_progreso(agente, 92, "Recogiendo resultado...")
-            try:
-                url_final = page.url or url
-                titulo = page.title() or ""
-                html = page.content() or ""
+                cls.actualizar_progreso(agente, 92, "Recogiendo resultado...")
                 try:
-                    texto = page.inner_text("body") or ""
-                except Exception:
-                    texto = ""
-            except Exception as e:
-                logger.warning(f"Browser '{agente.nombre}': error recogiendo resultado: {e}")
-                error = f"{type(e).__name__}: {e}"
+                    url_final = page.url or url
+                    titulo = page.title() or ""
+                    html = page.content() or ""
+                    try:
+                        texto = page.inner_text("body") or ""
+                    except Exception:
+                        texto = ""
+                except Exception as e:
+                    logger.warning(f"Browser '{agente.nombre}': error recogiendo resultado: {e}")
+                    error = f"{type(e).__name__}: {e}"
 
-            if len(html) > MAX_HTML_CHARS:
-                html = html[:MAX_HTML_CHARS]
-                html_truncado = True
+                if len(html) > MAX_HTML_CHARS:
+                    html = html[:MAX_HTML_CHARS]
+                    html_truncado = True
 
         except Exception as e:
             error = f"{type(e).__name__}: {e}"
@@ -262,6 +297,14 @@ class BrowserExecutor:
                     getattr(recurso, metodo)()
                 except Exception as e:
                     logger.debug(f"Browser: error cerrando {metodo}: {e}")
+
+        # ── Modo multi-URL: devolver el resultado agregado ──
+        if modo_multi:
+            if resultado_multi is not None:
+                return resultado_multi
+            vacio = _resultado_multi_vacio(error or 'browser_error')
+            vacio["duracion"] = time.time() - inicio
+            return False, f"Browser falló: {error}", vacio
 
         duracion = time.time() - inicio
         resultado = {
@@ -291,6 +334,203 @@ class BrowserExecutor:
         if datos_extraidos:
             resumen += f" | extraído: {list(datos_extraidos)[:3]}"
         return True, resumen, resultado
+
+    # ── Multi-URL ────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolver_urls(contexto: dict, ruta: str, max_urls: int) -> tuple[list[str] | None, str | None]:
+        """
+        Resuelve 'urls_desde' ("Agente.clave") contra el contexto y devuelve
+        la lista de URLs. Cada item puede ser un string o un dict con
+        'url', 'href' o 'link'.
+
+        Devuelve (urls, error). Si no se puede resolver, urls es None.
+        """
+        partes = [p for p in str(ruta or "").split(".") if p]
+        if not partes:
+            return None, "'urls_desde' está vacío"
+
+        valor = (contexto or {}).get(partes[0])
+        for parte in partes[1:]:
+            if isinstance(valor, dict) and parte in valor:
+                valor = valor[parte]
+            else:
+                valor = None
+                break
+
+        if valor is None:
+            return None, f"no se encontró '{ruta}' en el contexto"
+        if isinstance(valor, dict):
+            return None, f"'{ruta}' apunta a un dict, no a una lista"
+        if not isinstance(valor, (list, tuple)):
+            return None, f"'{ruta}' no es una lista (es {type(valor).__name__})"
+
+        urls: list[str] = []
+        for item in list(valor):
+            if len(urls) >= max_urls:
+                break
+            if isinstance(item, str) and item.strip():
+                urls.append(item.strip())
+            elif isinstance(item, dict):
+                for clave in ("url", "href", "link"):
+                    candidato = item.get(clave)
+                    if isinstance(candidato, str) and candidato.strip():
+                        urls.append(candidato.strip())
+                        break
+        return urls, None
+
+    @classmethod
+    def _navegar_varias_urls(
+        cls,
+        page,
+        agente,
+        contexto: dict,
+        urls_desde: str,
+        max_urls: int,
+        acciones: list,
+        variables: dict,
+        timeout_s: int,
+        timeout_accion_ms: int,
+        cancellation_token: CancellationToken | None,
+        inicio: float,
+    ) -> tuple[bool, str, dict]:
+        """Navega la lista de URLs de 'urls_desde' y agrega los resultados."""
+        urls, error_resolucion = cls._resolver_urls(contexto, urls_desde, max_urls)
+        if error_resolucion is not None:
+            vacio = _resultado_multi_vacio('urls_desde_not_found')
+            vacio["duracion"] = time.time() - inicio
+            return False, f"Browser: {error_resolucion}", vacio
+
+        if not urls:
+            vacio = _resultado_multi_vacio(None)
+            vacio["duracion"] = time.time() - inicio
+            return True, f"Browser: 0 URLs en '{urls_desde}'", vacio
+
+        resultados_por_url: list[dict] = []
+        errores: list[dict] = []
+        screenshots: list[str] = []
+        cancelado = False
+        total = len(urls)
+
+        for i, url in enumerate(urls, start=1):
+            if cancellation_token and cancellation_token.esta_cancelado():
+                cancelado = True
+                break
+
+            cls.actualizar_progreso(
+                agente, min(90, 10 + int(80 * (i - 1) / max(1, total))),
+                f"Navegando URL {i}/{total}",
+            )
+
+            registro = {
+                "url": url,
+                "titulo": "",
+                "datos_extraidos": {},
+                "acciones_ejecutadas": [],
+                "error": None,
+            }
+            destino = url if url.lower().startswith(
+                ("http://", "https://", "file://", "about:", "data:")
+            ) else "https://" + url
+
+            try:
+                try:
+                    page.goto(destino, timeout=timeout_s * 1000, wait_until="load")
+                except PlaywrightTimeoutError:
+                    logger.warning(f"Browser '{agente.nombre}': timeout de carga en {destino}")
+                    registro["acciones_ejecutadas"].append({
+                        "tipo": "navegar", "ok": False,
+                        "error": f"timeout de carga tras {timeout_s}s",
+                    })
+
+                registros, _ = cls._ejecutar_acciones(
+                    page=page,
+                    acciones=acciones,
+                    variables=variables,
+                    timeout_s=timeout_s,
+                    timeout_accion_ms=timeout_accion_ms,
+                    agente=agente,
+                    datos_extraidos=registro["datos_extraidos"],
+                    screenshots=screenshots,
+                )
+                registro["acciones_ejecutadas"].extend(registros)
+
+                try:
+                    registro["url"] = page.url or destino
+                    registro["titulo"] = page.title() or ""
+                except Exception as e:
+                    registro["error"] = f"{type(e).__name__}: {e}"
+            except Exception as e:
+                registro["error"] = f"{type(e).__name__}: {e}"
+                logger.warning(f"Browser '{agente.nombre}': falló la URL {url}: {e}")
+
+            if registro["error"]:
+                errores.append({"url": url, "error": registro["error"]})
+            resultados_por_url.append(registro)
+
+        exitos = len(resultados_por_url) - len(errores)
+        resultado = {
+            "urls_navegadas": len(resultados_por_url),
+            "resultados_por_url": resultados_por_url,
+            "errores": errores,
+            "screenshots": screenshots,
+            "error": 'cancelled' if cancelado else (None if exitos else 'all_urls_failed'),
+            "duracion": time.time() - inicio,
+        }
+
+        if cancelado:
+            cls.actualizar_progreso(agente, 100, "Cancelado")
+            return False, "Cancelado durante la navegación", resultado
+
+        if exitos == 0:
+            cls.actualizar_progreso(agente, 100, "Ninguna URL procesada")
+            return False, (
+                f"Browser: ninguna de las {len(resultados_por_url)} URLs se pudo procesar"
+            ), resultado
+
+        cls.actualizar_progreso(agente, 100, f"{exitos}/{len(resultados_por_url)} URLs")
+        return True, f"Browser: {exitos}/{len(resultados_por_url)} URLs procesadas", resultado
+
+    @classmethod
+    def _ejecutar_acciones(
+        cls,
+        page,
+        acciones: list,
+        variables: dict,
+        timeout_s: int,
+        timeout_accion_ms: int,
+        agente,
+        datos_extraidos: dict,
+        screenshots: list,
+        cancellation_token: CancellationToken | None = None,
+        progreso=None,
+    ) -> tuple[list[dict], bool]:
+        """Ejecuta una lista de acciones. Devuelve (registros, cancelado)."""
+        registros: list[dict] = []
+        for i, accion in enumerate(acciones, start=1):
+            if cancellation_token and cancellation_token.esta_cancelado():
+                return registros, True
+            if not isinstance(accion, dict):
+                registros.append({
+                    "tipo": "desconocida", "ok": False,
+                    "error": f"la acción #{i} no es un dict",
+                })
+                continue
+
+            registros.append(cls._ejecutar_accion(
+                page=page,
+                accion=accion,
+                variables=variables,
+                timeout_accion_ms=timeout_accion_ms,
+                timeout_s=timeout_s,
+                agente=agente,
+                datos_extraidos=datos_extraidos,
+                screenshots=screenshots,
+            ))
+            if progreso is not None:
+                progreso(i, len(acciones), accion)
+        return registros, False
+
 
     # ── Helpers ──────────────────────────────────────────────────
 

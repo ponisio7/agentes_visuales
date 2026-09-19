@@ -309,6 +309,13 @@ class PlanBuilder:
         kwargs['headless_browser'] = bool(config.get('headless', True))
         kwargs['bloquear_recursos_browser'] = bool(config.get('bloquear_recursos', False))
         kwargs['user_agent_browser'] = config.get('user_agent', '') or ''
+        # Modo multi-URL: navega una lista de URLs del contexto
+        kwargs['urls_desde_browser'] = config.get('urls_desde', '') or ''
+        kwargs['max_urls_browser'] = _a_int(config.get('max_urls'), 5)
+        acciones_por_url = config.get('acciones_por_url', [])
+        if not isinstance(acciones_por_url, list):
+            acciones_por_url = []
+        kwargs['acciones_por_url_browser'] = acciones_por_url
 
     def _kwargs_search(
         self,
