@@ -219,11 +219,21 @@ class AgenteValidator:
     
     @staticmethod
     def validar_url(url: str) -> tuple[bool, str]:
-        """Valida una URL."""
+        """Valida una URL.
+
+        Si la URL es una plantilla con referencias a dependencias
+        (p. ej. "{Buscar.resultados[0].href}"), no se puede validar de forma
+        estática: se acepta aquí y se validará en tiempo de ejecución, una
+        vez sustituidas las variables (lo hace el propio executor).
+        """
         if not url or not url.strip():
             return False, "La URL es obligatoria"
         
         url = url.strip()
+
+        if "{" in url and "}" in url:
+            return True, ""
+        
         if not url.startswith(('http://', 'https://')):
             return False, "La URL debe comenzar con http:// o https://"
         

@@ -124,6 +124,16 @@ class BrowserExecutor:
             cls.actualizar_progreso(agente, 100, "URL vacía")
             return False, "Browser: 'url_browser' está vacía", _resultado_vacio('empty_url')
 
+        # Si tras sustituir quedan placeholders, la dependencia no estaba
+        # disponible o la ruta no existe: error claro en vez de navegar a
+        # una URL literal con llaves.
+        if "{" in url and "}" in url:
+            cls.actualizar_progreso(agente, 100, "URL sin resolver")
+            return False, (
+                f"Browser: la URL quedó sin resolver tras sustituir variables: "
+                f"{url[:120]}"
+            ), _resultado_vacio('unresolved_url')
+
         if not url.lower().startswith(("http://", "https://", "file://", "about:", "data:")):
             url = "https://" + url
 
