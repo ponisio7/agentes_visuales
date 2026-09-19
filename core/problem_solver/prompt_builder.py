@@ -303,6 +303,11 @@ class PromptBuilder:
         "hacer N peticiones HTTP, usa un agente Loop con `continuar_en_error=true` "
         "y un timeout por item. NO hagas un bucle implícito dentro de un "
         "agente Python: bloqueará el sandbox.",
+        "**RESPETA EL FORMATO PEDIDO**: Si el problema especifica un formato de "
+        "archivo concreto (por ejemplo .html, .docx, .pdf, .md, .csv, .json, .svg, "
+        ".xml), el paso File de escritura DEBE usar esa extensión en "
+        "'archivo_destino'. NUNCA uses nombres genéricos como 'salida.txt', "
+        "'output.txt' o 'resultado.txt' si el problema especifica un formato.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'
