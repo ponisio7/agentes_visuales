@@ -36,6 +36,9 @@ def get_rate_limiter() -> RateLimiter:
 
 # A partir de este tamaño, el prompt se manda en varias llamadas.
 MAX_PROMPT_CHARS = 24000
+# Tiempo máximo de cada llamada: crece con el tamaño del prompt.
+TIMEOUT_MIN = 60
+TIMEOUT_MAX = 300
 # Una variable sustituida mayor que esto justifica trocear por dependencia.
 MIN_CHARS_VARIABLE_GRANDE = 4000
 MARCADOR_OMITIDO = "[contenido omitido: se procesa en otra llamada]"
@@ -112,17 +115,66 @@ def planificar_chunks(prompt_plantilla: str, variables: dict,
     grandes = [k for k in presentes if len(str(variables[k])) >= min_grande]
 
     prompt_completo = sustituir_variables(prompt_plantilla, variables)
-    if len(prompt_completo) <= max_chars or len(grandes) < 2:
+    if len(prompt_completo) <= max_chars or not grandes:
+        return []
+
+    if len(grandes) >= 2:
+        # Una llamada por variable grande (la instrucción se repite entera).
+        chunks = []
+        for clave in grandes:
+            variables_chunk = dict(variables)
+            for otra in grandes:
+                if otra != clave:
+                    variables_chunk[otra] = MARCADOR_OMITIDO
+            chunks.append(sustituir_variables(prompt_plantilla, variables_chunk))
+        return chunks
+
+    # Una sola variable grande: si es una lista JSON, se parte por items.
+    clave = grandes[0]
+    try:
+        items = json.loads(variables[clave])
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(items, list) or len(items) < 2:
         return []
 
     chunks = []
-    for clave in grandes:
+    for grupo in _agrupar_items(items, max_chars // 2):
         variables_chunk = dict(variables)
-        for otra in grandes:
-            if otra != clave:
-                variables_chunk[otra] = MARCADOR_OMITIDO
+        variables_chunk[clave] = json.dumps(grupo, ensure_ascii=False, default=str)
         chunks.append(sustituir_variables(prompt_plantilla, variables_chunk))
     return chunks
+
+
+def _agrupar_items(items: list, max_chars_grupo: int) -> list[list]:
+    """Agrupa items por tamaño aproximado de su JSON."""
+    grupos: list[list] = []
+    actual: list = []
+    tam = 0
+    for item in items:
+        try:
+            peso = len(json.dumps(item, ensure_ascii=False, default=str))
+        except (TypeError, ValueError):
+            peso = len(str(item))
+        if actual and tam + peso > max_chars_grupo:
+            grupos.append(actual)
+            actual, tam = [], 0
+        actual.append(item)
+        tam += peso
+    if actual:
+        grupos.append(actual)
+    return grupos
+
+
+def timeout_para_prompt(contenido: str, agente=None) -> int:
+    """Timeout de la llamada LLM: crece con el tamaño del prompt."""
+    configurado = getattr(agente, 'timeout_llm', None) if agente is not None else None
+    if configurado:
+        try:
+            return max(30, int(configurado))
+        except (TypeError, ValueError):
+            pass
+    return max(TIMEOUT_MIN, min(TIMEOUT_MAX, 30 + len(contenido or "") // 300))
 
 
 class LLMExecutor:
@@ -160,6 +212,8 @@ class LLMExecutor:
         Devuelve (ok, mensaje, datos) con 'respuesta', 'finish_reason',
         'elapsed' y 'tokens' cuando va bien.
         """
+        timeout_llamada = timeout_para_prompt(contenido_usuario, agente)
+
         messages = [
             {
                 "role": "system",
@@ -203,7 +257,7 @@ class LLMExecutor:
                             "type": "enabled" if thinking_enabled else "disabled"
                         }
                     },
-                    timeout=60,
+                    timeout=timeout_llamada,
                 )
             except Exception as e:
                 error = e
@@ -214,7 +268,7 @@ class LLMExecutor:
         thread = threading.Thread(target=hacer_llamada, daemon=True)
         thread.start()
 
-        timeout = 60
+        timeout = timeout_llamada
         while not completed.is_set():
             if cancellation_token and cancellation_token.esta_cancelado():
                 return False, "Cancelado por usuario durante la llamada LLM", {

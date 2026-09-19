@@ -163,3 +163,30 @@ def test_json_util_detecta_plantillas():
     assert json_util({"a": "..."}) is False
     assert json_util({"a": []}) is False
     assert json_util({"a": [{"url": "http://x"}]}) is True
+
+
+def test_prompt_grande_con_una_lista_se_trocea_por_items(api_falsa):
+    api_falsa["respuestas"] = [
+        '{"traducciones": [{"url": "u1", "texto": "uno"}]}',
+        '{"traducciones": [{"url": "u2", "texto": "dos"}]}',
+        '{"traducciones": [{"url": "u3", "texto": "tres"}]}',
+    ]
+    contexto = {"Dep": {"resultados": [
+        {"url": f"u{i}", "texto": "x" * 9000} for i in range(3)
+    ]}}
+    agente = _agente("Traduce y devuelve JSON: {Dep.resultados}")
+
+    ok, _, resultado = LLMExecutor.ejecutar(agente, contexto)
+
+    assert ok is True
+    assert len(api_falsa["mensajes"]) == 3
+    assert resultado["chunks"] == 3
+    assert [t["url"] for t in resultado["json"]["traducciones"]] == ["u1", "u2", "u3"]
+
+
+def test_timeout_crece_con_el_prompt():
+    from core.executors.llm_executor import timeout_para_prompt
+
+    assert timeout_para_prompt("x" * 1000) == 60
+    assert timeout_para_prompt("x" * 32000) > 60
+    assert timeout_para_prompt("x" * 32000, SimpleNamespace(timeout_llm=200)) == 200
