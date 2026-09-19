@@ -77,7 +77,7 @@ ESPERA_CONTENIDO_PASO_MS = 250
 # Devuelve el texto del contenedor con más contenido, descartando navegación,
 # cabeceras, pies, banners de cookies y bloques llenos de enlaces. Genérico:
 # no conoce ningún sitio concreto.
-_JS_TEXTO_PRINCIPAL = """
+_JS_TEXTO_PRINCIPAL = r"""
 (opciones) => {
   const ruido = [
     'script','style','noscript','svg','iframe','form','template','button',
