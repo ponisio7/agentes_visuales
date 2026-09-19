@@ -1068,7 +1068,7 @@ class Agente:
             TipoAgente.SHELL: {'timeout_shell': 30},
             TipoAgente.HTTP: {'metodo_http': 'GET', 'timeout_http': 30},
             TipoAgente.LLM: {
-                'modelo_llm': 'deepseek-v4-flash',
+                'modelo_llm': 'deepseek-v4-pro',
                 'temperatura_llm': 0.7,
                 'max_tokens_llm': 4000,             # ← subido de 1000 a 4000
                 'reasoning_effort_llm': 'low',

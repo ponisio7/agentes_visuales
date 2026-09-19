@@ -154,8 +154,8 @@ def cargar_entorno_desde_archivos() -> dict[str, str]:
 # CONSTANTES
 # ============================================================
 
-DEFAULT_MODEL = "deepseek-v4-flash"
-FALLBACK_MODELS = ["deepseek-v4-pro"]
+DEFAULT_MODEL = "deepseek-v4-pro"
+FALLBACK_MODELS = ["deepseek-v4-flash"]
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_TIMEOUT = 30
 DEFAULT_MAX_RETRIES = 2

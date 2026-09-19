@@ -85,7 +85,7 @@ class PlanValidator:
             if 'prompt' not in config or not config['prompt']:
                 config['prompt'] = "Analiza el siguiente contexto:\n{contexto}"
             if 'modelo' not in config:
-                config['modelo'] = 'deepseek-v4-flash'
+                config['modelo'] = 'deepseek-v4-pro'
             if 'temperatura' not in config:
                 config['temperatura'] = 0.7
 

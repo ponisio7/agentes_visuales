@@ -100,7 +100,7 @@ NUNCA uses sinónimos. Usa EXACTAMENTE estos nombres de campo:
               "headers": {{}}, "body": "", "timeout": 30}}
   PROHIBIDO usar "accion", "endpoint", "uri".
 
-- **LLM**: {{"prompt": "...", "modelo": "deepseek-v4-flash",
+- **LLM**: {{"prompt": "...", "modelo": "deepseek-v4-pro",
             "temperatura": 0.7, "max_tokens": 4000,
             "reasoning_effort": "low", "thinking_enabled": false}}
   PROHIBIDO usar "instruction", "instruction_prompt".

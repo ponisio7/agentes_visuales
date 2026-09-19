@@ -89,7 +89,7 @@ class LLMExecutor:
                 "Prueba: python main.py --check-env"
             ), {'error': 'missing_api_key'}
 
-        modelo = getattr(agente, 'modelo_llm', 'deepseek-v4-flash')
+        modelo = getattr(agente, 'modelo_llm', 'deepseek-v4-pro')
         reasoning_effort = getattr(agente, 'reasoning_effort_llm', 'low') or 'low'
         thinking_enabled = bool(getattr(agente, 'thinking_enabled_llm', False))
 
