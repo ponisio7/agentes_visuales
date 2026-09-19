@@ -59,7 +59,7 @@ en milisegundos (opcional).
 | `tipo` | Campos | Qué hace |
 |---|---|---|
 | `esperar` | `selector`, `estado` (`visible`/`attached`), `milisegundos` | Espera a que aparezca un selector (o una espera temporal si no hay selector). |
-| `extraer` | `selector`, `formato` (`html`/`text`/`attr`), `nombre`, `atributo`, `multiple` | Extrae contenido y lo guarda en `datos_extraidos[nombre]`. Con `multiple: true` devuelve una lista. |
+| `extraer` | `selector`, `formato` (`html`/`text`/`attr`/`texto_principal`), `nombre`, `atributo`, `multiple` | Extrae contenido y lo guarda en `datos_extraidos[nombre]`. Con `multiple: true` devuelve una lista. |
 | `click` | `selector` | Pulsa un elemento. |
 | `rellenar` | `selector`, `valor` | Escribe en un campo. |
 | `scroll` | `hasta` (`bottom`/`top`/selector CSS), `pixeles` | Desplaza la página. |
@@ -69,6 +69,21 @@ en milisegundos (opcional).
 
 Un error en una acción **no aborta** el resto: se registra en
 `acciones_ejecutadas` con `ok: false` y `error`.
+
+#### Extracción de texto principal
+
+`formato: texto_principal` devuelve el contenido útil de la página (el
+contenedor con más texto) **descartando** navegación, cabeceras, pies,
+formularios y bloques de cookies/consentimiento/menús/sidebars. Es lo
+recomendado para artículos y páginas de contenido: con un `selector: "p"`
+a pelo suelen salir antes los avisos de cookies que el propio contenido.
+
+- Acepta `selector` para acotar la búsqueda a un contenedor.
+- Si una extracción normal (`html`/`text`/`attr`) falla o devuelve vacío,
+  el executor **cae automáticamente** a `texto_principal` y lo anota en la
+  acción (`fallback: texto_principal`).
+- Tras cargar la página se espera (hasta 5 s, o hasta que el texto deje de
+  crecer) a que haya contenido visible, para webs que pintan con JS.
 
 ### 2.3 Ejemplo genérico
 
@@ -84,6 +99,10 @@ configuracion:
       selector: "table.datos"
       formato: html
       nombre: tabla
+    - tipo: extraer
+      selector: "article, main"
+      formato: texto_principal
+      nombre: contenido
     - tipo: scroll
       hasta: bottom
     - tipo: screenshot
@@ -92,7 +111,31 @@ configuracion:
   headless: true
 ```
 
-### 2.4 Contrato de salida
+### 2.4 Navegar varias URLs en un solo paso
+
+En lugar de un `Loop` (que no puede invocar Browser) se usa `urls_desde`:
+
+```yaml
+tipo: Browser
+dependencias: ["Buscar"]
+configuracion:
+  urls_desde: "Buscar.resultados"   # lista de URLs (strings o dicts con url/href/link)
+  max_urls: 5
+  acciones_por_url:
+    - tipo: extraer
+      selector: "article, main"
+      formato: texto_principal
+      nombre: contenido
+  timeout: 30
+```
+
+Si `urls_desde` está presente, `url` no hace falta y el resultado es
+agregado (ver 2.5). Respeta la cancelación entre URLs y cierra el
+navegador siempre.
+
+### 2.5 Contrato de salida
+
+**Una URL** (`url`):
 
 ```python
 {
@@ -108,6 +151,27 @@ configuracion:
     "duracion": float,           # segundos
 }
 ```
+
+**Varias URLs** (`urls_desde`):
+
+```python
+{
+    "urls_navegadas": int,
+    "resultados_por_url": [
+        {"url": str, "titulo": str, "datos_extraidos": dict,
+         "acciones_ejecutadas": list, "error": str | None},
+    ],
+    "errores": [{"url": str, "error": str}],
+    "screenshots": list,
+    "extraccion_vacia": bool,    # True si NINGUNA URL devolvió datos
+    "error": str | None,         # None, 'urls_desde_not_found', 'all_urls_failed', 'cancelled'
+    "duracion": float,
+}
+```
+
+`extraccion_vacia: true` (con su aviso en el log y en el resumen del paso)
+significa que la navegación fue bien pero los selectores no encontraron
+contenido: hay que revisarlos o usar `texto_principal`.
 
 ---
 

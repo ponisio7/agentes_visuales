@@ -142,7 +142,10 @@ class PromptBuilder:
         "Browser": (
             "Navega una URL real con un navegador (Playwright/Chromium) y ejecuta "
             "acciones declarativas: esperar, extraer, click, rellenar, scroll, "
-            "screenshot, ejecutar_js, navegar. Devuelve el HTML final, el texto "
+            "screenshot, ejecutar_js, navegar. En 'extraer', el formato "
+            "'texto_principal' devuelve el contenido útil de la página sin "
+            "menús, cabeceras, pies ni avisos de cookies (recomendado para "
+            "artículos y páginas de contenido). Devuelve el HTML final, el texto "
             "visible, el título y los datos extraídos. Úsalo cuando la información "
             "esté en una página HTML (no en una API JSON) o requiera interacción."
         ),
@@ -306,7 +309,7 @@ class PromptBuilder:
         },
         "LLM": {
             "prompt": "instrucción para el modelo",
-            "modelo": "deepseek-v4-pro",
+            "modelo": "deepseek-v4-flash",
             "temperatura": 0.7,
             "max_tokens": 4000,
             "reasoning_effort": "low",
@@ -330,7 +333,8 @@ class PromptBuilder:
             "url": "URL a navegar (una sola página)",
             "acciones": [
                 {"tipo": "esperar", "selector": "CSS", "timeout": 10000},
-                {"tipo": "extraer", "selector": "CSS", "formato": "html|text|attr",
+                {"tipo": "extraer", "selector": "CSS",
+                 "formato": "html|text|attr|texto_principal",
                  "nombre": "clave", "atributo": "href", "multiple": False},
                 {"tipo": "click", "selector": "CSS"},
                 {"tipo": "rellenar", "selector": "CSS", "valor": "texto"},
@@ -342,7 +346,9 @@ class PromptBuilder:
             "urls_desde": "NombreAgente.clave (lista de URLs; alternativa a 'url')",
             "max_urls": 5,
             "acciones_por_url": [
-                {"tipo": "extraer", "selector": "CSS", "nombre": "clave", "multiple": True},
+                {"tipo": "extraer", "selector": "article, main",
+                 "formato": "texto_principal", "nombre": "contenido",
+                 "multiple": False},
             ],
             "timeout": 30,
             "timeout_accion": 10000,
@@ -417,9 +423,9 @@ class PromptBuilder:
         "    max_urls: 5\n"
         "    acciones_por_url:\n"
         "      - tipo: extraer\n"
-        "        selector: 'h2'\n"
-        "        nombre: elementos\n"
-        "        multiple: true\n"
+        "        selector: 'article, main'\n"
+        "        formato: texto_principal\n"
+        "        nombre: contenido\n"
         "  NO uses un Loop para navegar: el código Python de un Loop no puede "
         "invocar Browser. Un solo paso Browser con `urls_desde` recorre la lista "
         "y devuelve `resultados_por_url`.",
