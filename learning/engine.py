@@ -79,25 +79,6 @@ class LearningEngine:
         except Exception as e:
             logger.warning(f"No se pudo aplicar esquema de learning: {e}")
 
-    def registrar_reparacion_plan(self, problema: str, tipo: str) -> None:
-        """
-        Registra que un plan fue reparado (porque el LLM no cumplió un
-        requisito explícito). Alimenta la minería de lecciones: si un
-        tipo de reparación se repite, se genera una lección que va al
-        prompt para que el LLM aprenda a no necesitar la reparación.
-        """
-        try:
-            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
-                conn.execute("PRAGMA busy_timeout=10000")
-                conn.execute(
-                    """INSERT INTO reparaciones_plan (problema, tipo, fecha)
-                    VALUES (?, ?, ?)""",
-                    (problema[:500], tipo, datetime.now().isoformat()),
-                )
-                conn.commit()
-        except Exception as e:
-            logger.debug(f"No se pudo registrar reparación: {e}")
-
     # ------------------------------------------------------------------
     # ENTRENAMIENTO / MINERÍA
     # ------------------------------------------------------------------

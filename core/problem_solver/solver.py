@@ -98,18 +98,15 @@ class ProblemSolver:
         contexto_extra: dict | None = None,
         max_pasos: int = 10,
         nivel_detalle: str = "normal",
-        _es_regeneracion: bool = False,
         _instruccion_extra: str = "",
         _intento_validacion: int = 0,
     ) -> ExecutionPlan:
         """
         Analiza un problema y genera un plan de ejecución completo.
 
-        Si el plan no cumple un requisito explícito del problema (ej:
-        "con imágenes"), regenera el plan UNA VEZ con una instrucción
-        forzada. Si tras la regeneración sigue sin cumplirlo, aplica un
-        parche determinista aislado en `core.plan_repairs` y lo registra
-        en el LearningEngine.
+        Si el plan resultante tiene errores bloqueantes en el código
+        Python, reintenta la generación hasta MAX_INTENTOS_VALIDACION
+        veces con una instrucción correctiva.
         """
         if not problema or not problema.strip():
             raise ValueError("El problema no puede estar vacío")
@@ -153,48 +150,10 @@ class ProblemSolver:
         self._plan_actual = plan
 
         try:
-            # 6. Detectar requisitos no cumplidos
-            from core.plan_repairs import (
-                aplicar_parche,
-                construir_instruccion_regeneracion,
-                detectar_requisitos_no_cumplidos,
-            )
-            requisitos_faltantes = detectar_requisitos_no_cumplidos(problema, plan)
-
-            # 7. Si hay requisitos faltantes y NO estamos ya en regeneración,
-            #    regenerar UNA VEZ con instrucción forzada.
-            if requisitos_faltantes and not _es_regeneracion:
-                self.logger.warning(
-                    f"⚠️ Plan incompleto: faltan requisitos {requisitos_faltantes}. "
-                    f"Regenerando con instrucción forzada..."
-                )
-                self._plan_actual = None  # limpiar antes de recursión
-
-                instruccion = construir_instruccion_regeneracion(requisitos_faltantes)
-                return self.resolver_problema(
-                    problema=problema,
-                    contexto_extra=contexto_extra,
-                    max_pasos=max_pasos,
-                    nivel_detalle=nivel_detalle,
-                    _es_regeneracion=True,
-                    _instruccion_extra=instruccion,
-                )
-
-            # 8. Si seguimos con requisitos faltantes, aplicar parche (aislado)
-            if requisitos_faltantes:
-                for req in requisitos_faltantes:
-                    self.logger.warning(
-                        f"⚠️ Regeneración no resolvió '{req}'. Aplicando parche..."
-                    )
-                    parche_aplicado = aplicar_parche(problema, plan, req)
-                    if parche_aplicado:
-                        self.logger.warning(f"🔧 Parche aplicado: {parche_aplicado}")
-                        self._registrar_reparacion(problema, parche_aplicado)
-
-            # 9. Generar objetos Agente
+            # 6. Generar objetos Agente
             plan.agentes_generados = self.builder.generar_agentes(plan)
 
-            # 10. Validar
+            # 7. Validar
             es_valido, errores = self.validator.validar_plan(plan)
 
             errores_graves = [
@@ -242,7 +201,6 @@ class ProblemSolver:
                         contexto_extra=contexto_extra,
                         max_pasos=max_pasos,
                         nivel_detalle=nivel_detalle,
-                        _es_regeneracion=True,
                         _instruccion_extra=instruccion,
                         _intento_validacion=_intento_validacion + 1,
                     )
@@ -259,7 +217,7 @@ class ProblemSolver:
                         if e not in plan.advertencias
                     )
 
-            # 11. Guardar en caché
+            # 8. Guardar en caché
             self._plan_cache[plan.id] = plan
 
             self.logger.info(
@@ -270,16 +228,6 @@ class ProblemSolver:
 
         finally:
             self._plan_actual = None
-
-    def _registrar_reparacion(self, problema: str, tipo: str) -> None:
-        """Registra una reparación de plan en el LearningEngine."""
-        try:
-            from learning import obtener_learning_engine
-            engine = obtener_learning_engine()
-            if engine is not None:
-                engine.registrar_reparacion_plan(problema=problema, tipo=tipo)
-        except Exception as e:
-            self.logger.debug(f"No se pudo registrar reparación: {e}")
 
     def refinar_plan(self, plan: ExecutionPlan, instruccion: str) -> ExecutionPlan:
         """Refina un plan existente según una instrucción del usuario."""

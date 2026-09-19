@@ -18,8 +18,6 @@ from collections import Counter, defaultdict
 from contextlib import closing
 from dataclasses import dataclass
 
-from core.plan_repairs import GENERADOR_URLS_NOMBRE
-
 logger = logging.getLogger(__name__)
 
 
@@ -50,51 +48,6 @@ class ExtractorLecciones:
     def __init__(self, db_path: str):
         self.db_path = str(db_path)
 
-    def _lecciones_por_reparaciones(self, conn: sqlite3.Connection) -> list[Leccion]:
-        """
-        Si un tipo de reparación se repite N veces, genera una lección
-        que se inyectará en el prompt para que el LLM aprenda.
-        """
-        try:
-            cursor = conn.execute(
-                """
-                SELECT tipo, COUNT(*) as n
-                FROM reparaciones_plan
-                GROUP BY tipo
-                HAVING n >= ?
-                """,
-                (MIN_EJEMPLOS_PARA_LECCION,),
-            )
-        except sqlite3.OperationalError:
-            # Tabla no existe (BD antigua). Ignorar.
-            return []
-
-        lecciones = []
-        for fila in cursor.fetchall():
-            tipo = fila["tipo"]
-            n = fila["n"]
-            regla = self._texto_leccion_reparacion(tipo, n)
-            if regla:
-                confianza = min(0.95, 0.5 + n / 20)
-                lecciones.append(Leccion(
-                    regla=regla,
-                    evidencia=f"{n} planes reparados automáticamente",
-                    confianza=confianza,
-                    categoria="reparacion_recurrente",
-                ))
-        return lecciones
-
-    def _texto_leccion_reparacion(self, tipo: str, n: int) -> str | None:
-        if tipo == GENERADOR_URLS_NOMBRE:
-            return (
-                "Cuando el usuario pida un documento CON IMÁGENES, DEBES "
-                "incluir un paso que genere las URLs de las imágenes "
-                "(usa `picsum.photos` u otra API pública sin auth). "
-                "El agente File de .docx descargará e insertará esas imágenes. "
-                "NO generes solo el texto del documento."
-            )
-        return None
-
     # ------------------------------------------------------------------
     # API pública
     # ------------------------------------------------------------------
@@ -108,7 +61,6 @@ class ExtractorLecciones:
                 lecciones.extend(self._lecciones_por_error_recurrente(conn))
                 lecciones.extend(self._lecciones_por_score_bajo(conn))
                 lecciones.extend(self._lecciones_por_estructura(conn))
-                lecciones.extend(self._lecciones_por_reparaciones(conn))   # ← AÑADIR
         except Exception as e:
             logger.debug(f"ExtractorLecciones falló: {e}")
             return []
