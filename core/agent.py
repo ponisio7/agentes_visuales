@@ -724,13 +724,26 @@ class Agente:
         return True, ""
 
     def _validar_browser(self) -> tuple[bool, str]:
-        """Valida configuración de Browser."""
-        if not self.url_browser or not self.url_browser.strip():
-            return False, "Browser: 'url_browser' es obligatoria"
+        """Valida configuración de Browser (una URL o multi-URL)."""
+        urls_desde = (self.urls_desde_browser or "").strip()
 
-        valido, mensaje = AgenteValidator.validar_url(self.url_browser)
-        if not valido:
-            return False, f"Browser: {mensaje}"
+        if urls_desde:
+            # Modo multi-URL: 'url' no es necesaria.
+            valido, mensaje = self._validar_urls_desde(urls_desde)
+            if not valido:
+                return False, f"Browser: {mensaje}"
+            if self.max_urls_browser < 1:
+                return False, (
+                    f"Browser: 'max_urls_browser' debe ser >= 1 "
+                    f"(actual: {self.max_urls_browser})"
+                )
+        else:
+            if not self.url_browser or not self.url_browser.strip():
+                return False, "Browser: 'url_browser' es obligatoria"
+
+            valido, mensaje = AgenteValidator.validar_url(self.url_browser)
+            if not valido:
+                return False, f"Browser: {mensaje}"
 
         if self.timeout_browser < 1:
             return False, (
@@ -744,15 +757,43 @@ class Agente:
                 f"(actual: {self.timeout_accion_browser})"
             )
 
-        if not isinstance(self.acciones_browser, list):
-            return False, "Browser: 'acciones_browser' debe ser una lista"
+        valido, mensaje = self._validar_acciones_browser(
+            self.acciones_browser, "acciones_browser"
+        )
+        if not valido:
+            return False, mensaje
+
+        valido, mensaje = self._validar_acciones_browser(
+            self.acciones_por_url_browser, "acciones_por_url_browser"
+        )
+        if not valido:
+            return False, mensaje
+
+        return True, ""
+
+    @staticmethod
+    def _validar_urls_desde(urls_desde: str) -> tuple[bool, str]:
+        """Valida el formato 'NombreAgente.clave' de 'urls_desde'."""
+        partes = str(urls_desde).split(".")
+        if len(partes) < 2 or not all(parte.isidentifier() for parte in partes):
+            return False, (
+                "'urls_desde' debe tener el formato 'NombreAgente.clave' "
+                f"(recibido: '{str(urls_desde)[:60]}')"
+            )
+        return True, ""
+
+    @staticmethod
+    def _validar_acciones_browser(acciones, etiqueta: str) -> tuple[bool, str]:
+        """Valida una lista de acciones de Browser."""
+        if not isinstance(acciones, list):
+            return False, f"Browser: '{etiqueta}' debe ser una lista"
 
         acciones_validas = {
             "esperar", "extraer", "click", "rellenar",
             "scroll", "screenshot", "ejecutar_js", "navegar",
         }
         formatos_extraccion = {"html", "text", "attr"}
-        for i, accion in enumerate(self.acciones_browser):
+        for i, accion in enumerate(acciones):
             if not isinstance(accion, dict):
                 return False, f"Browser: la acción #{i + 1} debe ser un dict"
             tipo = accion.get("tipo")

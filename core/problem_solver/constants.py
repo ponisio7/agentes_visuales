@@ -50,6 +50,8 @@ CAMPOS_VALIDOS_POR_TIPO: dict[str, set[str]] = {
     "Browser": {
         "url", "acciones", "timeout", "timeout_accion",
         "headless", "bloquear_recursos", "user_agent",
+        # Modo multi-URL
+        "urls_desde", "max_urls", "acciones_por_url",
     },
     "Search": {"query", "max_resultados", "region", "timeout"},
 }
