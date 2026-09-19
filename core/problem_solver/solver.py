@@ -182,7 +182,8 @@ class ProblemSolver:
                     self.logger.error(
                         f"❌ Plan con {len(errores_graves)} errores bloqueantes. "
                         f"Reintentando generación "
-                        f"({_intento_validacion + 1}/{MAX_INTENTOS_VALIDACION})..."
+                        f"({_intento_validacion + 1}/{MAX_INTENTOS_VALIDACION})...\n"
+                        + "\n".join(f"   · {e}" for e in errores_graves)
                     )
 
                     instruccion = (
@@ -209,7 +210,8 @@ class ProblemSolver:
                     self.logger.error(
                         f"❌ Plan con errores bloqueantes tras "
                         f"{MAX_INTENTOS_VALIDACION} reintentos. "
-                        f"Se dejará pasar; Plan B en ejecución decidirá."
+                        f"Se dejará pasar; Plan B en ejecución decidirá.\n"
+                        + "\n".join(f"   · {e}" for e in errores_graves)
                     )
 
                     plan.advertencias.extend(
