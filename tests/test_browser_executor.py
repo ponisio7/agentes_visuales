@@ -35,11 +35,15 @@ class _FakeLocator:
         return _FakeLocator(self.page, self.selector, i)
 
     def count(self):
+        if self.selector in self.page.selectores_vacios:
+            return 0
         if self.selector in self.page.multi:
             return len(self.page.multi[self.selector])
         return 1
 
     def inner_text(self):
+        if self.selector in self.page.selectores_vacios:
+            raise browser_executor.PlaywrightTimeoutError(f"timeout {self.selector}")
         if self.selector in self.page.multi:
             items = self.page.multi[self.selector]
             return items[self.indice or 0]
@@ -79,6 +83,9 @@ class _FakePage:
         self.error_goto_urls: dict = {}
         self.al_esperar = None  # callback opcional
         self.al_navegar = None  # callback opcional (recibe la url)
+        self.selectores_vacios: set = set()
+        self.texto_principal = "Texto principal de prueba"
+        self.longitud_texto = 1000  # suficiente para no esperar contenido
 
     # ── API usada por el executor ──
     def title(self):
@@ -111,8 +118,12 @@ class _FakePage:
     def fill(self, selector, valor, timeout=None):
         self.llamadas.append(("page_fill", selector, valor))
 
-    def evaluate(self, script):
+    def evaluate(self, script, arg=None):
         self.llamadas.append(("evaluate", script))
+        if script == browser_executor._JS_TEXTO_PRINCIPAL:
+            return self.texto_principal
+        if script == browser_executor._JS_LONGITUD_TEXTO:
+            return self.longitud_texto() if callable(self.longitud_texto) else self.longitud_texto
         if script == "document.title":
             return "Título JS"
         if script == "1+1":
@@ -598,3 +609,106 @@ def test_cancelacion_entre_urls(fake_browser):
     assert ok is False
     assert resultado["error"] == "cancelled"
     assert resultado["urls_navegadas"] == 1  # la segunda ya no se navega
+
+
+# ============================================================
+# EXTRACCIÓN DE TEXTO PRINCIPAL Y FALLBACK
+# ============================================================
+
+def _agente_extraer(acciones) -> Agente:
+    return Agente(
+        nombre="ExtraerContenido",
+        tipo=TipoAgente.BROWSER,
+        url_browser="https://ejemplo.test",
+        acciones_browser=acciones,
+    )
+
+
+def test_extraer_texto_principal(fake_browser):
+    page, _, _ = fake_browser
+    page.texto_principal = "Titular real\n\nCuerpo de la noticia sin cookies."
+
+    ok, _, resultado = BrowserExecutor.ejecutar(
+        _agente_extraer([{"tipo": "extraer", "formato": "texto_principal",
+                          "nombre": "contenido"}]), {})
+
+    assert ok is True
+    assert resultado["datos_extraidos"]["contenido"].startswith("Titular real")
+
+
+def test_fallback_a_texto_principal_si_el_selector_no_encuentra(fake_browser):
+    page, _, _ = fake_browser
+    page.texto_principal = "Contenido principal"
+    page.selectores_vacios.add("article")
+
+    ok, _, resultado = BrowserExecutor.ejecutar(
+        _agente_extraer([{"tipo": "extraer", "selector": "article",
+                          "nombre": "contenido"}]), {})
+
+    assert ok is True
+    assert resultado["datos_extraidos"]["contenido"] == "Contenido principal"
+    registro = resultado["acciones_ejecutadas"][0]
+    assert registro["ok"] is True
+    assert registro["fallback"] == "texto_principal"
+
+
+def test_extraccion_vacia_marca_error_en_la_accion(fake_browser):
+    """Si el selector falla Y no hay texto principal, la acción es un error."""
+    page, _, _ = fake_browser
+    page.texto_principal = ""
+    page.selectores_vacios.add("article")
+
+    ok, _, resultado = BrowserExecutor.ejecutar(
+        _agente_extraer([{"tipo": "extraer", "selector": "article",
+                          "nombre": "contenido"}]), {})
+
+    assert ok is True  # el paso no se rompe
+    assert "contenido" not in resultado["datos_extraidos"]
+    assert resultado["acciones_ejecutadas"][0]["ok"] is False
+    assert "no se pudo extraer" in resultado["acciones_ejecutadas"][0]["error"]
+
+
+def test_espera_contenido_hasta_que_aparezca_texto(fake_browser):
+    """Páginas que pintan el texto con JS: se espera antes de extraer."""
+    page, _, _ = fake_browser
+    largos = iter([0, 50, 300])
+
+    def _largo():
+        try:
+            return next(largos)
+        except StopIteration:
+            return 300
+
+    page.longitud_texto = _largo
+
+    ok, _, resultado = BrowserExecutor.ejecutar(
+        _agente_extraer([{"tipo": "extraer", "selector": "h1", "nombre": "titulo"}]), {})
+
+    assert ok is True
+    assert ("wait_for_timeout", browser_executor.ESPERA_CONTENIDO_PASO_MS) in page.llamadas
+    assert "titulo" in resultado["datos_extraidos"]
+
+
+def test_multi_url_avisa_si_la_extraccion_queda_vacia(fake_browser):
+    page, _, _ = fake_browser
+    page.texto_principal = ""
+    page.selectores_vacios.add("h2")
+    contexto = {"Buscar": {"resultados": ["https://a.test", "https://b.test"]}}
+
+    ok, mensaje, resultado = BrowserExecutor.ejecutar(_agente_multi(), contexto)
+
+    assert ok is True
+    assert resultado["extraccion_vacia"] is True
+    assert "AVISO" in mensaje
+    assert all((r["datos_extraidos"] or {}) == {} for r in resultado["resultados_por_url"])
+
+
+def test_multi_url_no_avisa_cuando_si_hay_datos(fake_browser):
+    page, _, _ = fake_browser
+    contexto = {"Buscar": {"resultados": ["https://a.test"]}}
+
+    ok, mensaje, resultado = BrowserExecutor.ejecutar(_agente_multi(), contexto)
+
+    assert ok is True
+    assert resultado["extraccion_vacia"] is False
+    assert "AVISO" not in mensaje

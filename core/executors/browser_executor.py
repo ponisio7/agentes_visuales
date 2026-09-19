@@ -68,6 +68,57 @@ ACCIONES_VALIDAS = (
 # Tipos de recurso que se pueden bloquear para acelerar la carga.
 RECURSOS_BLOQUEABLES = {"image", "font", "stylesheet", "media"}
 
+# ── Extracción de texto principal (readability ligera, sobre el DOM vivo) ──
+FORMATO_TEXTO_PRINCIPAL = "texto_principal"
+MIN_CHARS_CONTENIDO = 200      # texto mínimo para considerar que la página cargó
+ESPERA_CONTENIDO_MS = 5000     # espera máxima a que aparezca contenido
+ESPERA_CONTENIDO_PASO_MS = 250
+
+# Devuelve el texto del contenedor con más contenido, descartando navegación,
+# cabeceras, pies, banners de cookies y bloques llenos de enlaces. Genérico:
+# no conoce ningún sitio concreto.
+_JS_TEXTO_PRINCIPAL = """
+(opciones) => {
+  const ruido = [
+    'script','style','noscript','svg','iframe','form','template','button',
+    'nav','header','footer','aside',
+    '[role="navigation"]','[role="banner"]','[role="contentinfo"]','[role="search"]',
+    '[aria-hidden="true"]',
+    '[class*="cookie"]','[id*="cookie"]','[class*="consent"]','[id*="consent"]',
+    '[class*="gdpr"]','[id*="gdpr"]','[class*="newsletter"]','[class*="subscribe"]',
+    '[class*="advert"]','[id*="advert"]','[class*="ads-"]','[class*="social"]',
+    '[class*="menu"]','[class*="sidebar"]','[class*="breadcrumb"]'
+  ].join(',');
+  const normalizar = (t) => (t || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+
+  const selector = (opciones && opciones.selector) ||
+    'article,main,[role="main"],.content,#content,.post,#main,.article,section,div';
+
+  let candidatos = [];
+  try { candidatos = Array.from(document.querySelectorAll(selector)); } catch (e) { candidatos = []; }
+  if (!candidatos.length && document.body) candidatos = [document.body];
+
+  let mejor = '';
+  let mejorPuntos = -1;
+  for (const nodo of candidatos) {
+    let copia;
+    try { copia = nodo.cloneNode(true); } catch (e) { continue; }
+    try { Array.from(copia.querySelectorAll(ruido)).forEach((n) => n.remove()); } catch (e) {}
+    const texto = normalizar(copia.innerText || copia.textContent);
+    if (texto.length < 40) continue;
+    const enlaces = copia.querySelectorAll('a').length;
+    const puntos = texto.length - enlaces * 30;
+    if (puntos > mejorPuntos) { mejorPuntos = puntos; mejor = texto; }
+  }
+
+  if (!mejor && document.body) mejor = normalizar(document.body.innerText);
+  return mejor;
+}
+"""
+
+# Longitud del texto visible: sirve para esperar a que la página cargue.
+_JS_LONGITUD_TEXTO = "(document.body && document.body.innerText ? document.body.innerText.trim().length : 0)"
+
 
 def _resultado_multi_vacio(error: str | None = None) -> dict:
     """Contrato de salida vacío del modo multi-URL ('urls_desde')."""
@@ -247,6 +298,12 @@ class BrowserExecutor:
                         "error": f"timeout de carga tras {timeout_s}s",
                     })
 
+                cls._esperar_contenido(
+                    page,
+                    min(ESPERA_CONTENIDO_MS, timeout_accion_ms),
+                    cancellation_token=cancellation_token,
+                )
+
                 registros, cancelado = cls._ejecutar_acciones(
                     page=page,
                     acciones=acciones,
@@ -305,6 +362,15 @@ class BrowserExecutor:
             vacio = _resultado_multi_vacio(error or 'browser_error')
             vacio["duracion"] = time.time() - inicio
             return False, f"Browser falló: {error}", vacio
+
+        hubo_extraccion = any(
+            isinstance(a, dict) and str(a.get("tipo", "")).lower() == "extraer"
+            for a in acciones
+        )
+        if hubo_extraccion and not datos_extraidos:
+            logger.warning(
+                f"Browser '{agente.nombre}': ninguna acción 'extraer' devolvió datos"
+            )
 
         duracion = time.time() - inicio
         resultado = {
@@ -443,6 +509,10 @@ class BrowserExecutor:
                         "error": f"timeout de carga tras {timeout_s}s",
                     })
 
+                cls._esperar_contenido(
+                    page, min(ESPERA_CONTENIDO_MS, timeout_accion_ms)
+                )
+
                 registros, _ = cls._ejecutar_acciones(
                     page=page,
                     acciones=acciones,
@@ -468,12 +538,29 @@ class BrowserExecutor:
                 errores.append({"url": url, "error": registro["error"]})
             resultados_por_url.append(registro)
 
+        # ¿Ninguna URL devolvió datos con las acciones de extracción?
+        extraccion_vacia = bool(resultados_por_url) and all(
+            not (r.get("datos_extraidos") or {})
+            or all(
+                cls._extraccion_vacia(v)
+                for v in (r.get("datos_extraidos") or {}).values()
+            )
+            for r in resultados_por_url
+        )
+        if extraccion_vacia:
+            logger.warning(
+                f"Browser '{agente.nombre}': la extracción quedó VACÍA en las "
+                f"{len(resultados_por_url)} URLs (revisa los selectores o usa "
+                f"'{FORMATO_TEXTO_PRINCIPAL}')"
+            )
+
         exitos = len(resultados_por_url) - len(errores)
         resultado = {
             "urls_navegadas": len(resultados_por_url),
             "resultados_por_url": resultados_por_url,
             "errores": errores,
             "screenshots": screenshots,
+            "extraccion_vacia": extraccion_vacia,
             "error": 'cancelled' if cancelado else (None if exitos else 'all_urls_failed'),
             "duracion": time.time() - inicio,
         }
@@ -489,7 +576,10 @@ class BrowserExecutor:
             ), resultado
 
         cls.actualizar_progreso(agente, 100, f"{exitos}/{len(resultados_por_url)} URLs")
-        return True, f"Browser: {exitos}/{len(resultados_por_url)} URLs procesadas", resultado
+        resumen = f"Browser: {exitos}/{len(resultados_por_url)} URLs procesadas"
+        if extraccion_vacia:
+            resumen += " | AVISO: extracción vacía en todas las URLs"
+        return True, resumen, resultado
 
     @classmethod
     def _ejecutar_acciones(
@@ -580,18 +670,26 @@ class BrowserExecutor:
                 formato = str(accion.get("formato", "text") or "text").lower()
                 selector = _txt(accion.get("selector")) or "body"
                 multiple = bool(accion.get("multiple", False))
-                locator = page.locator(selector)
-
-                if multiple:
-                    total = locator.count()
-                    valores = []
-                    for idx in range(total):
-                        valores.append(cls._extraer_de(locator.nth(idx), formato, accion, variables))
-                    valor = valores
-                else:
-                    valor = cls._extraer_de(locator.first, formato, accion, variables)
-
                 nombre = str(accion.get("nombre") or f"extraccion_{len(datos_extraidos) + 1}")
+
+                if formato == FORMATO_TEXTO_PRINCIPAL:
+                    # Readability ligera sobre el DOM vivo (descarta ruido).
+                    valor = cls._texto_principal(page, _txt(accion.get("selector")) or None)
+                    if cls._extraccion_vacia(valor):
+                        raise ValueError(
+                            "no se pudo extraer texto principal de la página"
+                        )
+                else:
+                    valor = cls._extraer_con_fallback(
+                        page=page,
+                        selector=selector,
+                        formato=formato,
+                        accion=accion,
+                        multiple=multiple,
+                        variables=variables,
+                        registro=registro,
+                    )
+
                 datos_extraidos[nombre] = valor
                 registro["ok"] = True
                 registro["detalle"] = f"{nombre} ({formato})"
@@ -672,6 +770,111 @@ class BrowserExecutor:
             logger.warning(f"Browser '{agente.nombre}': error en acción '{tipo}': {e}")
 
         return registro
+
+    @classmethod
+    def _texto_principal(cls, page, selector: str | None = None) -> str:
+        """Texto del contenido principal, descartando navegación y ruido."""
+        try:
+            texto = page.evaluate(_JS_TEXTO_PRINCIPAL, {"selector": selector or ""})
+        except Exception as e:
+            logger.warning(f"Browser: falló la extracción de texto principal: {e}")
+            return ""
+        return (texto or "").strip()
+
+    @classmethod
+    def _esperar_contenido(cls, page, timeout_ms: int,
+                           minimo: int = MIN_CHARS_CONTENIDO,
+                           cancellation_token: CancellationToken | None = None) -> int:
+        """
+        Espera (hasta timeout_ms) a que la página tenga texto visible.
+
+        Devuelve la longitud encontrada. Sirve para webs que pintan el
+        contenido con JavaScript después de 'load'.
+        """
+        restante = max(0, int(timeout_ms))
+        ultimo = -1
+        estable = 0
+        while restante > 0:
+            if cancellation_token and cancellation_token.esta_cancelado():
+                return 0
+            try:
+                largo = int(page.evaluate(_JS_LONGITUD_TEXTO) or 0)
+            except Exception:
+                return 0
+            if largo >= minimo:
+                return largo
+            # Si el texto deja de crecer, la página ya pintó lo que tenía.
+            if largo > 0 and largo == ultimo:
+                estable += 1
+                if estable >= 2:
+                    return largo
+            else:
+                estable = 0
+            ultimo = largo
+            try:
+                page.wait_for_timeout(ESPERA_CONTENIDO_PASO_MS)
+            except Exception:
+                return max(0, largo)
+            restante -= ESPERA_CONTENIDO_PASO_MS
+        return max(0, ultimo)
+
+    @staticmethod
+    def _extraccion_vacia(valor) -> bool:
+        """¿El valor extraído no aporta nada?"""
+        if valor is None:
+            return True
+        if isinstance(valor, str):
+            return not valor.strip()
+        if isinstance(valor, (list, tuple)):
+            if not valor:
+                return True
+            return all(
+                v is None or (isinstance(v, str) and not v.strip())
+                for v in valor
+            )
+        return False
+
+    @classmethod
+    def _extraer_con_fallback(cls, page, selector: str, formato: str, accion: dict,
+                              multiple: bool, variables: dict, registro: dict):
+        """
+        Extrae con el selector pedido. Si no devuelve nada (o falla), cae al
+        texto principal como red de seguridad y lo deja anotado.
+        """
+        valor = None
+        try:
+            locator = page.locator(selector)
+            if multiple:
+                total = locator.count()
+                valor = [
+                    cls._extraer_de(locator.nth(idx), formato, accion, variables)
+                    for idx in range(total)
+                ]
+            else:
+                valor = cls._extraer_de(locator.first, formato, accion, variables)
+        except Exception as e:
+            logger.warning(
+                f"Browser: la extracción con selector '{selector}' falló: {e}"
+            )
+            valor = None
+
+        if cls._extraccion_vacia(valor):
+            principal = cls._texto_principal(
+                page, selector if selector and selector != "body" else None
+            )
+            if principal:
+                logger.warning(
+                    f"Browser: el selector '{selector}' no devolvió contenido; "
+                    f"se usa '{FORMATO_TEXTO_PRINCIPAL}' como fallback"
+                )
+                registro["fallback"] = FORMATO_TEXTO_PRINCIPAL
+                return principal
+
+        if cls._extraccion_vacia(valor):
+            raise ValueError(
+                f"no se pudo extraer contenido con el selector '{selector}'"
+            )
+        return valor
 
     @staticmethod
     def _extraer_de(locator, formato: str, accion: dict, variables: dict):
