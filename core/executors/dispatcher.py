@@ -12,11 +12,13 @@ import time
 from core.agent import Agente, TipoAgente
 from core.cancellation import CancellationToken
 
+from .browser_executor import BrowserExecutor
 from .file_executor import FileExecutor
 from .http_executor import HTTPExecutor
 from .llm_executor import LLMExecutor
 from .loop_executor import LoopExecutor
 from .python_executor import PythonExecutor
+from .search_executor import SearchExecutor
 from .shell_executor import ShellExecutor
 
 logger = logging.getLogger(__name__)
@@ -32,6 +34,8 @@ class AgentExecutor:
         TipoAgente.LLM: LLMExecutor,
         TipoAgente.FILE: FileExecutor,
         TipoAgente.LOOP: LoopExecutor,
+        TipoAgente.BROWSER: BrowserExecutor,
+        TipoAgente.SEARCH: SearchExecutor,
     }
 
     @staticmethod

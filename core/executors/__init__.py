@@ -16,7 +16,15 @@ El resto del proyecto no necesita cambiar sus imports.
 # lo exponía implícitamente).
 from core.sandbox import PythonSandbox
 
+from .browser_executor import BrowserExecutor
 from .dispatcher import AgentExecutor
 from .loop_executor import LoopExecutor
+from .search_executor import SearchExecutor
 
-__all__ = ["AgentExecutor", "LoopExecutor", "PythonSandbox"]
+__all__ = [
+    "AgentExecutor",
+    "BrowserExecutor",
+    "LoopExecutor",
+    "PythonSandbox",
+    "SearchExecutor",
+]
