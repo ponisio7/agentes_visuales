@@ -53,8 +53,4 @@ calculadora*.html
 # Outputs del pipeline
 *.html
 
-# Locks de LibreOffice
-.~lock.*
 
-# Outputs del pipeline
-calculadora*.html
