@@ -76,7 +76,9 @@ class _FakePage:
         self.timeout_selectors: set = set()
         self.timeout_goto_urls: set = set()
         self.error_selectors: dict = {}
+        self.error_goto_urls: dict = {}
         self.al_esperar = None  # callback opcional
+        self.al_navegar = None  # callback opcional (recibe la url)
 
     # ── API usada por el executor ──
     def title(self):
@@ -119,9 +121,16 @@ class _FakePage:
 
     def goto(self, url, timeout=None, wait_until=None):
         self.llamadas.append(("goto", url, wait_until))
+        if self.al_navegar is not None:
+            self.al_navegar(url)
+        if url in self.error_goto_urls:
+            raise self.error_goto_urls[url]
         if url in self.timeout_goto_urls:
             raise browser_executor.PlaywrightTimeoutError(f"timeout goto {url}")
         self.url = url
+
+    def llamadas_goto(self):
+        return [c for c in self.llamadas if c and c[0] == "goto"]
 
     def screenshot(self, path=None, full_page=False):
         self._crear_archivo(path)
@@ -464,3 +473,128 @@ def test_integracion_real_con_file_url(tmp_path, monkeypatch):
     assert resultado["titulo"] == "Local"
     assert resultado["datos_extraidos"]["titulo"] == "Hola"
     assert resultado["datos_extraidos"]["items"] == ["uno", "dos"]
+
+
+# ============================================================
+# MODO MULTI-URL ('urls_desde')
+# ============================================================
+
+def _agente_multi(urls_desde="Buscar.resultados", **kwargs) -> Agente:
+    base = dict(
+        nombre="NavegarVarias",
+        tipo=TipoAgente.BROWSER,
+        urls_desde_browser=urls_desde,
+        acciones_por_url_browser=[
+            {"tipo": "extraer", "selector": "h2", "formato": "text", "nombre": "elementos"},
+        ],
+    )
+    base.update(kwargs)
+    return Agente(**base)
+
+
+def test_urls_desde_lista_de_strings(fake_browser):
+    page, browser, _ = fake_browser
+    page.textos["h2"] = "Extraído"
+    contexto = {"Buscar": {"resultados": ["https://uno.test", "https://dos.test"]}}
+
+    ok, mensaje, resultado = BrowserExecutor.ejecutar(_agente_multi(), contexto)
+
+    assert ok is True
+    assert resultado["urls_navegadas"] == 2
+    assert resultado["errores"] == []
+    assert [r["url"] for r in resultado["resultados_por_url"]] == [
+        "https://uno.test", "https://dos.test",
+    ]
+    assert all(
+        r["datos_extraidos"]["elementos"] == "Extraído"
+        for r in resultado["resultados_por_url"]
+    )
+    assert browser.cerrado is True  # se cierra pese a recorrer varias URLs
+
+
+def test_urls_desde_lista_de_dicts_con_href(fake_browser):
+    fake_browser
+    contexto = {"Buscar": {"resultados": [
+        {"title": "A", "href": "https://a.test/1"},
+        {"title": "B", "url": "https://b.test/2"},
+        {"title": "C", "link": "https://c.test/3"},
+    ]}}
+
+    ok, _, resultado = BrowserExecutor.ejecutar(_agente_multi(), contexto)
+
+    assert ok is True
+    assert [r["url"] for r in resultado["resultados_por_url"]] == [
+        "https://a.test/1", "https://b.test/2", "https://c.test/3",
+    ]
+
+
+def test_max_urls_limita_las_navegaciones(fake_browser):
+    page, _, _ = fake_browser
+    contexto = {"Buscar": {"resultados": [f"https://x.test/{i}" for i in range(10)]}}
+
+    ok, _, resultado = BrowserExecutor.ejecutar(_agente_multi(max_urls_browser=3), contexto)
+
+    assert ok is True
+    assert resultado["urls_navegadas"] == 3
+    assert len(page.llamadas_goto()) == 3
+
+
+def test_urls_desde_vacio_no_falla(fake_browser):
+    contexto = {"Buscar": {"resultados": []}}
+
+    ok, _, resultado = BrowserExecutor.ejecutar(_agente_multi(), contexto)
+
+    assert ok is True
+    assert resultado["urls_navegadas"] == 0
+    assert resultado["resultados_por_url"] == []
+    assert resultado["errores"] == []
+    assert resultado["error"] is None
+
+
+def test_urls_desde_no_resoluble_da_error_claro(fake_browser):
+    ok, mensaje, resultado = BrowserExecutor.ejecutar(_agente_multi(), {})
+
+    assert ok is False
+    assert resultado["error"] == "urls_desde_not_found"
+    assert "no se encontró" in mensaje
+
+
+def test_una_url_que_falla_no_aborta_el_resto(fake_browser):
+    page, _, _ = fake_browser
+    page.error_goto_urls["https://falla.test"] = RuntimeError("DNS")
+    contexto = {"Buscar": {"resultados": [
+        "https://ok1.test", "https://falla.test", "https://ok2.test",
+    ]}}
+
+    ok, mensaje, resultado = BrowserExecutor.ejecutar(_agente_multi(), contexto)
+
+    assert ok is True
+    assert resultado["urls_navegadas"] == 3
+    assert len(resultado["errores"]) == 1
+    assert resultado["errores"][0]["url"] == "https://falla.test"
+    assert "DNS" in resultado["errores"][0]["error"]
+    assert resultado["resultados_por_url"][2]["url"] == "https://ok2.test"
+
+
+def test_todas_las_urls_fallan(fake_browser):
+    page, _, _ = fake_browser
+    page.error_goto_urls["https://a.test"] = RuntimeError("boom")
+    contexto = {"Buscar": {"resultados": ["https://a.test"]}}
+
+    ok, mensaje, resultado = BrowserExecutor.ejecutar(_agente_multi(), contexto)
+
+    assert ok is False
+    assert resultado["error"] == "all_urls_failed"
+
+
+def test_cancelacion_entre_urls(fake_browser):
+    page, _, _ = fake_browser
+    token = CancellationToken()
+    page.al_navegar = lambda url: token.cancelar()
+    contexto = {"Buscar": {"resultados": ["https://uno.test", "https://dos.test"]}}
+
+    ok, mensaje, resultado = BrowserExecutor.ejecutar(_agente_multi(), contexto, token)
+
+    assert ok is False
+    assert resultado["error"] == "cancelled"
+    assert resultado["urls_navegadas"] == 1  # la segunda ya no se navega
