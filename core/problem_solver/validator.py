@@ -281,10 +281,19 @@ class PlanValidator:
                 f"'{{{m.group(2)}}}' sin sustituir"
             )
 
-        # 4. {{X}} - Bloque A.2 integrado
-        if "{{" in codigo:
-            idx = codigo.find("{{")
-            fragmento = codigo[max(0, idx - 20):idx + 40].replace("\n", " ")
+        # 4. {{X}} - Bloque A.2 integrado.
+        #    OJO: '{{' y '}}' son también el escape legítimo de una llave
+        #    literal dentro de un f-string (p. ej. CSS embebido:
+        #    f"body {{ margin: 0 }}"), que es código Python correcto. Solo
+        #    se marca como error si el placeholder referencia a un agente
+        #    del plan, que es el anti-patrón real ({{Dependencia.clave}}).
+        patron_plantilla = re.compile(
+            r"\{\{\s*([A-Za-z_]\w*)\s*(?:\.[^}]*)?\}\}"
+        )
+        for m in patron_plantilla.finditer(codigo):
+            if m.group(1) not in nombres_agentes:
+                continue
+            fragmento = m.group(0).replace("\n", " ")
             errores.append(
                 f"BLOQUEANTE: {nombre}: usa sintaxis de plantilla '{{{{...}}}}' "
                 f"en lugar de contexto.get(...). Fragmento: '...{fragmento}...'"

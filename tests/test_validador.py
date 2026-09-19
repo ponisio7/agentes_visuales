@@ -39,6 +39,17 @@ NOMBRES = {"GenerarCuento", "CrearImagenes"}
             0,
             "Código correcto",
         ),
+        (
+            "html = f'''<style>body {{ margin: 0; }}</style>'''",
+            0,
+            "Escape de llaves en f-string (CSS embebido): NO es plantilla",
+        ),
+        (
+            "html = f'''<style>body {{ font-family: Arial; }}</style>'''\n"
+            "resultado = {'contenido': html}",
+            0,
+            "CSS embebido con punto y coma/llaves: NO es plantilla",
+        ),
     ],
 )
 def test_validar_codigo_python_ast(codigo, esperado, descripcion):
