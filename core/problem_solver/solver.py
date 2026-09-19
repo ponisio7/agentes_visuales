@@ -90,8 +90,9 @@ faltan = acciones - cases
 if faltan:
     raise ValueError(
         'Acciones del HTML sin case en el JS: %s. '
+        'Cases definidos en el JS: %s. '
         'Anade los case correspondientes al switch del JS.'
-        % sorted(faltan)
+        % (sorted(faltan), sorted(cases))
     )
 # 3) Clases del HTML vs CSS
 clases_html = set()
@@ -106,8 +107,9 @@ if css_match:
     if huerfanas:
         raise ValueError(
             'Clases del HTML sin definicion en el CSS: %s. '
-            'Anade las reglas CSS correspondientes o corrige los nombres.'
-            % sorted(huerfanas)
+            'Clases definidas en el CSS: %s. '
+            'Anade las reglas CSS correspondientes o corrige los nombres '
+            'en el HTML.' % (sorted(huerfanas), sorted(clases_css))
         )
 resultado = {
     'valido': True,

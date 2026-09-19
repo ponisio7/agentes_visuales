@@ -485,8 +485,8 @@ CONTRATOS_SALIDA_POR_PASO: dict[str, str] = {
         "\n"
         "REGLAS DE COHERENCIA (crítico):\n"
         "- NO incluyas un <div class=\"calculadora\">: el ensamblador ya lo añade.\n"
-        "- Usa SOLO estas clases CSS (existirán en el CSS): .pantalla, .historial, "
-        ".btn, .btn-numero, .btn-operador, .btn-cientifico, .btn-control, .btn-memoria.\n"
+        "- Puedes usar las clases CSS que necesites (.pantalla, .btn, .teclado, etc.). "
+        "El paso GenerarCSS las cubrirá todas.\n"
         "- Usa SOLO estos data-accion (existirán como case en el JS): "
         "clear, clearEntry, backspace, equals, sin, cos, tan, asin, acos, atan, "
         "log, ln, sqrt, x2, xy, inv, factorial, modo, mc, mr, m+, m-.\n"
@@ -512,6 +512,10 @@ CONTRATOS_SALIDA_POR_PASO: dict[str, str] = {
         ".btn-cientifico, .btn-control, .btn-memoria\n"
         "- NO definas clases que el HTML no vaya a usar.\n"
         "- Define también el layout del grid o flex para los botones.\n"
+        "- DEBES definir TODAS las clases que aparezcan en el HTML generado por "
+        "GenerarEstructuraHTML. Si el HTML usa .teclado, .fila-numerica, "
+        ".btn-memoria, etc., el CSS DEBE tener esas reglas. Si no las tienes, "
+        "el validador rechazará el plan.\n"
         "SOLO CSS puro, SIN etiquetas <style>. Sin markdown fences.\n"
     ),
     "GenerarJS": (

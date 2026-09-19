@@ -345,7 +345,9 @@ class PromptBuilder:
         "  1. `GenerarEstructuraHTML` (LLM): devuelve SOLO el fragmento interno "
         "     del body (divs, botones, etc.), SIN `<!DOCTYPE>`, `<html>`, `<head>`, "
         "     `<body>`, `<style>` ni `<script>`. Solo el contenido interior.",
-        "  2. `GenerarCSS` (LLM): devuelve SOLO el CSS, SIN etiquetas `<style>`.",
+        "  2. `GenerarCSS` (LLM, **depende de `GenerarEstructuraHTML`**): "
+        "     devuelve SOLO el CSS. Recibirás el HTML en el contexto: léelo y "
+        "     define TODAS las clases que aparezcan en él.",
         "  3. `GenerarJS` (LLM): devuelve SOLO el JavaScript, SIN etiquetas `<script>`.",
         "     Usa SIEMPRE sintaxis JavaScript pura: `null`, `true`, `false` "
         "     (NO `None`, `True`, `False` de Python).",
