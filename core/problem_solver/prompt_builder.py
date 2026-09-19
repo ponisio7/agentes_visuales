@@ -374,6 +374,11 @@ class PromptBuilder:
         "específicas), asegúrate de que el plan incluye pasos para cumplirlos. "
         "Antes de responder, repasa el enunciado y comprueba que cada requisito "
         "tiene al menos un paso que lo produce.",
+        "**CÓMO ELEGIR ENTRE HTTP Y BROWSER**:\n"
+        "  - HTTP solo sirve para URLs que devuelven JSON (APIs REST).\n"
+        "  - Si la URL devuelve HTML (una página web), usa Browser.\n"
+        "  - Si no sabes si devuelve JSON o HTML, usa Browser (siempre funciona).\n"
+        "  - NUNCA hagas json.loads() sobre el body de una URL que devuelve HTML.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'
