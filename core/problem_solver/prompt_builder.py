@@ -126,7 +126,24 @@ class PromptBuilder:
         "    - El código es trivial (escribir a archivo, contar, filtrar).",
         "    - El número de items es alto (100+) y el overhead del Loop sería grande.",
         "",
-        "  ⚠️ En caso de duda, prefiere `Python` puro. El Loop añade overhead.",    
+          "⚠️ En caso de duda, prefiere `Python` puro. El Loop añade overhead.",
+        # ✅ Fix 4: regla de indentación estricta
+        "**INDENTACIÓN OBLIGATORIA**: El código Python DEBE usar SIEMPRE "
+        "4 espacios por nivel de indentación. NUNCA uses tabulaciones, "
+        "2 espacios, ni mezcles espacios y tabulaciones. El sandbox "
+        "rechaza cualquier código cuya indentación no sea múltiplo de 4.",
+        "Ejemplo CORRECTO:",
+        "  ```python",
+        "  def suma(a, b):",
+        "      return a + b",
+        "  ",
+        "  resultado = {'total': suma(2, 3)}",
+        "  ```",
+        "Ejemplo INCORRECTO (NO HACER):",
+        "  ```python",
+        "  def suma(a, b):",
+        "    return a + b   # ⚠ 2 espacios, MAL",
+        "  ```",
     ]
 
     FILE_RULES = [
@@ -320,6 +337,27 @@ class PromptBuilder:
         "hacer N peticiones HTTP, usa un agente Loop con `continuar_en_error=true` "
         "y un timeout por item. NO hagas un bucle implícito dentro de un "
         "agente Python: bloqueará el sandbox.",
+        # ✅ Fix 4: forzar pasos separados para HTML/CSS/JS
+        "**REGLA ESTRICTA PARA PROBLEMAS QUE GENEREN HTML+CSS+JS**:",
+        "  Si el problema pide una calculadora, un juego, un formulario, o "
+        "cualquier página HTML que requiera CSS y/o JS, el plan DEBE separar "
+        "el trabajo en estos pasos:",
+        "  1. `GenerarEstructuraHTML` (LLM): devuelve SOLO el fragmento interno "
+        "     del body (divs, botones, etc.), SIN `<!DOCTYPE>`, `<html>`, `<head>`, "
+        "     `<body>`, `<style>` ni `<script>`. Solo el contenido interior.",
+        "  2. `GenerarCSS` (LLM): devuelve SOLO el CSS, SIN etiquetas `<style>`.",
+        "  3. `GenerarJS` (LLM): devuelve SOLO el JavaScript, SIN etiquetas `<script>`.",
+        "     Usa SIEMPRE sintaxis JavaScript pura: `null`, `true`, `false` "
+        "     (NO `None`, `True`, `False` de Python).",
+        "  4. `EnsamblarHTML` (Python): une los tres fragmentos anteriores. "
+        "     El sistema REEMPLAZARÁ automáticamente tu código de este paso por "
+        "     una llamada a `core.utils.ensamblar_html.ensamblar_calculadora_html`. "
+        "     Puedes poner cualquier cosa en `codigo`; se ignorará.",
+        "  5. `EscribirArchivoHTML` (File, depende de EnsamblarHTML): escribe el archivo.",
+        "  6. `VerificarArchivo` (Python, depende de EscribirArchivoHTML): valida el archivo.",
+        "",
+        "  ⚠ **NUNCA generes el HTML completo en un solo paso LLM**. Es un error.",
+        "  ⚠ **NUNCA generes un paso Python que ensamble HTML a mano**. Usa `EnsamblarHTML`.",
     ]
 
     # Reglas específicas sobre campos de 'configuracion'
@@ -469,6 +507,13 @@ Tu trabajo es analizar un problema complejo y descomponerlo en una orquestación
 ## ⚠️ REGLAS CRÍTICAS PARA CÓDIGO PYTHON ⚠️
 
 {python_rules}
+
+## ⚠️ REGLAS CRÍTICAS PARA INDENTACIÓN DE PYTHON ⚠️
+
+- El código Python en `configuracion.codigo` DEBE tener indentación con 4 espacios por nivel.
+- NUNCA uses tabulaciones ni 2 espacios.
+- El sandbox rechaza cualquier código con indentación incorrecta.
+- Si dudas, deja el código Python SIN indentación (una sola línea o sin bloques).
 
 ## ⚠️ REGLAS CRÍTICAS PARA COMANDOS SHELL ⚠️
 
