@@ -264,6 +264,8 @@ Usa variables como {contexto} cuando sea apropiado."""
             TipoAgente.LLM: self._prompt_llm,
             TipoAgente.FILE: self._prompt_file,
             TipoAgente.LOOP: self._prompt_loop,
+            TipoAgente.BROWSER: self._prompt_browser,
+            TipoAgente.SEARCH: self._prompt_search,
         }
 
         system_prompt = prompts.get(tipo, self._prompt_generico)(contexto_agente)
@@ -520,6 +522,37 @@ Reglas:
 - Sé práctico y útil
 
 Devuelve SOLO el código, sin markdown ni explicaciones."""
+
+    def _prompt_browser(self, contexto: dict | None = None) -> str:
+        return """Eres un experto en automatización de navegador (Playwright).
+Sugiere una URL pública y una lista de acciones declarativas para
+navegarla.
+
+Formato de cada acción (JSON):
+- {"tipo": "esperar", "selector": "CSS", "timeout": 10000}
+- {"tipo": "extraer", "selector": "CSS", "formato": "html|text|attr",
+   "nombre": "clave", "atributo": "href", "multiple": false}
+- {"tipo": "click", "selector": "CSS"}
+- {"tipo": "rellenar", "selector": "CSS", "valor": "texto"}
+- {"tipo": "scroll", "hasta": "bottom|top|CSS"}
+- {"tipo": "screenshot", "nombre": "captura.png", "full_page": false}
+- {"tipo": "ejecutar_js", "script": "expresión JS", "nombre": "clave"}
+- {"tipo": "navegar", "url": "URL"}
+
+Devuelve SOLO un objeto JSON con las claves "url" y "acciones", sin markdown.
+Usa una URL real y accesible y selectores CSS válidos."""
+
+    def _prompt_search(self, contexto: dict | None = None) -> str:
+        return """Eres un experto en búsqueda de información en la web.
+Propón una consulta de búsqueda efectiva y sus parámetros.
+
+Devuelve SOLO un objeto JSON con esta forma:
+{"query": "consulta", "max_resultados": 5, "region": "wt-wt"}
+
+Reglas:
+- La consulta debe ser concreta y en el idioma adecuado.
+- 'region' usa el formato de DuckDuckGo (p. ej. "es-es", "us-en", "wt-wt").
+- Sin markdown ni explicaciones."""
 
     def _prompt_generico(self, contexto: dict | None = None) -> str:
         return "Genera contenido útil y funcional según la descripción del usuario. Devuelve solo el contenido, sin explicaciones."

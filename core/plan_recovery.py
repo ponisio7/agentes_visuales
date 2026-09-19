@@ -76,7 +76,7 @@ El JSON debe tener EXACTAMENTE esta estructura:
       "orden": 1,
       "nombre": "NombreDelAgente",
       "descripcion": "Qué hace este paso",
-      "tipo": "Python|Shell|HTTP|LLM|File|Loop",
+      "tipo": "Python|Shell|HTTP|LLM|File|Loop|Browser|Search",
       "dependencias": ["NombreAgente1"],
       "configuracion": {{
         // AQUÍ VAN LOS CAMPOS ESPECÍFICOS DEL TIPO
@@ -115,6 +115,20 @@ NUNCA uses sinónimos. Usa EXACTAMENTE estos nombres de campo:
              "max_iteraciones": 100, "timeout_loop": 300,
              "timeout_python": 30, "continuar_en_error": false}}
   PROHIBIDO usar "source", "items_source".
+
+- **Browser**: {{"url": "https://...", "acciones": [{{"tipo": "esperar",
+                "selector": "CSS", "timeout": 10000}}, {{"tipo": "extraer",
+                "selector": "CSS", "formato": "html|text|attr",
+                "nombre": "clave", "atributo": "href", "multiple": false}}],
+                "timeout": 30, "timeout_accion": 10000, "headless": true,
+                "bloquear_recursos": false, "user_agent": ""}}
+  Acciones válidas: esperar, extraer, click, rellenar, scroll, screenshot,
+  ejecutar_js, navegar. PROHIBIDO usar "direccion", "link", "steps".
+  Para páginas HTML (no APIs JSON); HTTP solo sirve para APIs JSON.
+
+- **Search**: {{"query": "...", "max_resultados": 5, "region": "wt-wt",
+              "timeout": 30}}
+  PROHIBIDO usar "busqueda", "term", "keywords".
 
 === EJEMPLO DE PASO CORRECTO (File) ===
 

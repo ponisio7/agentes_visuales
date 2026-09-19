@@ -135,10 +135,23 @@ class PromptBuilder:
     AGENT_TYPES = {
         "Python": "Procesamiento de datos, transformaciones, lógica compleja, cálculos.",
         "Shell": "Comandos de terminal, operaciones de sistema, scripts.",
-        "HTTP": "Obtener datos de APIs REST, web scraping, integraciones.",
+        "HTTP": "Obtener datos de APIs REST que devuelven JSON. NO sirve para páginas HTML normales: para eso usa Browser.",
         "LLM": "Análisis de texto, clasificación, resumen, generación de contenido, traducción.",
         "File": "Lectura/escritura de archivos, persistencia de resultados.",
         "Loop": "Procesamiento en lote sobre una lista de items.",
+        "Browser": (
+            "Navega una URL real con un navegador (Playwright/Chromium) y ejecuta "
+            "acciones declarativas: esperar, extraer, click, rellenar, scroll, "
+            "screenshot, ejecutar_js, navegar. Devuelve el HTML final, el texto "
+            "visible, el título y los datos extraídos. Úsalo cuando la información "
+            "esté en una página HTML (no en una API JSON) o requiera interacción."
+        ),
+        "Search": (
+            "Busca información en la web (DuckDuckGo, sin API key) y devuelve una "
+            "lista de resultados con título, URL y snippet. Úsalo para descubrir "
+            "URLs o datos actuales que no conoces de antemano; después puedes "
+            "navegar una de esas URLs con Browser."
+        ),
     }
 
     # ✅ NUEVO: Contratos de salida de cada tipo de agente.
@@ -196,6 +209,29 @@ class PromptBuilder:
                 "exitos": "int - items procesados con éxito",
                 "errores": "int - items con error",
                 "duracion_total": "float - segundos",
+            },
+        },
+        "Browser": {
+            "descripcion": "El executor navega la URL, ejecuta las acciones y devuelve la página final.",
+            "claves": {
+                "url_final": "str - URL tras redirecciones y acciones",
+                "titulo": "str - título (<title>) de la página",
+                "html": "str - HTML final de la página",
+                "texto": "str - texto visible del body",
+                "datos_extraidos": "dict - {nombre: valor} de las acciones 'extraer'/'ejecutar_js'",
+                "acciones_ejecutadas": "list - [{tipo, ok, error|detalle}]",
+                "screenshots": "list - rutas de las capturas guardadas",
+                "html_truncado": "bool - True si 'html' se recortó por tamaño",
+                "error": "str|None - None si todo fue bien",
+            },
+        },
+        "Search": {
+            "descripcion": "El executor busca en la web y devuelve una lista de resultados.",
+            "claves": {
+                "query": "str - consulta ejecutada",
+                "resultados": "list - [{title, href, body}]",
+                "total": "int - número de resultados devueltos",
+                "error": "str|None - None si todo fue bien",
             },
         },
     }
@@ -259,7 +295,7 @@ class PromptBuilder:
         },
         "LLM": {
             "prompt": "instrucción para el modelo",
-            "modelo": "deepseek-v4-flash",
+            "modelo": "deepseek-v4-pro",
             "temperatura": 0.7,
             "max_tokens": 4000,
             "reasoning_effort": "low",
@@ -278,6 +314,31 @@ class PromptBuilder:
             "timeout_loop": 300,
             "timeout_python": 30,
             "continuar_en_error": False,
+        },
+        "Browser": {
+            "url": "URL a navegar",
+            "acciones": [
+                {"tipo": "esperar", "selector": "CSS", "timeout": 10000},
+                {"tipo": "extraer", "selector": "CSS", "formato": "html|text|attr",
+                 "nombre": "clave", "atributo": "href", "multiple": False},
+                {"tipo": "click", "selector": "CSS"},
+                {"tipo": "rellenar", "selector": "CSS", "valor": "texto"},
+                {"tipo": "scroll", "hasta": "bottom|top|CSS"},
+                {"tipo": "screenshot", "nombre": "captura.png", "full_page": False},
+                {"tipo": "ejecutar_js", "script": "expresión JS", "nombre": "clave"},
+                {"tipo": "navegar", "url": "URL"},
+            ],
+            "timeout": 30,
+            "timeout_accion": 10000,
+            "headless": True,
+            "bloquear_recursos": False,
+            "user_agent": "",
+        },
+        "Search": {
+            "query": "consulta de búsqueda",
+            "max_resultados": 5,
+            "region": "wt-wt",
+            "timeout": 30,
         },
     }
 
