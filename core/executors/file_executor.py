@@ -19,6 +19,7 @@ import weasyprint  # nuevo
 
 from core.agent import Agente
 from core.cancellation import CancellationToken
+from core.sandbox_contract import formato_imagen_real, preparar_imagen
 
 from .content_extractor import (
     extraer_contenido_relevante,
@@ -218,26 +219,42 @@ class FileExecutor:
             # ══════════════════════════════════════════════════════════
             elif operacion == "escribir":
                 contenido = None
+                # Los escritores especializados (docx/xlsx/pdf/md) tienen un
+                # contrato más rico que "un texto": necesitan el diccionario
+                # completo para acceder a título, imágenes, filas, etc.
+                # ``extraer_contenido_relevante`` colapsa el dict a su clave de
+                # texto y perdía, por ejemplo, ``imagen_ruta``. Si el dict
+                # trae referencias a imágenes reales, se conserva entero.
+                extension = os.path.splitext(ruta_archivo)[1].lower()
+                especializada = extension in EXTENSIONES_ESCRITURA_ESPECIALIZADA
 
                 if 'contenido' in contexto:
                     contenido = contexto['contenido']
                 elif 'resultado' in contexto:
                     contenido = contexto['resultado']
                 elif contexto:
-                    if len(contexto) == 1:
-                        valor_unico = next(iter(contexto.values()))
-                        contenido = extraer_contenido_relevante(valor_unico)
-                    else:
-                        for valor in contexto.values():
-                            if not isinstance(valor, dict):
-                                continue
-                            candidato = extraer_contenido_relevante(valor)
-                            if candidato is not valor:
-                                contenido = candidato
+                    valores = list(contexto.values())
+                    if especializada:
+                        for valor in valores:
+                            if (
+                                isinstance(valor, dict)
+                                and cls._extraer_referencias_imagen(valor)
+                            ):
+                                contenido = valor
                                 break
-                        if contenido is None:
-                            primer_valor = next(iter(contexto.values()))
-                            contenido = extraer_contenido_relevante(primer_valor)
+                    if contenido is None:
+                        if len(valores) == 1:
+                            contenido = extraer_contenido_relevante(valores[0])
+                        else:
+                            for valor in valores:
+                                if not isinstance(valor, dict):
+                                    continue
+                                candidato = extraer_contenido_relevante(valor)
+                                if candidato is not valor:
+                                    contenido = candidato
+                                    break
+                            if contenido is None:
+                                contenido = extraer_contenido_relevante(valores[0])
 
                 if contenido is None:
                     claves_contexto = list(contexto.keys()) if contexto else []
@@ -259,7 +276,6 @@ class FileExecutor:
                     }
 
                 # ── Dispatch por extensión a formatos especializados ──
-                extension = os.path.splitext(ruta_archivo)[1].lower()
                 if extension == ".docx":
                     return cls._file_escribir_docx(
                         agente, ruta_archivo, contenido, contexto, cancellation_token
@@ -777,8 +793,9 @@ class FileExecutor:
     @classmethod
     def _validar_imagen_descargada(cls, tmp_path: str, url: str) -> bool:
         """
-        Comprueba que el archivo descargado no esté vacío/truncado y que,
-        si Pillow está disponible, sea una imagen legible.
+        Comprueba que el archivo descargado no esté vacío/truncado y que sus
+        BYTES sean de una imagen real (el formato se detecta con Pillow, no
+        por la extensión de la URL ni del temporal).
         """
         tamaño_final = os.path.getsize(tmp_path)
         if tamaño_final < 100:
@@ -788,16 +805,10 @@ class FileExecutor:
             )
             return False
 
-        try:
-            from PIL import Image as PILImage
-        except ImportError:
-            return True  # Pillow no instalado: nos conformamos con la validación de tamaño
-
-        try:
-            with PILImage.open(tmp_path) as im:
-                im.verify()
-        except Exception as e:
-            logger.warning(f"Imagen descargada no es válida: {url} ({e}). Se descarta.")
+        if formato_imagen_real(tmp_path) is None:
+            logger.warning(
+                f"Imagen descargada no es una imagen legible: {url}. Se descarta."
+            )
             return False
 
         return True
@@ -809,6 +820,93 @@ class FileExecutor:
             os.unlink(path)
         except Exception:
             pass
+
+    # ── Descubrimiento genérico de imágenes en el contenido ──
+    # Claves de lista documentadas (contrato explícito).
+    _CLAVES_IMAGEN = (
+        "imagenes", "images", "imagenes_rutas", "imagenes_urls",
+        "rutas_imagenes", "lista_imagenes",
+    )
+    # Pistas de nombre de clave para valores sueltos ('imagen_ruta',
+    # 'url_imagen', 'imagen_preparada', ...). El valor debe ser además una
+    # referencia plausible (archivo de imagen real o URL http).
+    _PISTAS_CLAVE_IMAGEN = ("imagen", "image", "foto", "img", "ilustracion", "ilustración")
+
+    @classmethod
+    def _extraer_referencias_imagen(cls, contenido: Any) -> list:
+        """Referencias a imágenes dentro del contenido de un documento.
+
+        No depende de un único nombre de clave: acepta las claves de lista
+        documentadas, cualquier clave cuyo nombre indique imagen y cualquier
+        valor que apunte a un archivo local que Pillow reconoce como imagen
+        REAL. Así ``{'cuento': ..., 'imagen_ruta': 'x.png'}`` inserta la
+        imagen sin exigir que el productor acierte con el nombre exacto.
+        """
+        if not isinstance(contenido, dict):
+            return []
+
+        referencias: list = []
+
+        def _añadir(valor: Any) -> None:
+            if isinstance(valor, dict):
+                if valor.get("url") or valor.get("src") or valor.get("ruta"):
+                    referencias.append(valor)
+                return
+            if isinstance(valor, str) and valor.strip():
+                referencias.append(valor)
+
+        for clave, valor in contenido.items():
+            clave_low = str(clave).lower()
+            if clave_low in cls._CLAVES_IMAGEN:
+                # Contrato explícito: se respeta aunque la ruta aún no exista
+                # (se descargará o se reportará como fallida).
+                if isinstance(valor, list):
+                    for item in valor:
+                        _añadir(item)
+                else:
+                    _añadir(valor)
+            elif any(pista in clave_low for pista in cls._PISTAS_CLAVE_IMAGEN):
+                if isinstance(valor, list):
+                    for item in valor:
+                        if isinstance(item, dict) or cls._es_referencia_imagen(item):
+                            _añadir(item)
+                elif isinstance(valor, dict) or cls._es_referencia_imagen(valor):
+                    _añadir(valor)
+            elif isinstance(valor, str) and cls._es_imagen_local(valor):
+                _añadir(valor)
+
+        vistos: set = set()
+        salida: list = []
+        for referencia in referencias:
+            clave = (
+                referencia.get("url") or referencia.get("src") or referencia.get("ruta")
+                if isinstance(referencia, dict)
+                else referencia
+            )
+            if clave in vistos:
+                continue
+            vistos.add(clave)
+            salida.append(referencia)
+        return salida
+
+    @staticmethod
+    def _es_imagen_local(valor: Any) -> bool:
+        """True si el string apunta a un archivo local que ES una imagen real."""
+        if not isinstance(valor, str) or not valor.strip():
+            return False
+        try:
+            return os.path.exists(valor) and formato_imagen_real(valor) is not None
+        except OSError:
+            return False
+
+    @classmethod
+    def _es_referencia_imagen(cls, valor: Any) -> bool:
+        """True si el valor es una URL http(s) o un archivo de imagen real."""
+        if not isinstance(valor, str) or not valor.strip():
+            return False
+        if valor.startswith(("http://", "https://")):
+            return True
+        return cls._es_imagen_local(valor)
 
     @classmethod
     def _file_escribir_docx(
@@ -842,7 +940,10 @@ class FileExecutor:
         # ✅ DESPUÉS
         if isinstance(contenido, dict):
             titulo = contenido.get("titulo") or contenido.get("title")
-            imagenes = contenido.get("imagenes") or contenido.get("images") or []
+            # Referencias a imágenes detectadas por su VALOR real (archivo
+            # local que Pillow reconoce / URL http) y por los nombres de clave
+            # documentados. No depende de una única clave 'imagenes'.
+            imagenes = cls._extraer_referencias_imagen(contenido)
 
             CLAVES_TEXTO_VALIDAS = (
                 "cuento", "texto", "contenido", "respuesta_limpia", "respuesta",
@@ -947,14 +1048,26 @@ class FileExecutor:
                 fallidas.append(f"item {idx}: {url[:80]}")
                 continue
 
+            # Garantizar que los BYTES son de una imagen raster aceptada por
+            # el consumidor del documento. Un archivo .png con SVG dentro, un
+            # .webp o un placeholder no llegan a python-docx: o se convierten
+            # o fallan aquí con un mensaje accionable.
             try:
-                doc.add_picture(ruta_local, width=Inches(4.5))
+                ruta_preparada = preparar_imagen(ruta_local)
+            except ValueError as e:
+                fallidas.append(f"item {idx}: {e}")
+                continue
+            if ruta_preparada != ruta_local:
+                temporales_a_limpiar.append(ruta_preparada)
+
+            try:
+                doc.add_picture(ruta_preparada, width=Inches(4.5))
                 if descripcion:
                     p = doc.add_paragraph(str(descripcion))
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 insertadas += 1
             except Exception as e:
-                fallidas.append(f"item {idx}: error insertando {ruta_local}: {e}")
+                fallidas.append(f"item {idx}: error insertando {ruta_preparada}: {e}")
 
         # Limpiar temporales SIEMPRE
         for t in temporales_a_limpiar:

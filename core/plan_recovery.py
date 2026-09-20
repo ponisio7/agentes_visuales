@@ -33,6 +33,9 @@ PASO QUE FALLÓ:
 - Tipo: {tipo_agente}
 - Error: {error}
 
+CONFIGURACIÓN DEL PASO QUE FALLÓ (no la repitas tal cual):
+{codigo_fallido}
+
 REGLA CRÍTICA E INVIOLABLE:
 - NO repitas los mismos pasos del plan fallido.
 - NO uses el mismo enfoque que llevó al error.
@@ -41,6 +44,11 @@ REGLA CRÍTICA E INVIOLABLE:
   librerías, de estructura.
 - Si un paso requería una API externa que falló, intenta otra fuente
   o datos sintéticos/alternativos.
+- Distingue errores de SINTAXIS (el código no compila) de errores de
+  CONTRATO en tiempo de ejecución (una variable vacía, un formato de
+  archivo no aceptado, una clave que el productor no devuelve). Un error
+  de contrato NO se arregla reescribiendo lo mismo: cambia cómo se
+  obtiene o se transforma el dato.
 - Sé conciso: máximo 6 pasos.
 
 CALIDAD DEL CÓDIGO (OBLIGATORIO):
@@ -184,12 +192,14 @@ class PlanRecovery:
 
             tipo = getattr(getattr(agente_fallido, "tipo", None), "value", "?")
             nombre = getattr(agente_fallido, "nombre", "?")
+            codigo_fallido = self._resumen_agente_fallido(agente_fallido)
             prompt = PROMPT_PLAN_B.format(
                 problema=problema_original,
                 plan_resumen=plan_resumen,
                 agente_fallido=nombre,
                 tipo_agente=tipo,
                 error=(error or "")[:500],
+                codigo_fallido=codigo_fallido,
                 lecciones=lecciones or "(sin lecciones relevantes)",
             )
 
@@ -254,12 +264,12 @@ class PlanRecovery:
                 )
                 return None
 
-            # 9. Validar sintaxis de los agentes Python/Loop
-            ok, errores = self._validar_sintaxis_agentes(plan_b)
+            # 9. Validar el plan alternativo (sintaxis + contratos + estructura)
+            ok, errores = self._validar_plan_b(plan_b)
             if not ok:
                 logger.warning(
                     f"PlanRecovery: primera versión del plan tiene errores "
-                    f"de sintaxis en {len(errores)} agente(s):"
+                    f"en {len(errores)} agente(s):"
                 )
                 for err in errores[:5]:
                     logger.warning(f"   · {err}")
@@ -334,13 +344,22 @@ class PlanRecovery:
         )
 
         prompt_correccion = f"""
-=== CORRECCIÓN DE ERRORES DE SINTAXIS ===
+=== CORRECCIÓN DE ERRORES DEL PLAN ALTERNATIVO ===
 
-El plan anterior tenía los siguientes errores de sintaxis en código Python:
+El plan anterior falló en EJECUCIÓN con este error real:
+
+{(error or "(sin error registrado)")[:500]}
+
+Y la validación previa detectó además estos problemas:
 
 {lista_errores}
 
 ⚠️ INSTRUCCIONES PARA CORREGIR (MUY IMPORTANTE):
+
+0. **No repitas el enfoque que falló**. Si el error es de contrato en
+   tiempo de ejecución (contenido vacío, formato de imagen no aceptado,
+   clave que la dependencia no devuelve), cambia CÓMO se obtiene o se
+   transforma el dato; reescribir lo mismo solo vuelve a fallar.
 
 1. **Definición de función vs llamada**:
    - Un bloque `def nombre_funcion(...):` debe tener SOLO nombres de
@@ -370,8 +389,8 @@ El plan anterior tenía los siguientes errores de sintaxis en código Python:
 5. **Indentación uniforme**:
    - 4 espacios por nivel. NO mezcles tabuladores con espacios.
 
-Genera el plan COMPLETO de nuevo, CORRIGIENDO todos estos errores.
-Mantén la misma estructura y lógica, solo corrige la sintaxis.
+Genera el plan COMPLETO de nuevo, CORRIGIENDO la sintaxis Y el contrato
+que provocó el error de ejecución. No repitas el paso tal cual.
 
 Empieza directamente con {{. NO escribas explicaciones antes del JSON.
 """
@@ -383,6 +402,7 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
             agente_fallido=nombre,
             tipo_agente=tipo,
             error=(error or "")[:500],
+            codigo_fallido=self._resumen_agente_fallido(agente_fallido),
             lecciones=lecciones or "(sin lecciones relevantes)",
         ) + prompt_correccion
 
@@ -447,12 +467,12 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
                 )
                 return None
 
-            # Validar sintaxis DE NUEVO
-            ok, errores = self._validar_sintaxis_agentes(plan_b)
+            # Validar DE NUEVO (sintaxis + contratos + estructura)
+            ok, errores = self._validar_plan_b(plan_b)
             if not ok:
                 logger.warning(
                     f"PlanRecovery reintento: la segunda versión también "
-                    f"tiene errores de sintaxis en {len(errores)} agente(s):"
+                    f"tiene errores en {len(errores)} agente(s):"
                 )
                 for err in errores[:5]:
                     logger.warning(f"   · {err}")
@@ -626,13 +646,18 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
     def _validar_sintaxis_agentes(plan: Any) -> tuple[bool, list[str]]:
         """
         Valida código de agentes usando el mismo AST que el plan inicial.
-        Detecta SyntaxError, NameError, json.loads placeholder y {{X}}.
+        Detecta SyntaxError, NameError, json.loads placeholder, {{X}},
+        nombres libres sin definir y claves fuera del contrato del productor.
         """
         from core.problem_solver.validator import PlanValidator
 
         errores = []
         agentes = getattr(plan, "agentes_generados", []) or []
         nombres_agentes = {a.nombre for a in agentes}
+        tipos_agentes = {
+            a.nombre: getattr(getattr(a, "tipo", None), "value", "?")
+            for a in agentes
+        }
 
         for agente in agentes:
             tipo = getattr(getattr(agente, "tipo", None), "value", "?")
@@ -648,10 +673,57 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
                         codigo=codigo,
                         nombre=f"{agente.nombre}.{nombre_campo}",
                         nombres_agentes=nombres_agentes,
+                        tipos_agentes=tipos_agentes,
                     )
                 )
 
         return (len(errores) == 0, errores)
+
+    def _validar_plan_b(self, plan: Any) -> tuple[bool, list[str]]:
+        """Valida el plan alternativo con el MISMO validador que el inicial.
+
+        Antes solo se comprobaba la sintaxis del código Python, así que un
+        Plan B podía repetir un contrato roto (variable sin resolver, clave
+        inexistente, ``File`` sin fuente de contenido) y volver a fallar en
+        ejecución. Ahora se aplica ``PlanValidator.validar_plan`` completo.
+        """
+        ok, errores = self._validar_sintaxis_agentes(plan)
+
+        validador = getattr(self.problem_solver, "validator", None)
+        if validador is not None:
+            try:
+                ok_plan, errores_plan = validador.validar_plan(plan)
+                if not ok_plan:
+                    ok = False
+                    for error in errores_plan:
+                        if error not in errores:
+                            errores.append(error)
+            except Exception as e:
+                logger.debug(f"PlanRecovery: validación completa no disponible: {e}")
+
+        return (ok, errores)
+
+    @staticmethod
+    def _resumen_agente_fallido(agente: Any) -> str:
+        """Configuración legible del agente que falló, para el prompt.
+
+        Sin esto el LLM no ve QUÉ código falló y tiende a repetirlo.
+        """
+        if agente is None:
+            return "(no disponible)"
+        campos = (
+            "codigo_python", "codigo_por_item", "prompt_llm", "comando_shell",
+            "url_http", "query_search", "operacion_file", "archivo_origen",
+            "archivo_destino", "fuente_items",
+        )
+        partes = []
+        for campo in campos:
+            valor = getattr(agente, campo, None)
+            if valor in (None, "", [], {}):
+                continue
+            texto = valor if isinstance(valor, str) else str(valor)
+            partes.append(f"- {campo}: {texto[:800]}")
+        return "\n".join(partes) if partes else "(sin configuración legible)"
 
     def _resumir_plan_fallido(self, plan: Any) -> str:
         """Convierte el plan en un resumen legible para el prompt."""

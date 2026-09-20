@@ -29,13 +29,17 @@ advertencias de este mismo método. Se replica tal cual para no alterar
 el comportamiento (incluye el nombre del logger que queda en los logs).
 """
 import ast
+import builtins
 import logging
+import os
 import re
 
 from core.agent import TipoAgente
+from core.sandbox_contract import NOMBRES_INYECTADOS
 
 from .constants import CAMPOS_VALIDOS_POR_TIPO
 from .models import ExecutionPlan, StepPlan
+from .prompt_builder import PromptBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +49,76 @@ logger = logging.getLogger(__name__)
 # leer cualquiera de estos nombres provoca ``NameError`` en tiempo de
 # ejecución. Se detectan como variable suelta igual que los nombres de agente.
 ALIAS_CONTEXTO_PROHIBIDOS = {"dependencias"}
+
+# Nombres que Python y el sandbox ya definen: usarlos NO es un error.
+_DUNDERS = frozenset({
+    "__name__", "__file__", "__doc__", "__package__", "__spec__",
+    "__loader__", "__builtins__", "__debug__", "__class__", "__qualname__",
+    "__module__", "__annotations__", "__dict__",
+})
+NOMBRES_CONOCIDOS = (
+    frozenset(builtins.dir(builtins)) | set(NOMBRES_INYECTADOS) | _DUNDERS
+)
+
+
+def _construir_claves_salida() -> dict[str, frozenset]:
+    """Claves que cada tipo de agente puede devolver en su resultado.
+
+    Fuente única de verdad: el contrato documentado del prompt más las
+    claves extra que los ejecutores devuelven de hecho.
+    """
+    salida: dict[str, set] = {}
+    for tipo, info in PromptBuilder.CONTRATOS_SALIDA.items():
+        claves = info.get("claves")
+        if isinstance(claves, dict):
+            salida[tipo] = set(claves)
+    for tipo, extra in getattr(PromptBuilder, "CLAVES_EXTRA_SALIDA", {}).items():
+        salida.setdefault(tipo, set()).update(extra)
+    return {tipo: frozenset(claves) for tipo, claves in salida.items()}
+
+
+CLAVES_SALIDA_POR_TIPO = _construir_claves_salida()
+
+# Unión de todas las claves conocidas. La regla 7 solo actúa si la clave
+# pertenece a OTRO tipo de agente (p. ej. ``body`` es de HTTP y se lee de un
+# LLM). Así una clave válida pero no documentada no genera falsos positivos.
+UNION_CLAVES_SALIDA = frozenset().union(*CLAVES_SALIDA_POR_TIPO.values())
+
+
+def _texto_constante(nodo) -> str | None:
+    """Valor de un literal str (o None si no lo es)."""
+    if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
+        return nodo.value
+    return None
+
+
+def _nombre_dependencia(expr, nombres_agentes: set) -> str | None:
+    """Nombre de agente leído del contexto en ``expr``.
+
+    Reconoce ``contexto.get('Dep', ...)`` y ``contexto['Dep']``.
+    """
+    if isinstance(expr, ast.Call):
+        funcion = expr.func
+        if (
+            isinstance(funcion, ast.Attribute)
+            and funcion.attr == "get"
+            and isinstance(funcion.value, ast.Name)
+            and funcion.value.id == "contexto"
+            and expr.args
+        ):
+            nombre = _texto_constante(expr.args[0])
+            if nombre in nombres_agentes:
+                return nombre
+        return None
+    if isinstance(expr, ast.Subscript):
+        if (
+            isinstance(expr.value, ast.Name)
+            and expr.value.id == "contexto"
+        ):
+            nombre = _texto_constante(expr.slice)
+            if nombre in nombres_agentes:
+                return nombre
+    return None
 
 
 class PlanValidator:
@@ -266,11 +340,57 @@ class PlanValidator:
 
         # ── NUEVO: validar código Python de cada paso ──
         nombres_agentes = {p.nombre for p in plan.pasos}
+        tipos_agentes = {p.nombre: p.tipo_agente for p in plan.pasos}
         for paso in plan.pasos:
             if getattr(paso, "tipo_agente", None) == "Python":
-                errores.extend(self._validar_codigo_python(paso, nombres_agentes))
+                errores.extend(
+                    self._validar_codigo_python(paso, nombres_agentes, tipos_agentes)
+                )
+
+        # ── NUEVO: contratos de los pasos File ──
+        errores.extend(self._validar_pasos_file(plan))
 
         return len(errores) == 0, errores
+
+    @staticmethod
+    def _validar_pasos_file(plan: ExecutionPlan) -> list[str]:
+        """Valida contratos de los pasos File que bloquean en runtime.
+
+        - ``copiar``/``mover`` con ``archivo_origen == archivo_destino``:
+          revienta con ``SameFileError`` y dispara un Plan B inútil.
+        - ``escribir`` sin dependencias: el contenido de un agente File sale
+          del resultado de su dependencia; sin ella no hay fuente y falla con
+          ``no_content``.
+        """
+        errores = []
+        for paso in plan.pasos:
+            if getattr(paso, "tipo_agente", None) != "File":
+                continue
+            config = paso.configuracion or {}
+            operacion = (config.get("operacion") or "").lower()
+            origen = config.get("archivo_origen") or ""
+            destino = config.get("archivo_destino") or ""
+
+            if (
+                operacion in ("copiar", "mover")
+                and origen
+                and destino
+                and os.path.normpath(origen) == os.path.normpath(destino)
+            ):
+                errores.append(
+                    f"BLOQUEANTE: '{paso.nombre}': operación '{operacion}' con "
+                    f"archivo_origen == archivo_destino ('{destino}'); no aporta "
+                    f"nada y falla con SameFileError. Elimina el paso o cambia "
+                    f"el destino."
+                )
+
+            if operacion == "escribir" and not paso.dependencia_ids:
+                errores.append(
+                    f"BLOQUEANTE: '{paso.nombre}': File 'escribir' sin "
+                    f"dependencias. El contenido se toma del resultado de una "
+                    f"dependencia; sin ella no hay fuente de contenido."
+                )
+        return errores
 
     @staticmethod
     def _nombres_ligados(arbol: ast.AST) -> set:
@@ -302,11 +422,13 @@ class PlanValidator:
         codigo: str,
         nombre: str,
         nombres_agentes: set,
+        tipos_agentes: dict | None = None,
     ) -> list[str]:
         """
         Función pura. Valida un bloque de código. Misma regla para PlanValidator y PlanRecovery.
-        Detecta: SyntaxError, NameError por agente, json.loads('{X}'), {{X}}
-        y nombre inventado usado como literal (N2).
+        Detecta: SyntaxError, NameError por agente, json.loads('{X}'), {{X}},
+        nombre inventado usado como literal (N2), nombre libre sin definir y
+        claves inexistentes en el contrato del productor.
         """
         errores = []
         if not codigo or not isinstance(codigo, str) or not codigo.strip():
@@ -425,9 +547,85 @@ class PlanValidator:
                 f"sin sustituir (no existe en el sandbox)"
             )
 
+        # 6. Nombres LIBRES que no define el código ni el sandbox.
+        #
+        #    Es la generalización del bug de binding: cualquier alias que el
+        #    corrector no haya podido resolver (p. ej. ``respuesta`` en un
+        #    paso SIN dependencias) llegaba al sandbox y reventaba con
+        #    NameError, o peor, se leía un valor por defecto silencioso.
+        #    Los nombres de agente y los alias de contexto ya se reportan en
+        #    la regla 2, así que aquí se excluyen para no duplicar.
+        reportados: set = set()
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Name) or not isinstance(nodo.ctx, ast.Load):
+                continue
+            identificador = nodo.id
+            if identificador in reportados:
+                continue
+            if identificador in nombres_ligados:
+                continue
+            if identificador in NOMBRES_CONOCIDOS:
+                continue
+            if identificador in nombres_agentes:
+                continue
+            if identificador in ALIAS_CONTEXTO_PROHIBIDOS:
+                continue
+            reportados.add(identificador)
+            errores.append(
+                f"BLOQUEANTE: {nombre}: usa '{identificador}' sin definirla. "
+                f"No existe en el sandbox; lee las dependencias con "
+                f"contexto.get('NombreDependencia', {{}}) o "
+                f"dependencia(contexto, 'NombreDependencia')."
+            )
+
+        # 7. Clave leída de una dependencia que su tipo no puede producir.
+        #
+        #    Es el anti-patrón que originó el bug: un paso leía
+        #    ``contexto.get('GenerarCuento', {}).get('body', '{}')`` sobre un
+        #    agente LLM. ``body`` es una clave de HTTP, no de LLM: el default
+        #    ``'{}'`` se colaba como contenido. La lista de claves válidas
+        #    sale del contrato de salida documentado, no de una lista ad-hoc.
+        if tipos_agentes:
+            for nodo in ast.walk(arbol):
+                dependencia = None
+                clave = None
+                if (
+                    isinstance(nodo, ast.Call)
+                    and isinstance(nodo.func, ast.Attribute)
+                    and nodo.func.attr == "get"
+                    and nodo.args
+                ):
+                    dependencia = _nombre_dependencia(
+                        nodo.func.value, nombres_agentes
+                    )
+                    if dependencia is not None:
+                        clave = _texto_constante(nodo.args[0])
+                elif isinstance(nodo, ast.Subscript):
+                    dependencia = _nombre_dependencia(
+                        nodo.value, nombres_agentes
+                    )
+                    if dependencia is not None:
+                        clave = _texto_constante(nodo.slice)
+
+                if dependencia is None or clave is None:
+                    continue
+                tipo_dep = tipos_agentes.get(dependencia)
+                claves_validas = CLAVES_SALIDA_POR_TIPO.get(tipo_dep)
+                if not claves_validas or clave in claves_validas:
+                    continue
+                # Solo si la clave es de OTRO tipo (no un simple typo).
+                if clave not in UNION_CLAVES_SALIDA:
+                    continue
+                errores.append(
+                    f"BLOQUEANTE: {nombre}: lee la clave '{clave}' de "
+                    f"'{dependencia}' (tipo {tipo_dep}), pero esa clave es de "
+                    f"otro tipo de agente. Claves válidas para {tipo_dep}: "
+                    f"{sorted(claves_validas)}."
+                )
+
         return errores
 
-    def _validar_codigo_python(self, paso, nombres_agentes: set) -> list:
+    def _validar_codigo_python(self, paso, nombres_agentes: set, tipos_agentes: dict | None = None) -> list:
         """
         Delega en la función pura para tener una única fuente de verdad.
         """
@@ -436,6 +634,7 @@ class PlanValidator:
             codigo=codigo,
             nombre=paso.nombre,
             nombres_agentes=nombres_agentes,
+            tipos_agentes=tipos_agentes,
         )
 
     def _detectar_ciclos(self, plan: ExecutionPlan) -> bool:

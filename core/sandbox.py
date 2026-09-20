@@ -46,6 +46,8 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from .cancellation import CancellationToken
+from .sandbox_contract import PRELUDE_CODIGO as _PRELUDE_CONTRATO
+
 
 # Configurar logger
 logger = logging.getLogger(__name__)
@@ -640,6 +642,14 @@ contexto = __CONTEXTO_JSON__
 item = contexto.get('item')
 indice = contexto.get('indice', 0)
 total = contexto.get('total', 0)
+if not isinstance(contexto, dict):
+    contexto = {}
+
+# ============================================================
+# CONTRATO DE RUNTIME (dependencia, preparar_imagen, ...)
+# Inyectado desde core/sandbox_contract.py — única fuente de verdad.
+# ============================================================
+__CONTRATO_SANDBOX__
 
 # ============================================================
 # CÓDIGO DEL USUARIO
@@ -737,6 +747,7 @@ if __name__ == "__main__":
         script = (
             script_plantilla
             .replace("__CONTEXTO_JSON__", contexto_json, 1)   # solo 1 ocurrencia
+            .replace("__CONTRATO_SANDBOX__", _PRELUDE_CONTRATO, 1)
             .replace("__CODIGO_USUARIO__", codigo_escapado, 1)
         )
         return script
