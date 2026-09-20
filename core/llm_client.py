@@ -184,7 +184,10 @@ class LLMClient:
         env_file = cargar_entorno_desde_archivos()
 
         # ── 2. Resolver API key: arg > env var > archivo ──
-        self.api_key, origen_key = resolver_api_key(api_key)
+        #    Se pasa el env_file ya leído para que el archivo real se pueda
+        #    neutralizar desde los tests (monkeypatch de
+        #    ``cargar_entorno_desde_archivos`` en este módulo).
+        self.api_key, origen_key = resolver_api_key(api_key, env_file)
 
         if not self.api_key:
             raise LLMConfigurationError(

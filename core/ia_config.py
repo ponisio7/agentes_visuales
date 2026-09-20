@@ -188,8 +188,15 @@ def modelo_por_defecto() -> str:
     return DEFAULT_MODEL
 
 
-def resolver_api_key(api_key: str | None = None) -> tuple[str | None, str | None]:
+def resolver_api_key(
+    api_key: str | None = None,
+    env_file: dict[str, str] | None = None,
+) -> tuple[str | None, str | None]:
     """Resuelve la API key y su origen: arg > entorno > archivo.
+
+    ``env_file`` permite inyectar el resultado de
+    ``cargar_entorno_desde_archivos`` (lo usa ``LLMClient`` para que los tests
+    puedan neutralizar el archivo real). Si es ``None`` se lee el archivo.
 
     Devuelve ``(key, origen)``. Nunca registra la key.
     """
@@ -200,7 +207,8 @@ def resolver_api_key(api_key: str | None = None) -> tuple[str | None, str | None
     if key_env:
         return key_env, "variable de entorno"
 
-    key_archivo = cargar_entorno_desde_archivos().get("DEEPSEEK_API_KEY")
+    datos = env_file if env_file is not None else cargar_entorno_desde_archivos()
+    key_archivo = datos.get("DEEPSEEK_API_KEY")
     if key_archivo:
         return key_archivo, "archivo de configuración"
 
