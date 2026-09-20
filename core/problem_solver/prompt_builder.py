@@ -42,6 +42,12 @@ class PromptBuilder:
         "  - Si necesitas el body crudo, usa `contexto['NombreDependencia']['body']`",
         "**SALIDA**: El código DEBE asignar el resultado final a la variable `resultado`.",
         "  - ¡NO uses `print()`! Usa `resultado = {...}`",
+        "**ACCESO SEMÁNTICO A DEPENDENCIAS (helper del sandbox)**: además de `contexto.get(...)`, el sandbox expone `dependencia(contexto, nombre, clave=None)`.",
+        "  - `dependencia(contexto, 'Agente')`: valor principal del resultado (texto o JSON ya desenvuelto según el contrato de salida).",
+        "  - `dependencia(contexto, 'Agente', 'json')`: el JSON ya parseado.",
+        "  - `dependencia(contexto, 'Agente', 'texto')`: el texto crudo principal.",
+        "  - `dependencia(contexto, 'Agente', 'clave')`: una clave concreta del resultado.",
+        "  Si escribes por error variables sueltas como `respuesta`, `data`, `result`, `response` o `json_data`, el sistema las corrige a `dependencia(...)` sobre la primera dependencia declarada. Aun así, accede tú a la clave exacta que define el contrato de salida.",
         "**NUNCA** uses variables como 'respuesta', 'data', 'result', 'response' o 'json_data' que no hayan sido definidas.",
         "**SIEMPRE** usa `contexto.get('NombreAgente', {})` para acceder a dependencias.",
         "**CONSISTENCIA DE DATOS ENTRE AGENTES**: Cuando dos dependencias devuelven listas "
@@ -386,6 +392,21 @@ class PromptBuilder:
         "hacer N peticiones HTTP, usa un agente Loop con `continuar_en_error=true` "
         "y un timeout por item. NO hagas un bucle implícito dentro de un "
         "agente Python: bloqueará el sandbox.",
+        "**IMÁGENES DENTRO DE DOCUMENTOS** (.docx, .pdf, ...): si el problema "
+        "pide insertar una imagen en un documento:\n"
+        "  - La imagen DEBE ser RASTER con bytes reales PNG/JPEG/GIF/BMP/TIFF. "
+        "Un archivo llamado 'x.png' puede contener SVG, JSON o nada: la "
+        "extensión NO garantiza el formato.\n"
+        "  - El sandbox expone `preparar_imagen(ruta)`: devuelve una ruta con "
+        "bytes aceptados por el consumidor del documento (convierte si hace "
+        "falta) o lanza un error explicativo. Úsalo antes de pasarla a la "
+        "librería del documento.\n"
+        "  - NUNCA generes una imagen vectorial (SVG) para insertarla en un "
+        "documento ofimático.\n"
+        "  - Patrón preferido: un paso produce el texto y las rutas/URLs de "
+        "imágenes raster en su `resultado` (p. ej. "
+        "`{'texto': ..., 'imagenes': ['ruta.png']}`) y un agente `File` con "
+        "`operacion: escribir` y el destino del documento las inserta.",
         "**RESPETA EL FORMATO PEDIDO**: Si el problema especifica un formato de "
         "archivo concreto (por ejemplo .html, .docx, .pdf, .md, .csv, .json, .svg, "
         ".xml), el paso File de escritura DEBE usar esa extensión en "
