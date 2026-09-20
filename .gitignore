@@ -1,101 +1,15 @@
-# ── Outputs de agentes (no versionar) ──
-*.csv
-*.json
-*.svg
-*.md
-*.txt
-!README.md
-!CHANGELOG.md
-!HARNESS_REPORT_*.md
-!docs/*.md
-!requirements.txt
-!pyproject.toml
-!setup.cfg
-!*.template.json
-
-# ── Base de datos y logs ──
-agent_history.db
-agent_history.db-*
-agent_history.db.*
-*.db
-*.db-wal
-*.db-shm
-*.log
-logs/
-outputs/
-learning_models/
-configs/.journal/
-
-# ── Python ──
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-build/
-dist/
-*.egg-info/
+# Entorno
 .venv/
-venv/
-env/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
+__pycache__/
+*.pyc
+*.pyo
 
-# ── Editores ──
-.vscode/
-.idea/
-*.swp
-*~
+# Datos y estado
+agent_history.db
+learning_models/
+logs/
+outputs/screenshots/
 
-# ── Sistema ──
-.DS_Store
-Thumbs.db
-
-# ── Backups (se conservan en disco, pero no se versionan) ──
-*.backup_*
-*.before_restore
-*.bak
-*.bak[0-9]
-*.bak_manual
-*.py.[0-9]*
-.backups_fix_*/
-.backups_fix_*/*
-
-# ── Outputs web/docx generados por agentes ──
-*.html
-*.htm
-*.docx
-*.xlsx
-*.pdf
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.webp
-
-# ── Directorios de trabajo / temporales ──
-tmp/
-temp/
-imagenes/
-images/
-.playwright-browsers/
-.playwright/
-
-# ── Archivos raros / lock ──
-.~lock.*#
-*.lock
-sqlite3
-
-# ── Documentación versionable (excepciones a *.md) ──
-!MANUAL_CLI.md
-!CHANGELOG.md
-!CONTRIBUTING.md
-!docs/**/*.md
-
-# ── Plantillas del entorno web (excepción a *.html) ──
-# Sin esta excepción, `*.html` (outputs de agentes) dejaría fuera
-# web/templates/index.html, que es código de la aplicación.
-!web/templates/*.html
+# Config local
+.env
+*.env
