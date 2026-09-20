@@ -24,8 +24,11 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
+
+from web.jobs import GestorTrabajos
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +75,8 @@ class ColaTrabajos:
         timeout: float | None,
         aprender: bool,
         agente: str | None,
+        job_id: str | None = None,
+        estado: str = "queued",
     ) -> dict[str, Any]:
         """Encola un trabajo y devuelve su registro (con el ``Event``)."""
         trabajo: dict[str, Any] = {
@@ -83,6 +88,9 @@ class ColaTrabajos:
             "evento": threading.Event(),
             "resultado": None,
             "error": None,
+            "estado": estado,
+            "job_id": job_id,
+            "cancelado": False,
         }
         self._cola.put(trabajo)
         return trabajo
@@ -123,7 +131,18 @@ class ColaTrabajos:
             trabajo = self.pendiente()
             if trabajo is None:
                 break
+
+            # Cancelado antes de ejecutarse (H9): no se ejecuta.
+            if trabajo.get("cancelado"):
+                trabajo["estado"] = "cancelled"
+                trabajo["error"] = "cancelado antes de ejecutarse"
+                trabajo["terminado"] = time.time()
+                trabajo["evento"].set()
+                continue
+
             procesados += 1
+            trabajo["estado"] = "running"
+            trabajo["iniciado"] = time.time()
             try:
                 trabajo["resultado"] = ejecutar(
                     trabajo["problema"],
@@ -137,6 +156,11 @@ class ColaTrabajos:
                 log.exception("Error ejecutando un trabajo de /api/run")
                 trabajo["error"] = str(e)
             finally:
+                salida = trabajo.get("resultado") or {}
+                trabajo["estado"] = (
+                    "completed" if salida.get("ok") else "failed"
+                )
+                trabajo["terminado"] = time.time()
                 trabajo["evento"].set()
         return procesados
 
@@ -147,6 +171,7 @@ def create_app(
     timeout: float | None = None,
     max_pasos_defecto: int = 6,
     version: str = "",
+    gestor: GestorTrabajos | None = None,
 ):
     """Crea la ``Flask`` app con el Blueprint ``api``.
 
@@ -155,8 +180,20 @@ def create_app(
         timeout: ``--timeout`` global; limita la espera del cliente HTTP.
         max_pasos_defecto: valor por defecto de ``max_pasos``.
         version: versión del proyecto (``main.__version__``) para ``/api/health``.
+        gestor: gestor de trabajos (H9). Si es ``None`` se crea uno sobre la cola.
     """
-    from flask import Blueprint, Flask, jsonify, render_template, request
+    from flask import (
+        Blueprint,
+        Flask,
+        Response,
+        jsonify,
+        render_template,
+        request,
+        stream_with_context,
+    )
+
+    if gestor is None:
+        gestor = GestorTrabajos(cola)
 
     api = Blueprint("api", __name__)
 
@@ -243,6 +280,100 @@ def create_app(
 
         salida = trabajo["resultado"] or {}
         return jsonify(salida), (200 if salida.get("ok") else 500)
+
+    # ── H9: API de trabajos ─────────────────────────────────────
+    @api.post("/jobs")
+    def crear_job():
+        """Encola un trabajo y devuelve ``job_id`` sin bloquear."""
+        tarea = request.get_json(silent=True)
+        if not isinstance(tarea, dict):
+            return jsonify({
+                "ok": False,
+                "error": "el cuerpo debe ser un objeto JSON",
+            }), 400
+        problema = str(tarea.get("prompt") or tarea.get("problema") or "").strip()
+        if not problema:
+            return jsonify({"ok": False, "error": "falta 'prompt'"}), 400
+
+        main_mod = importar_main()
+        resumen = gestor.crear(
+            problema=problema,
+            max_pasos=main_mod._entero_o_defecto(
+                tarea.get("max_pasos"), max_pasos_defecto
+            ),
+            timeout=tarea.get("timeout"),
+            aprender=bool(tarea.get("aprender", True)),
+            agente=tarea.get("agent"),
+        )
+        return jsonify({**resumen, "ok": True}), 202
+
+    @api.get("/jobs")
+    def listar_jobs():
+        return jsonify({"ok": True, "jobs": gestor.listar(limite=50)})
+
+    @api.get("/jobs/<job_id>")
+    def estado_job(job_id: str):
+        resumen = gestor.obtener(job_id)
+        if resumen is None:
+            return jsonify({"ok": False, "error": "job no encontrado"}), 404
+        return jsonify({**resumen, "ok": True})
+
+    @api.post("/jobs/<job_id>/cancel")
+    def cancelar_job(job_id: str):
+        encontrado, mensaje = gestor.cancelar(job_id)
+        if not encontrado:
+            return jsonify({"ok": False, "error": mensaje}), 404
+        return jsonify({"mensaje": mensaje, **(gestor.obtener(job_id) or {}), "ok": True})
+
+    @api.get("/jobs/<job_id>/logs")
+    def logs_job(job_id: str):
+        """Logs en vivo del trabajo (SSE).
+
+        Query: ``?cursor=N``. Emite un evento por entrada y termina cuando el
+        job es terminal y no quedan entradas nuevas.
+        """
+        if gestor.obtener(job_id) is None:
+            return jsonify({"ok": False, "error": "job no encontrado"}), 404
+
+        try:
+            cursor = int(request.args.get("cursor", 0))
+        except (TypeError, ValueError):
+            cursor = 0
+
+        def _generar():
+            import json as _json
+            import time as _time
+
+            cursor_local = cursor
+            esperas_sin_novedad = 0
+            inicio = _time.time()
+            while True:
+                entradas, cursor_local = gestor.logs(job_id, cursor_local, 100)
+                if entradas is None:
+                    break
+                for entrada in entradas:
+                    yield f"data: {_json.dumps(entrada.to_dict(), ensure_ascii=False)}\n\n"
+                if gestor.es_terminal(job_id):
+                    # Última pasada antes de cerrar.
+                    extra, _ = gestor.logs(job_id, cursor_local, 100)
+                    for entrada in (extra or []):
+                        yield f"data: {_json.dumps(entrada.to_dict(), ensure_ascii=False)}\n\n"
+                    yield "event: fin\ndata: {}\n\n"
+                    break
+                # Tope de duración del stream (no dejar conexiones abiertas sin fin).
+                if (_time.time() - inicio) > 600:
+                    yield "event: fin\ndata: {\"motivo\": \"tiempo agotado\"}\n\n"
+                    break
+                esperas_sin_novedad = 0 if entradas else esperas_sin_novedad + 1
+                if esperas_sin_novedad > 300:  # ~75s sin novedades
+                    yield ": heartbeat\n\n"
+                    esperas_sin_novedad = 0
+                _time.sleep(0.25)
+
+        respuesta = Response(stream_with_context(_generar()), mimetype="text/event-stream")
+        respuesta.headers["Cache-Control"] = "no-cache"
+        respuesta.headers["X-Accel-Buffering"] = "no"
+        return respuesta
 
     app = Flask(__name__)
     app.register_blueprint(api, url_prefix="/api")

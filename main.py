@@ -778,15 +778,20 @@ def _ejecutar_serve(args) -> int:
     Scheduler necesita) los consume con un ``QTimer`` y deja el resultado en
     el propio trabajo.
     """
-    import queue
     import signal
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     from PyQt6.QtCore import QTimer
 
+    from web.app import ColaTrabajos
+    from web.jobs import GestorTrabajos
+
     app = _asegurar_qt()
-    trabajos: queue.Queue = queue.Queue()
+    # H9: misma cola no bloqueante que la web Flask; los trabajos de /run
+    # siguen siendo bloqueantes para el cliente, /jobs no.
+    cola = ColaTrabajos()
+    gestor = GestorTrabajos(cola)
     procesando = [False]
 
     def _procesar_trabajos():
@@ -799,25 +804,9 @@ def _ejecutar_serve(args) -> int:
             return
         procesando[0] = True
         try:
-            while True:
-                try:
-                    trabajo = trabajos.get_nowait()
-                except queue.Empty:
-                    break
-                try:
-                    trabajo["resultado"] = _ejecutar_pipeline(
-                        trabajo["problema"],
-                        max_pasos=trabajo["max_pasos"],
-                        timeout=trabajo["timeout"],
-                        aprender=trabajo["aprender"],
-                        agente=trabajo["agente"],
-                        log=logging.getLogger("serve"),
-                    )
-                except Exception as e:
-                    logger.exception("Error ejecutando un trabajo de /run")
-                    trabajo["error"] = str(e)
-                finally:
-                    trabajo["evento"].set()
+            cola.ejecutar_pendientes(
+                _ejecutar_pipeline, log=logging.getLogger("serve")
+            )
         finally:
             procesando[0] = False
             QTimer.singleShot(25, _procesar_trabajos)
@@ -857,13 +846,40 @@ def _ejecutar_serve(args) -> int:
                     "cursor": nuevo_cursor,
                 })
                 return
+            if ruta == "/jobs":
+                self._responder(200, {"ok": True, "jobs": gestor.listar(limite=50)})
+                return
+            if ruta.startswith("/jobs/"):
+                partes = ruta.split("/")
+                job_id = partes[2] if len(partes) > 2 else ""
+                if len(partes) == 5 and partes[4] == "logs":
+                    # Logs por cursor (polling; el SSE vive en la web Flask).
+                    try:
+                        query = parse_qs(urlparse(self.path).query)
+                        cursor = int((query.get("cursor") or ["0"])[0])
+                        limite = int((query.get("limit") or ["200"])[0])
+                    except (TypeError, ValueError):
+                        cursor, limite = 0, 200
+                    entradas, nuevo_cursor = gestor.logs(job_id, cursor, limite)
+                    if entradas is None:
+                        self._responder(404, {"ok": False, "error": "job no encontrado"})
+                        return
+                    self._responder(200, {
+                        "ok": True,
+                        "entradas": [e.to_dict() for e in entradas],
+                        "cursor": nuevo_cursor,
+                    })
+                    return
+                resumen = gestor.obtener(job_id)
+                if resumen is None:
+                    self._responder(404, {"ok": False, "error": "job no encontrado"})
+                    return
+                self._responder(200, {**resumen, "ok": True})
+                return
             self._responder(404, {"ok": False, "error": "ruta no encontrada; usa POST /run"})
 
-        def do_POST(self):  # noqa: N802 (nombre impuesto por http.server)
-            if self.path.rstrip("/") != "/run":
-                self._responder(404, {"ok": False, "error": "ruta no encontrada; usa POST /run"})
-                return
-
+        def _leer_tarea(self):
+            """Lee y valida el JSON del cuerpo. Devuelve (tarea, error)."""
             try:
                 largo = int(self.headers.get("Content-Length") or 0)
             except ValueError:
@@ -872,10 +888,38 @@ def _ejecutar_serve(args) -> int:
             try:
                 tarea = json.loads(crudo or b"{}")
             except json.JSONDecodeError as e:
-                self._responder(400, {"ok": False, "error": f"JSON inválido: {e}"})
-                return
+                return None, f"JSON inválido: {e}"
             if not isinstance(tarea, dict):
-                self._responder(400, {"ok": False, "error": "el cuerpo debe ser un objeto JSON"})
+                return None, "el cuerpo debe ser un objeto JSON"
+            return tarea, None
+
+        def do_POST(self):  # noqa: N802 (nombre impuesto por http.server)
+            from urllib.parse import urlparse as _urlparse
+
+            ruta = _urlparse(self.path).path.rstrip("/")
+
+            # ── H9: cancelar trabajo ──
+            if ruta.startswith("/jobs/") and ruta.endswith("/cancel"):
+                partes = ruta.split("/")
+                job_id = partes[2] if len(partes) > 2 else ""
+                encontrado, mensaje = gestor.cancelar(job_id)
+                if not encontrado:
+                    self._responder(404, {"ok": False, "error": mensaje})
+                    return
+                self._responder(200, {
+                    "mensaje": mensaje,
+                    **(gestor.obtener(job_id) or {}),
+                    "ok": True,
+                })
+                return
+
+            if ruta not in ("/run", "/jobs"):
+                self._responder(404, {"ok": False, "error": "ruta no encontrada; usa POST /run"})
+                return
+
+            tarea, error = self._leer_tarea()
+            if error:
+                self._responder(400, {"ok": False, "error": error})
                 return
 
             problema = str(tarea.get("prompt") or tarea.get("problema") or "").strip()
@@ -883,17 +927,22 @@ def _ejecutar_serve(args) -> int:
                 self._responder(400, {"ok": False, "error": "falta 'prompt'"})
                 return
 
-            trabajo = {
+            parametros = {
                 "problema": problema,
                 "max_pasos": _entero_o_defecto(tarea.get("max_pasos"), MAX_PASOS_DEFAULT),
                 "timeout": tarea.get("timeout"),
                 "aprender": bool(tarea.get("aprender", True)),
                 "agente": tarea.get("agent"),
-                "evento": threading.Event(),
-                "resultado": None,
-                "error": None,
             }
-            trabajos.put(trabajo)
+
+            # ── H9: crear trabajo sin bloquear ──
+            if ruta == "/jobs":
+                resumen = gestor.crear(**parametros)
+                self._responder(202, {**resumen, "ok": True})
+                return
+
+            # ── /run: comportamiento bloqueante de siempre ──
+            trabajo = cola.encolar(**parametros)
 
             if not trabajo["evento"].wait(timeout=args.timeout):
                 self._responder(504, {"ok": False, "error": "timeout esperando la ejecución"})
@@ -917,7 +966,8 @@ def _ejecutar_serve(args) -> int:
     hilo = threading.Thread(target=servidor.serve_forever, name="http-agentes", daemon=True)
     hilo.start()
     print(
-        f"🌐 Sirviendo en http://{args.host}:{args.port}/run (Ctrl-C para parar)",
+        f"🌐 Sirviendo en http://{args.host}:{args.port}/ "
+        f"(POST /run, POST /jobs, GET /jobs/<id>, GET /logs)",
         file=sys.stderr,
     )
     QTimer.singleShot(0, _procesar_trabajos)
