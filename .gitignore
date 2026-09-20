@@ -58,3 +58,8 @@ imagenes/
 # Notas de sesión
 RESUMEN_SESION_*.md
 resumenhoy.md
+
+informe_*.html
+informe_*.pdf
+informe_*.docx
+*.odt
