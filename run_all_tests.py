@@ -170,6 +170,7 @@ GRUPOS_TESTS = {
         "tests/test_urls_plantilla.py",
         "tests/test_utils_json.py",
         "tests/test_validador.py",
+        "tests/test_version.py",
     ],
 }
 
