@@ -306,6 +306,7 @@ class PlanValidator:
         """
         Función pura. Valida un bloque de código. Misma regla para PlanValidator y PlanRecovery.
         Detecta: SyntaxError, NameError por agente, json.loads('{X}'), {{X}}
+        y nombre inventado usado como literal (N2).
         """
         errores = []
         if not codigo or not isinstance(codigo, str) or not codigo.strip():
@@ -369,6 +370,59 @@ class PlanValidator:
             errores.append(
                 f"BLOQUEANTE: {nombre}: usa sintaxis de plantilla '{{{{...}}}}' "
                 f"en lugar de contexto.get(...). Fragmento: '...{fragmento}...'"
+            )
+
+        # 5. N2: el LLM se INVENTA UN NOMBRE para el contenido y lo usa como
+        #    literal en vez de construir el valor:
+        #
+        #        farsi = json.loads("__FARSI_JSON__")
+        #
+        #    Ese nombre inventado llega al AST como ``ast.Constant`` de tipo
+        #    ``str`` y ninguna regla anterior lo miraba, así que se colaba
+        #    hasta el sandbox (donde ``json.loads`` revienta).
+        #
+        #    El criterio es la FORMA del nombre, no una lista de nombres
+        #    conocidos ni un caso concreto: MAYÚSCULAS_CON_GUIONES_BAJOS, con
+        #    o sin envoltura ``__...__``. Así cubre por igual
+        #    ``__FARSI_JSON__``, ``__UCRAINIAN_JSON__``, ``__NEWS_HTML__``,
+        #    ``__CUENTO_DRAGON__``, ``__CALCULADORA_JS__`` o ``FARSI_JSON``
+        #    sin nombrar ninguno.
+        #
+        #    Se exige al menos un guion bajo para no marcar constantes de una
+        #    sola palabra perfectamente legítimas en código generado
+        #    (``"GET"``, ``"POST"``, ``"CSV"``, ``"OK"``). Los dunders
+        #    legítimos (``__name__``, ``__file__``, ``__main__``, ``__all__``)
+        #    van en minúsculas y tampoco casan.
+        #
+        #    Nota sobre ``_nombres_ligados``: no aplica aquí. Un literal de
+        #    cadena nunca puede ser el LHS de una asignación, y excluir los
+        #    literales cuyo texto coincida con un nombre ligado abriría un
+        #    falso negativo (p. ej. ``__X__ = 1`` junto a
+        #    ``json.loads("__X__")``). Lo que sí se excluye es la constante
+        #    que es OBJETIVO de una asignación por subíndice
+        #    (``contexto["__X__"] = ...``): ahí es un nombre de clave elegido
+        #    por el código, no un placeholder que se consuma.
+        objetivos_asignacion = {
+            id(nodo.slice)
+            for nodo in ast.walk(arbol)
+            if isinstance(nodo, ast.Subscript)
+            and isinstance(nodo.ctx, (ast.Store, ast.Del))
+        }
+        patron_nombre_inventado = re.compile(r"[A-Z][A-Z0-9_]*")
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Constant):
+                continue
+            if not isinstance(nodo.value, str):
+                continue
+            if "_" not in nodo.value:
+                continue
+            if not patron_nombre_inventado.fullmatch(nodo.value.strip("_")):
+                continue
+            if id(nodo) in objetivos_asignacion:
+                continue
+            errores.append(
+                f"BLOQUEANTE: {nombre}: placeholder literal '{nodo.value}' "
+                f"sin sustituir (no existe en el sandbox)"
             )
 
         return errores
