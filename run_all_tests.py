@@ -125,6 +125,7 @@ GRUPOS_TESTS = {
         "tests/test_scheduler.py",
         "tests/test_scheduler_orden.py",
         "tests/test_scheduler_ciclos.py",
+        "tests/test_scheduler_reintentos.py",
         "tests/test_scheduler_resolucion.py",
         "tests/test_scheduler_terminal.py",
         "tests/test_ejecucion_individual.py",

@@ -608,11 +608,18 @@ class Scheduler(QObject):
                         )
 
                 # ── Determinar estado final usando la máquina de estados ──
+                # ``razon`` debe estar siempre definida: fue_cancelado puede
+                # venir de self._cancelados sin que el token esté cancelado
+                # (p. ej. si el agente se marcó cancelado mientras un reintento
+                # registraba un token nuevo). Antes eso provocaba un
+                # UnboundLocalError silencioso en el hilo worker.
+                razon = token.obtener_metadata(
+                    'razon_cancelacion', 'Cancelado por el usuario'
+                )
                 fue_cancelado = agente.id in self._cancelados
                 # Verificar si el token fue cancelado
-                if token.esta_cancelado() and not fue_cancelado:
+                if token.esta_cancelado():
                     fue_cancelado = True
-                    razon = token.obtener_metadata('razon_cancelacion', 'Cancelado')
 
                 self._cancelados.discard(agente.id)
 
@@ -744,7 +751,12 @@ class Scheduler(QObject):
             # ── Limpiar token ──
             token.completar()
             with self._lock:
-                self._tokens_activos.pop(agente.id, None)
+                # Solo borrar si el token registrado sigue siendo el nuestro:
+                # en la ruta de reintento el mismo agente puede tener ya otro
+                # worker con un token nuevo, y borrarlo lo dejaba fuera del
+                # mapa de cancelación (detener() ya no podría pararlo).
+                if self._tokens_activos.get(agente.id) is token:
+                    self._tokens_activos.pop(agente.id, None)
             self._gestor_cancelacion.eliminar_token(token.id)
 
         # ── FASE 6: Emitir señales (fuera del lock) ──
@@ -1229,8 +1241,19 @@ class Scheduler(QObject):
             agente = self.agentes.get(agente_id)
             if agente is None:
                 return
+            # Si el lanzamiento inmediato del reintento ya funcionó, el agente
+            # está en ``running``: esta señal encolada es un duplicado.
+            if agente.id in self.running:
+                return
             if not EstadoAgente.puede_ejecutarse(agente.estado):
                 return
+            # _ejecutar_agente solo acepta LISTO → EJECUTANDO: las aristas
+            # EN_COLA/REINTENTANDO → EJECUTANDO no existen, así que el worker
+            # abortaba con "No se puede ejecutar" y el reintento se perdía
+            # (y, al no sumarse a running, no contaba para max_concurrent).
+            agente.estado = EstadoAgente.LISTO
+            self.running.add(agente.id)
+            self._invalidar_stats_cache()
             self._executor.submit(self._ejecutar_agente, agente, contexto_extra)
 
     # ============================================================
