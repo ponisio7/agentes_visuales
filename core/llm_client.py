@@ -192,6 +192,44 @@ class LLMConfigurationError(LLMError):
 # CLASE PRINCIPAL: LLMClient
 # ============================================================
 
+class LLMResultado:
+    """Resultado de una llamada al LLM con metadatos.
+
+    ``chat()`` solo necesita el texto, pero los ejecutores de agentes
+    necesitan además ``finish_reason`` y ``usage`` para decidir si la
+    respuesta se cortó (B1/v3.3.0).
+    """
+
+    __slots__ = ("contenido", "razonamiento", "finish_reason", "uso", "modelo")
+
+    def __init__(
+        self,
+        contenido: str | None,
+        razonamiento: str | None = None,
+        finish_reason: str | None = None,
+        uso: Any = None,
+        modelo: str = "",
+    ):
+        self.contenido = contenido
+        self.razonamiento = razonamiento
+        self.finish_reason = finish_reason
+        self.uso = uso
+        self.modelo = modelo
+
+    @property
+    def vacio(self) -> bool:
+        """True si no hay texto utilizable (ni contenido ni razonamiento)."""
+        return not (self.contenido or "").strip()
+
+    def tokens(self) -> dict[str, int]:
+        """Tokens de la respuesta, en el formato que usan los ejecutores."""
+        return {
+            "prompt": getattr(self.uso, "prompt_tokens", 0) or 0,
+            "completion": getattr(self.uso, "completion_tokens", 0) or 0,
+            "total": getattr(self.uso, "total_tokens", 0) or 0,
+        }
+
+
 class LLMClient:
     """
     Cliente para interactuar con modelos LLM de DeepSeek.
@@ -346,6 +384,77 @@ class LLMClient:
     # MÉTODO PRINCIPAL
     # ============================================================
 
+    def completar(
+        self,
+        mensajes: list[dict[str, Any]],
+        *,
+        model: str | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 2000,
+        reasoning_effort: str | None = None,
+        thinking_enabled: bool | None = None,
+        timeout: float | None = None,
+        extra_body: dict[str, Any] | None = None,
+    ) -> "LLMResultado":
+        """Una única llamada a ``chat.completions.create`` con metadatos.
+
+        Es el punto ÚNICO por el que sale una petición al LLM: lo usan
+        ``chat()`` y los ejecutores de agentes (``llm_executor.py``).
+
+        ``reasoning_effort``/``thinking_enabled`` permiten a un agente imponer
+        su configuración (B1) sobre la del cliente compartido, que se crea con
+        los valores por defecto (``high`` + thinking activado). Si se pasan,
+        mandan; si no, se usan los del cliente.
+
+        Raises:
+            LLMConnectionError: Si el cliente no está disponible.
+            LLMResponseError: Si la respuesta está vacía o sin ``choices``.
+        """
+        if not self.disponible:
+            raise LLMConnectionError(
+                "Cliente LLM no disponible. Verifica la configuración."
+            )
+
+        modelo = model or self.default_model
+        reasoning = reasoning_effort or self.reasoning_effort
+        thinking = (
+            thinking_enabled if thinking_enabled is not None
+            else self.thinking_enabled
+        )
+        timeout = timeout or self.timeout
+
+        extra = {"thinking": {"type": "enabled" if thinking else "disabled"}}
+        if extra_body:
+            extra.update(extra_body)
+
+        response = self._client.chat.completions.create(
+            model=modelo,
+            messages=mensajes,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=False,
+            reasoning_effort=reasoning,
+            extra_body=extra,
+            timeout=timeout,
+        )
+
+        if not response or not response.choices:
+            raise LLMResponseError("La respuesta está vacía o sin choices")
+
+        eleccion = response.choices[0]
+        contenido = eleccion.message.content
+        razonamiento = getattr(eleccion.message, "reasoning_content", None)
+        if (contenido is None or not contenido.strip()) and razonamiento:
+            contenido = razonamiento
+
+        return LLMResultado(
+            contenido=contenido,
+            razonamiento=razonamiento,
+            finish_reason=getattr(eleccion, "finish_reason", None),
+            uso=getattr(response, "usage", None),
+            modelo=modelo,
+        )
+
     def chat(
         self,
         prompt: str,
@@ -396,11 +505,6 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        # ── Construir extra_body ──
-        extra = {"thinking": {"type": "enabled" if thinking else "disabled"}}
-        if extra_body:
-            extra.update(extra_body)
-
         # ── Log de la consulta ──
         logger.debug(f"📤 Consultando modelo: {model}")
         logger.debug(f"   Temperatura: {temperature}, Max tokens: {max_tokens}")
@@ -422,40 +526,34 @@ class LLMClient:
                     )
                     time.sleep(wait_time)
 
-                response = self._client.chat.completions.create(
+                # Punto único de salida a la API; los parámetros del agente
+                # (B1) llegan resueltos en reasoning/thinking.
+                resultado = self.completar(
+                    messages,
                     model=model,
-                    messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
-                    stream=False,
                     reasoning_effort=reasoning,
-                    extra_body=extra,
-                    timeout=timeout
+                    thinking_enabled=thinking,
+                    timeout=timeout,
+                    extra_body=extra_body,
                 )
 
-                # ── Verificar respuesta ──
-                if not response or not response.choices:
-                    raise LLMResponseError("La respuesta está vacía o sin choices")
-
-                content = response.choices[0].message.content
-
+                content = resultado.contenido
                 if content is None or not content.strip():
-                    if hasattr(response.choices[0].message, 'reasoning_content'):
-                        content = response.choices[0].message.reasoning_content
-                    if not content or not content.strip():
-                        raise LLMResponseError(
-                            "El contenido de la respuesta está vacío"
-                        )
+                    raise LLMResponseError(
+                        "El contenido de la respuesta está vacío"
+                    )
 
                 # ── Log del éxito ──
                 logger.info(f"✅ Respuesta recibida ({len(content)} caracteres)")
-                if hasattr(response, 'usage') and response.usage:
+                if resultado.uso is not None:
                     logger.debug(
-                        f"   Tokens: {response.usage.total_tokens} total"
+                        f"   Tokens: {resultado.uso.total_tokens} total"
                     )
                     logger.debug(
-                        f"   Prompt: {response.usage.prompt_tokens}, "
-                        f"Completion: {response.usage.completion_tokens}"
+                        f"   Prompt: {resultado.uso.prompt_tokens}, "
+                        f"Completion: {resultado.uso.completion_tokens}"
                     )
                 logger.debug(f"   Primeros 200 chars: {content[:200]}...")
 
