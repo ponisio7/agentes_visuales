@@ -131,6 +131,18 @@ class ProblemSolver:
         except Exception as e:
             self.logger.debug(f"Learning no disponible: {e}")
 
+        # ✅ H8: casos anteriores EXITOSOS parecidos (retrieval conservador).
+        try:
+            from learning import obtener_learning_engine
+            engine = obtener_learning_engine()
+            if engine is not None:
+                bloque_casos = engine.obtener_casos_para_prompt(problema)
+                if bloque_casos:
+                    user_prompt = user_prompt + "\n\n" + bloque_casos
+                    self.logger.info("🧠 Casos similares exitosos inyectados en el prompt")
+        except Exception as e:
+            self.logger.debug(f"Retrieval de casos no disponible: {e}")
+
         # ✅ Instrucción extra (en regeneraciones)
         if _instruccion_extra:
             user_prompt = user_prompt + "\n\n" + _instruccion_extra

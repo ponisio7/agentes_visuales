@@ -8,11 +8,14 @@ tengan que saber nada de scikit-learn ni de SQL.
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from .dataset import minar_dataset
 from .feature_extraction import (
@@ -28,6 +31,66 @@ from .reward_llm import EvaluadorLLM
 from .schema import aplicar_esquema_learning
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# RETRIEVAL DE CASOS SIMILARES (H8)
+# ============================================================
+
+UMBRAL_RETRIEVAL_DEFAULT = 0.85
+MAX_CASOS_RETRIEVAL = 3
+MAX_CANDIDATOS_RETRIEVAL = 1000
+
+
+def configuracion_retrieval() -> dict:
+    """Umbral y número de casos, configurables por entorno.
+
+    - ``AGENTES_RETRIEVAL_UMBRAL`` (por defecto 0.85, conservador)
+    - ``AGENTES_RETRIEVAL_MAX`` (por defecto 3, acotado a 1..3)
+    """
+    try:
+        umbral = float(os.environ.get("AGENTES_RETRIEVAL_UMBRAL", ""))
+    except (TypeError, ValueError):
+        umbral = UMBRAL_RETRIEVAL_DEFAULT
+    if not (0.0 < umbral <= 1.0):
+        umbral = UMBRAL_RETRIEVAL_DEFAULT
+
+    try:
+        max_casos = int(os.environ.get("AGENTES_RETRIEVAL_MAX", ""))
+    except (TypeError, ValueError):
+        max_casos = MAX_CASOS_RETRIEVAL
+    max_casos = min(max(max_casos, 1), MAX_CASOS_RETRIEVAL)
+    return {"umbral": umbral, "max_casos": max_casos}
+
+
+def _resumen_plan_json(plan_json: str) -> dict:
+    """Resumen seguro del plan guardado (H5) para el prompt."""
+    import json
+
+    if not plan_json:
+        return {"titulo": "", "pasos": 0, "tipos": [], "pasos_detalle": []}
+    try:
+        datos = json.loads(plan_json)
+    except (json.JSONDecodeError, TypeError):
+        return {"titulo": "", "pasos": 0, "tipos": [], "pasos_detalle": []}
+
+    pasos = datos.get("pasos") or []
+    detalle = [
+        {
+            "nombre": str(p.get("nombre", ""))[:60],
+            "tipo": str(p.get("tipo_agente", "")),
+            "critico": bool(p.get("es_critico", False)),
+            "contrato": bool(p.get("tiene_contrato", False)),
+        }
+        for p in pasos
+        if isinstance(p, dict)
+    ]
+    return {
+        "titulo": str(datos.get("titulo", ""))[:120],
+        "pasos": len(detalle),
+        "tipos": sorted({d["tipo"] for d in detalle if d["tipo"]}),
+        "pasos_detalle": detalle,
+    }
 
 
 class LearningEngine:
@@ -272,4 +335,177 @@ class LearningEngine:
             return extractor.formatear_para_prompt(lecciones)
         except Exception as e:
             logger.debug(f"obtener_lecciones_para_prompt falló: {e}")
+            return ""
+
+    # ------------------------------------------------------------------
+    # RETRIEVAL DE CASOS SIMILARES (H8)
+    # ------------------------------------------------------------------
+    def obtener_casos_similares(
+        self,
+        problema: str,
+        max_casos: int | None = None,
+        umbral: float | None = None,
+    ) -> list[dict]:
+        """Casos ANTERIORMENTE EXITOSOS parecidos al problema actual.
+
+        Solo busca entre ejecuciones con ``aceptada = 1`` (éxito real, no
+        «los agentes terminaron»). Reutiliza el ``EmbeddingMatcher`` del
+        proyecto; si no está disponible o no hay casos, devuelve ``[]``.
+
+        Umbral conservador por defecto (0.85) y 1..3 casos.
+        """
+        if not problema or not problema.strip():
+            return []
+        cfg = configuracion_retrieval()
+        umbral = cfg["umbral"] if umbral is None else float(umbral)
+        max_casos = cfg["max_casos"] if max_casos is None else int(max_casos)
+        max_casos = min(max(max_casos, 1), MAX_CASOS_RETRIEVAL)
+
+        try:
+            from .embedding_matcher import obtener_matcher
+
+            matcher = obtener_matcher()
+            vector_bytes = matcher.calcular(problema)
+            if vector_bytes is None:
+                return []
+            vec_consulta = np.frombuffer(vector_bytes, dtype=np.float32)
+        except Exception as e:
+            logger.debug(f"Retrieval: embeddings no disponibles: {e}")
+            return []
+
+        candidatos = self._cargar_candidatos_exitosos(matcher.modelo)
+        if not candidatos:
+            return []
+
+        puntuados = []
+        for fila in candidatos:
+            try:
+                vec_cand = np.frombuffer(fila["problema_embedding"], dtype=np.float32)
+            except (TypeError, ValueError):
+                continue
+            if vec_cand.shape != vec_consulta.shape:
+                continue
+            sim = float(np.dot(vec_consulta, vec_cand))
+            if sim >= umbral:
+                puntuados.append((sim, fila))
+
+        puntuados.sort(key=lambda par: par[0], reverse=True)
+
+        casos = []
+        for sim, fila in puntuados[:max_casos]:
+            plan = _resumen_plan_json(fila.get("plan_json") or "")
+            casos.append({
+                "ejecucion_id": fila.get("id"),
+                "problema": (fila.get("problema") or "")[:400],
+                "similitud": round(sim, 4),
+                "titulo": plan["titulo"],
+                "tipos": plan["tipos"],
+                "pasos": plan["pasos_detalle"],
+                "resultado": (fila.get("resultado") or "")[:400],
+                "score": self._score_plan(fila.get("id")),
+                "fecha": fila.get("fecha") or "",
+            })
+
+        if casos:
+            logger.info(
+                f"🧠 Retrieval: {len(casos)} caso(s) exitosos similares "
+                f"(umbral={umbral}, mejor={casos[0]['similitud']})"
+            )
+        return casos
+
+    def _cargar_candidatos_exitosos(self, modelo: str) -> list[dict]:
+        """Ejecuciones exitosas con embedding del problema del mismo modelo."""
+        try:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout=10000")
+                columnas = {
+                    r[1] for r in conn.execute("PRAGMA table_info(ejecuciones)")
+                }
+                if not {"problema_embedding", "aceptada"} <= columnas:
+                    return []
+                filas = conn.execute(
+                    """SELECT id, problema, plan_json, resultado, fecha,
+                              problema_embedding
+                       FROM ejecuciones
+                       WHERE aceptada = 1
+                         AND problema_embedding IS NOT NULL
+                         AND problema_embedding_model = ?
+                         AND problema IS NOT NULL AND problema != ''
+                       ORDER BY id DESC
+                       LIMIT ?""",
+                    (modelo, MAX_CANDIDATOS_RETRIEVAL),
+                ).fetchall()
+                return [dict(r) for r in filas]
+        except Exception as e:
+            logger.debug(f"Retrieval: no se pudieron cargar candidatos: {e}")
+            return []
+
+    def _score_plan(self, ejecucion_id: int | None) -> float | None:
+        """Score LLM del plan (si existe), como señal de calidad del caso."""
+        if ejecucion_id is None:
+            return None
+        try:
+            with closing(sqlite3.connect(self.db_path, timeout=5)) as conn:
+                fila = conn.execute(
+                    """SELECT MAX(score) FROM evaluaciones_llm
+                       WHERE ejecucion_id = ? AND alcance = 'plan'""",
+                    (ejecucion_id,),
+                ).fetchone()
+                if fila and fila[0] is not None:
+                    return float(fila[0])
+        except Exception:
+            pass
+        return None
+
+    def formatear_casos_para_prompt(self, casos: list[dict]) -> str:
+        """Bloque de prompt con los casos similares, SIN presentarlos como verdad."""
+        if not casos:
+            return ""
+        lineas = [
+            "ENFOQUES UTILIZADOS ANTERIORMENTE EN PROBLEMAS SIMILARES:",
+            "Estos casos se resolvieron con éxito antes. Evalúa si son",
+            "aplicables al problema actual; NO los copies ciegamente y NO",
+            "asumas que el mismo enfoque funcionará aquí.",
+            "",
+        ]
+        for i, caso in enumerate(casos, 1):
+            score = (
+                f"{caso['score']:.2f}" if caso.get("score") is not None else "n/d"
+            )
+            tipos = ", ".join(caso.get("tipos") or []) or "n/d"
+            lineas.append(
+                f"CASO {i} (similitud {caso['similitud']}, score {score}):"
+            )
+            if caso.get("problema"):
+                lineas.append(f"  · problema: {caso['problema']}")
+            lineas.append(f"  · plan: {caso.get('titulo') or '(sin título)'}")
+            lineas.append(f"  · tipos de agente: {tipos}")
+            for paso in (caso.get("pasos") or [])[:6]:
+                sufijo = []
+                if paso.get("critico"):
+                    sufijo.append("crítico")
+                if paso.get("contrato"):
+                    sufijo.append("con contrato")
+                extra = f" [{', '.join(sufijo)}]" if sufijo else ""
+                lineas.append(f"      - [{paso.get('tipo')}] {paso.get('nombre')}{extra}")
+            if caso.get("resultado"):
+                lineas.append(f"  · resultado/evidencia: {caso['resultado'][:200]}")
+            lineas.append("")
+        return "\n".join(lineas)
+
+    def obtener_casos_para_prompt(
+        self,
+        problema: str,
+        max_casos: int | None = None,
+        umbral: float | None = None,
+    ) -> str:
+        """Bloque listo para el prompt (o '' si no hay casos fiables)."""
+        try:
+            casos = self.obtener_casos_similares(
+                problema, max_casos=max_casos, umbral=umbral
+            )
+            return self.formatear_casos_para_prompt(casos)
+        except Exception as e:
+            logger.debug(f"obtener_casos_para_prompt falló: {e}")
             return ""

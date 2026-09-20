@@ -134,6 +134,26 @@ def registrar_ejecucion_en_aprendizaje(
             engine = obtener_learning_engine(db_path=db_path, llm_client=obtener_llm_client_compartido())
             if engine is None: return
 
+            # ✅ H8: embedding del problema para el retrieval de casos
+            #    similares. Best-effort: si no hay sentence-transformers se
+            #    omite sin afectar al resto del aprendizaje.
+            if problema_snap:
+                try:
+                    from learning.embedding_matcher import obtener_matcher
+
+                    matcher = obtener_matcher()
+                    vector = matcher.calcular(problema_snap)
+                    if vector is not None:
+                        with closing(sqlite3.connect(db_path, timeout=10)) as conn:
+                            conn.execute(
+                                "UPDATE ejecuciones SET problema_embedding = ?, "
+                                "problema_embedding_model = ? WHERE id = ?",
+                                (vector, matcher.modelo, ejecucion_id),
+                            )
+                            conn.commit()
+                except Exception as e:
+                    logger.debug(f"No se pudo guardar el embedding del problema: {e}")
+
             # ✅ FASE 4c: registrar usos de prompts reescritos.
             # Cada agente LLM que usó una versión reescrita (activa o
             # candidata) deja constancia para poder atribuir el score.
