@@ -117,7 +117,8 @@ def ejecutar_tarea(
         aviso = "stdout vacío"
 
     return {
-        # La app devuelve "ok": true solo si TODOS los agentes completaron.
+        # La app devuelve "ok": true solo si TODOS los agentes completaron
+        # Y la aceptación de la salida pasó (H6).
         "ok": bool(salida.get("ok")),
         "returncode": proc.returncode,
         "salida": salida,
@@ -125,6 +126,143 @@ def ejecutar_tarea(
         "stderr": proc.stderr,
         "aviso": aviso,
     }
+
+
+def resumen_verificacion(salida: dict) -> dict:
+    """Extrae el veredicto de aceptación y los artefactos del JSON de la app.
+
+    La validación depende del VerificationEngine (H6): ``ok`` ya no significa
+    «los agentes terminaron», sino «el artefacto cumple el contrato». Aquí se
+    resume para el informe por tarea.
+    """
+    aceptacion = salida.get("aceptacion") or {}
+    artefactos: list[str] = []
+    criterios_fallidos: list[str] = []
+    for paso in aceptacion.get("pasos") or []:
+        for criterio in paso.get("criterios_comprobados") or []:
+            if isinstance(criterio, str) and criterio.startswith(
+                ("archivo:", "imagen:", "directorio:")
+            ):
+                artefactos.append(criterio.split(":", 1)[1])
+        criterios_fallidos.extend(paso.get("criterios_fallidos") or [])
+
+    return {
+        "verificada": bool(aceptacion.get("verificada")),
+        "aceptada": aceptacion.get("aceptada"),
+        "motivos": list(aceptacion.get("motivos") or []),
+        "criterios_fallidos": criterios_fallidos,
+        "artefactos": sorted(set(artefactos)),
+    }
+
+
+def resumen_tarea(res: dict) -> dict:
+    """Informe estructurado de una tarea: estado, errores, artefactos, verificación."""
+    salida = res.get("salida") or {}
+    agentes = salida.get("agentes") or []
+    errores = [
+        {
+            "nombre": a.get("nombre"),
+            "estado": a.get("estado"),
+            "error": (a.get("error") or "")[:300],
+        }
+        for a in agentes
+        if not a.get("ok")
+    ]
+    return {
+        "ok": bool(res.get("ok")),
+        "returncode": res.get("returncode"),
+        "estado": salida.get("estado") or ("fallida" if res.get("returncode") else ""),
+        "duracion": salida.get("duracion"),
+        "ejecucion_id": salida.get("ejecucion_id"),
+        "titulo": salida.get("titulo"),
+        "resultado": str(salida.get("resultado") or "")[:300],
+        "errores": errores,
+        "verificacion": resumen_verificacion(salida),
+        "aviso": res.get("aviso", ""),
+    }
+
+
+def _imprimir_informe(informe: dict) -> None:
+    ver = informe["verificacion"]
+    print(
+        f"     estado={informe['estado']!r} | "
+        f"duración={informe['duracion']}s | "
+        f"ejecución_id={informe['ejecucion_id']} | "
+        f"plan={informe['titulo']!r}"
+    )
+    if ver["verificada"]:
+        artefactos = ", ".join(ver["artefactos"]) or "(sin artefactos declarados)"
+        estado_ver = "aceptada" if ver["aceptada"] else "rechazada"
+        print(f"     verificación: {estado_ver} | artefactos: {artefactos}")
+    else:
+        print("     verificación: no verificable (sin contrato declarado)")
+    if ver["motivos"]:
+        for motivo in ver["motivos"][:5]:
+            print(f"       ✗ {motivo}")
+    if informe["errores"]:
+        for err in informe["errores"][:5]:
+            print(f"       ✗ [{err['estado']}] {err['nombre']}: {err['error']}")
+    if informe["resultado"]:
+        print(f"     resultado: {informe['resultado'][:160]}")
+
+
+def procesar_lista(
+    tareas: list[str],
+    *,
+    cwd: Path,
+    aprender: bool,
+    max_pasos: int,
+    timeout: int,
+    ver_logs: bool,
+    continue_on_error: bool = False,
+) -> int:
+    """Envía las tareas EN SERIE: no manda la siguiente hasta que la anterior OK.
+
+    Cada tarea se valida con el VerificationEngine de la app (``ok`` exige
+    aceptación). Con ``continue_on_error`` se sigue con la siguiente tarea
+    aunque una falle; sin él, la lista se detiene en el primer fallo.
+    Devuelve 0 si TODAS pasaron, 1 si alguna falló.
+    """
+    fallos = 0
+    for i, tarea in enumerate(tareas, 1):
+        print(f"\n▶ [{i}/{len(tareas)}] {tarea}", flush=True)
+
+        if ver_logs:
+            res = ejecutar_con_logs_en_vivo(tarea, cwd=cwd, timeout=timeout)
+        else:
+            res = ejecutar_tarea(
+                tarea, cwd=cwd, max_pasos=max_pasos,
+                timeout=timeout, aprender=aprender,
+            )
+
+        informe = resumen_tarea(res)
+
+        if not informe["ok"]:
+            fallos += 1
+            detalle = (
+                informe["verificacion"]["motivos"]
+                or informe["errores"]
+                or (res.get("salida") or {}).get("error")
+                or informe["aviso"]
+                or (res.get("stderr") or "")[-300:]
+            )
+            print(f"  ❌ falló (exit={informe['returncode']}): {detalle}")
+            _imprimir_informe(informe)
+            if continue_on_error and i < len(tareas):
+                print("  ⏭ --continue-on-error: se pasa a la siguiente tarea")
+                continue
+            if not continue_on_error:
+                print("  ⏹ se detiene la lista (usa --continue-on-error para seguir)")
+            return 1
+
+        print(f"  ✅ OK en {informe['duracion']}s")
+        _imprimir_informe(informe)
+
+    if fallos:
+        print(f"\n⚠ {fallos} tarea(s) fallaron de {len(tareas)}")
+        return 1
+    print(f"\n✅ {len(tareas)} tarea(s) completadas y verificadas")
+    return 0
 
 
 def ejecutar_tarea_json(tarea: dict, *, cwd: Path, timeout: int = 300) -> dict:
@@ -191,36 +329,6 @@ def ejecutar_con_logs_en_vivo(prompt: str, *, cwd: Path, timeout: int = 300) -> 
             "salida": salida, "stderr": "".join(errores)}
 
 
-def procesar_lista(tareas: list[str], *, cwd: Path, aprender: bool,
-                   max_pasos: int, timeout: int, ver_logs: bool) -> int:
-    """Envía las tareas EN SERIE: no manda la siguiente hasta que la anterior OK."""
-    for i, tarea in enumerate(tareas, 1):
-        print(f"\n▶ [{i}/{len(tareas)}] {tarea}", flush=True)
-
-        if ver_logs:
-            res = ejecutar_con_logs_en_vivo(tarea, cwd=cwd, timeout=timeout)
-        else:
-            res = ejecutar_tarea(
-                tarea, cwd=cwd, max_pasos=max_pasos,
-                timeout=timeout, aprender=aprender,
-            )
-
-        salida = res.get("salida") or {}
-        if not res["ok"]:
-            detalle = salida.get("error") or [
-                a for a in salida.get("agentes", []) if not a.get("ok")
-            ] or res.get("aviso") or res.get("stderr", "")[-300:]
-            print(f"  ❌ falló (exit={res['returncode']}): {detalle}")
-            print("  ⏹ se detiene la lista (no se envía la siguiente)")
-            return 1
-
-        print(f"  ✅ OK en {salida.get('duracion')}s | "
-              f"plan={salida.get('titulo')!r} | "
-              f"ejecucion_id={salida.get('ejecucion_id')}")
-        print(f"     resultado: {str(salida.get('resultado', ''))[:160]}")
-    return 0
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -236,6 +344,8 @@ def main() -> int:
                         help="Timeout de la ejecución (segundos).")
     parser.add_argument("--ver-logs", action="store_true",
                         help="Muestra los logs del subproceso en vivo (stderr).")
+    parser.add_argument("--continue-on-error", action="store_true",
+                        help="No detener la lista si una tarea falla la verificación.")
     args = parser.parse_args()
 
     tareas = args.tareas or ["di hola"]
@@ -247,6 +357,7 @@ def main() -> int:
     return procesar_lista(
         tareas, cwd=args.cwd, aprender=args.aprender,
         max_pasos=args.max_pasos, timeout=args.timeout, ver_logs=args.ver_logs,
+        continue_on_error=args.continue_on_error,
     )
 
 
