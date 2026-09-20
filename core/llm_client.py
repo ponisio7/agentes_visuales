@@ -314,7 +314,7 @@ class LLMClient:
                 f"   API key origen: {origen_key}"
             )
         except Exception as e:
-            raise LLMConnectionError(f"Error inicializando cliente DeepSeek: {e}")
+            raise LLMConnectionError(f"Error inicializando cliente DeepSeek: {e}") from e
 
     # ============================================================
     # PROPIEDADES
@@ -553,7 +553,7 @@ class LLMClient:
             except json.JSONDecodeError:
                 pass
 
-            raise LLMResponseError(f"La respuesta no es JSON válido: {e}")
+            raise LLMResponseError(f"La respuesta no es JSON válido: {e}") from e
 
     def chat_con_modelo_alternativo(
         self,

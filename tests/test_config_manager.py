@@ -308,6 +308,24 @@ class TestConfigRecuperacion:
             config_manager._validar_archivo_config(ruta)
         assert "json" in str(exc_info.value).lower()
     
+    def test_json_invalido_conserva_la_causa_original(self, config_manager, temp_config_dir):
+        """La excepción de dominio debe encadenar la causa real (``from e``).
+
+        Regresión: los ``raise ConfigIntegrityError(...)`` dentro de
+        ``except ... as e`` no usaban ``from e``, así que al depurar se
+        perdía el traceback original (ruff B904).
+        """
+        ruta = os.path.join(temp_config_dir, "invalid_cause.json")
+        with open(ruta, 'w') as f:
+            f.write("{invalid json")
+
+        with pytest.raises(ConfigIntegrityError) as exc_info:
+            config_manager._validar_archivo_config(ruta)
+
+        causa = exc_info.value.__cause__
+        assert causa is not None, "se perdió la cadena de causalidad"
+        assert isinstance(causa, json.JSONDecodeError)
+    
     def test_validar_archivo_config_vacio(self, config_manager, temp_config_dir):
         """Prueba validación de archivo vacío."""
         ruta = os.path.join(temp_config_dir, "empty.json")

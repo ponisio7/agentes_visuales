@@ -26,10 +26,11 @@ ignore = [
     "E501",    # líneas largas: pendiente de un formateo global
     "E701",    # varias sentencias tras ':' (estilo heredado)
     "E702",    # varias sentencias con ';' (estilo heredado)
-    "B904",    # raise sin 'from' dentro de except (estilo heredado)
     "W291",    # espacios al final de línea: churn irrelevante
     "W293",    # líneas en blanco con espacios: churn irrelevante
 ]
+# B904 (raise sin 'from' dentro de except) se eliminó de la lista de
+# ignoradas: los 24 sitios existentes ya encadenan la causa original.
 
 [tool.ruff.lint.isort]
 known-first-party = ["core", "storage", "learning", "export", "ui"]

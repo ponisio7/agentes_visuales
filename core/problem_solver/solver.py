@@ -64,7 +64,7 @@ class ProblemSolver:
             try:
                 llm_client = LLMClient()
             except Exception as e:
-                raise ValueError(f"Error inicializando cliente LLM: {e}")
+                raise ValueError(f"Error inicializando cliente LLM: {e}") from e
 
         self.llm_client = llm_client
         if not self.llm_client.disponible:
@@ -295,7 +295,7 @@ class ProblemSolver:
 
         except Exception as e:
             self.logger.error(f"Error refinando plan: {e}")
-            raise ValueError(f"No se pudo refinar el plan: {e}")
+            raise ValueError(f"No se pudo refinar el plan: {e}") from e
 
     def obtener_plan(self, plan_id: str) -> ExecutionPlan | None:
         """Obtiene un plan de la caché por su ID."""

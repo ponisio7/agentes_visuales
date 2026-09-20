@@ -281,7 +281,7 @@ class Database:
                 logger.debug(f"Nueva conexión creada para hilo {threading.get_ident()}")
             except sqlite3.Error as e:
                 logger.error(f"Error conectando a la base de datos: {e}")
-                raise RuntimeError(f"Error al conectar a la base de datos: {e}")
+                raise RuntimeError(f"Error al conectar a la base de datos: {e}") from e
         return self._local.connection
 
     def _close_connection(self):
@@ -1266,7 +1266,7 @@ class Database:
 
         except sqlite3.Error as e:
             logger.error(f"Error guardando ejecución: {e}")
-            raise RuntimeError(f"Error al guardar la ejecución: {e}")
+            raise RuntimeError(f"Error al guardar la ejecución: {e}") from e
 
     def _insertar_agentes_lote(
         self,
