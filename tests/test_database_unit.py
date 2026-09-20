@@ -382,3 +382,64 @@ class TestMigracionMotivoAB:
 
         assert "motivo" in cols
         assert version >= 10
+
+
+class TestMigracionProblema:
+    """H5: 'ejecuciones' conserva el problema y el resultado real."""
+
+    def test_guardar_persiste_problema_plan_resultado_y_aceptacion(self, db):
+        ejecucion_id = db.guardar_ejecucion(
+            [_agente()],
+            2.0,
+            estado="fallida",
+            problema="crea un docx con una imagen",
+            plan_json='{"pasos": [{"nombre": "Escribir"}]}',
+            resultado="docx sin imagen",
+            aceptada=0,
+            motivo_fallo="0 imágenes raster (mínimo 1)",
+        )
+
+        fila = db.obtener_ejecucion(ejecucion_id)
+        assert fila["problema"] == "crea un docx con una imagen"
+        assert "Escribir" in fila["plan_json"]
+        assert fila["resultado"] == "docx sin imagen"
+        assert fila["aceptada"] == 0
+        assert "imágenes" in fila["motivo_fallo"]
+
+    def test_aceptada_por_defecto_se_deriva_del_estado(self, db):
+        ok = db.guardar_ejecucion([_agente()], 1.0, estado="completada")
+        mal = db.guardar_ejecucion([_agente(estado="Error")], 1.0, estado="fallida")
+        assert db.obtener_ejecucion(ok)["aceptada"] == 1
+        assert db.obtener_ejecucion(mal)["aceptada"] == 0
+
+    def test_historial_incluye_el_problema(self, db):
+        db.guardar_ejecucion([_agente()], 1.0, problema="pregunta original")
+        historial = db.obtener_historial(limit=5)
+        assert historial[0]["problema"] == "pregunta original"
+
+
+class TestMigracionProblemaDesdeV10:
+    def test_migracion_10_11_anade_columnas_y_es_idempotente(self, db):
+        with sqlite3.connect(db.db_path) as conn:
+            for columna in (
+                "problema", "plan_json", "resultado", "aceptada",
+                "motivo_fallo", "problema_embedding", "problema_embedding_model",
+            ):
+                conn.execute(f"ALTER TABLE ejecuciones DROP COLUMN {columna}")
+            conn.execute("DELETE FROM version")
+            conn.execute(
+                "INSERT INTO version (version, fecha_actualizacion) VALUES (10, '')"
+            )
+            conn.commit()
+
+        db._migrar_db()
+        db._migrar_db()  # idempotente
+
+        with sqlite3.connect(db.db_path) as conn:
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(ejecuciones)")}
+            version = conn.execute(
+                "SELECT version FROM version ORDER BY version DESC LIMIT 1"
+            ).fetchone()[0]
+
+        assert {"problema", "plan_json", "resultado", "aceptada", "motivo_fallo"} <= cols
+        assert version >= 11

@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 10  # ✅ H2: motivo de uso de reescrituras (prompt_reescrito_usos)
+DB_VERSION = 11  # ✅ H5: problema, plan, resultado y aceptación en 'ejecuciones'
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -70,6 +70,16 @@ SCHEMA_DEFINITION = {
         "ejecutor": "TEXT DEFAULT ''",
         "tags": "TEXT DEFAULT ''",
         "notas": "TEXT DEFAULT ''",
+        # ✅ H5: la pregunta original y el resultado REAL como entidad de
+        # recuperación (retrieval de casos, analítica y depuración).
+        "problema": "TEXT DEFAULT ''",
+        "plan_json": "TEXT DEFAULT ''",
+        "resultado": "TEXT DEFAULT ''",
+        "aceptada": "INTEGER DEFAULT 1",
+        "motivo_fallo": "TEXT DEFAULT ''",
+        # ✅ H8: embedding del problema (solo se calcula best-effort).
+        "problema_embedding": "BLOB",
+        "problema_embedding_model": "TEXT DEFAULT ''",
     },
     "agentes_ejecucion": {
         "ejecucion_id": "INTEGER NOT NULL",
@@ -998,6 +1008,39 @@ class Database:
                         logger.warning(f"Error en migración 9→10: {e}")
                         fallos.append(f"9→10: {e}")
 
+                # ✅ Migración 10 → 11: persistir el problema y el resultado
+                #    real (H5). `ejecuciones` guardaba los contadores pero no
+                #    la pregunta: sin ella no hay retrieval de casos (§3, H8)
+                #    ni analítica fiable. Los embeddings del problema se
+                #    rellenan best-effort más adelante (H8).
+                if current_version < 11:
+                    try:
+                        columnas = self._obtener_columnas(conn, 'ejecuciones')
+                        nuevas = {
+                            'problema': "TEXT DEFAULT ''",
+                            'plan_json': "TEXT DEFAULT ''",
+                            'resultado': "TEXT DEFAULT ''",
+                            'aceptada': "INTEGER DEFAULT 1",
+                            'motivo_fallo': "TEXT DEFAULT ''",
+                            'problema_embedding': "BLOB",
+                            'problema_embedding_model': "TEXT DEFAULT ''",
+                        }
+                        anadidas = []
+                        for columna, tipo in nuevas.items():
+                            if columna not in columnas:
+                                cursor.execute(
+                                    f"ALTER TABLE ejecuciones ADD COLUMN {columna} {tipo}"
+                                )
+                                anadidas.append(columna)
+                        if anadidas:
+                            logger.info(
+                                f"✅ Migración 10→11: columnas añadidas a "
+                                f"'ejecuciones': {', '.join(anadidas)}"
+                            )
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 10→11: {e}")
+                        fallos.append(f"10→11: {e}")
+
                 if fallos:
                     raise sqlite3.OperationalError(
                         "Migraciones fallidas, no se actualiza la versión: "
@@ -1263,7 +1306,14 @@ class Database:
         estado: str = "completada",
         tags: list[str] = None,
         notas: str = "",
-        ejecutor: str = ""
+        ejecutor: str = "",
+        problema: str = "",
+        plan_json: str = "",
+        resultado: str = "",
+        aceptada: int | None = None,
+        motivo_fallo: str = "",
+        problema_embedding: bytes | None = None,
+        problema_embedding_model: str = "",
     ) -> int:
         """
         Guarda una ejecución completa con todos sus agentes.
@@ -1272,6 +1322,8 @@ class Database:
         - Validación de datos de entrada
         - Conteo de estados normalizado (case-insensitive)
         - Logging detallado
+        - H5: persiste el problema original, el plan, el resultado real y el
+          veredicto de aceptación; H8: el embedding del problema (opcional).
         """
         # ── Validación de entrada ──
         if not agentes:
@@ -1286,6 +1338,11 @@ class Database:
                 raise ValueError(f"Agente {i} sin campo 'estado'")
 
         tags_str = ",".join(tags) if tags else ""
+
+        # ``aceptada`` es la verdad del artefacto; si no se pasa, se deriva
+        # del estado honesto (que ya calcula el gate de aceptación).
+        if aceptada is None:
+            aceptada = 1 if str(estado).lower() == "completada" else 0
 
         try:
             with self._transaction() as conn:
@@ -1309,8 +1366,10 @@ class Database:
                     INSERT INTO ejecuciones (
                         fecha, duracion_total, agentes_total,
                         completados, errores, cancelados,
-                        estado, ejecutor, tags, notas
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        estado, ejecutor, tags, notas,
+                        problema, plan_json, resultado, aceptada, motivo_fallo,
+                        problema_embedding, problema_embedding_model
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     datetime.now().isoformat(),
                     float(duracion_total),
@@ -1321,7 +1380,14 @@ class Database:
                     estado,
                     ejecutor,
                     tags_str,
-                    notas
+                    notas,
+                    problema or "",
+                    plan_json or "",
+                    resultado or "",
+                    int(aceptada),
+                    motivo_fallo or "",
+                    problema_embedding,
+                    problema_embedding_model or "",
                 ))
 
                 ejecucion_id = cursor.lastrowid

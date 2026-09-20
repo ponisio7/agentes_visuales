@@ -1,6 +1,7 @@
 #core/execution_recorder.py — FIX Bug #7
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3  # ← añadir
 import threading
@@ -34,14 +35,60 @@ def _estado_desde_aceptacion(scheduler) -> str:
         return "completada"
 
 
+def _aceptacion_desde_scheduler(scheduler) -> dict:
+    """Veredicto de aceptación del scheduler (o {} si no está disponible)."""
+    try:
+        return scheduler.obtener_resultado_aceptacion() or {}
+    except Exception as e:
+        logger.debug(f"No se pudo consultar la aceptación: {e}")
+        return {}
+
+
+def _serializar_plan(plan) -> str:
+    """Resumen JSON del plan usado (H5), seguro de guardar en SQLite."""
+    if plan is None:
+        return ""
+    try:
+        datos = {
+            "id": getattr(plan, "id", ""),
+            "titulo": getattr(plan, "titulo", ""),
+            "problema_original": getattr(plan, "problema_original", ""),
+            "pasos": [
+                {
+                    "orden": getattr(p, "orden", 0),
+                    "nombre": getattr(p, "nombre", ""),
+                    "tipo_agente": getattr(p, "tipo_agente", ""),
+                    "es_critico": bool(getattr(p, "es_critico", False)),
+                    "tiene_contrato": getattr(p, "aceptacion", None) is not None,
+                }
+                for p in (getattr(plan, "pasos", None) or [])
+            ],
+        }
+        return json.dumps(datos, ensure_ascii=False, default=str)[:20000]
+    except Exception as e:
+        logger.debug(f"No se pudo serializar el plan: {e}")
+        return ""
+
+
 def registrar_ejecucion_en_aprendizaje(
     scheduler, db, plan, problema: str, duracion_total: float,
     estado: str | None = None,
 ) -> int | None:
-    # 0. Etiqueta real de éxito (H6): se calcula ANTES del hilo para no
-    #    depender de un scheduler que la GUI/workers pueden mutar después.
+    # 0. Etiqueta real de éxito (H6) y veredicto de aceptación: se calculan
+    #    ANTES del hilo para no depender de un scheduler que la GUI/workers
+    #    pueden mutar después.
+    aceptacion = _aceptacion_desde_scheduler(scheduler)
     if estado is None:
-        estado = _estado_desde_aceptacion(scheduler)
+        estado = (
+            "completada" if aceptacion.get("aceptada")
+            else ("fallida" if aceptacion else _estado_desde_aceptacion(scheduler))
+        )
+
+    problema_snap = problema or ""
+    resumen_plan_snap = _construir_resumen_plan(scheduler, plan) if plan is not None else ""
+    aceptada_final = bool(aceptacion.get("aceptada", estado == "completada"))
+    motivos = aceptacion.get("motivos") or []
+    motivo_fallo = "" if aceptada_final else "; ".join(str(m) for m in motivos)[:2000]
 
     # 1. Guardar en DB - incluir plan original si hubo Plan B, deduplicando por id
     try:
@@ -63,17 +110,22 @@ def registrar_ejecucion_en_aprendizaje(
                 agentes_data.append(a.to_dict())
             except Exception as e:
                 logger.warning(f"No se pudo serializar agente {aid}: {e}")
-        ejecucion_id = db.guardar_ejecucion(agentes_data, duracion_total, estado=estado)
+        ejecucion_id = db.guardar_ejecucion(
+            agentes_data,
+            duracion_total,
+            estado=estado,
+            problema=problema_snap,
+            plan_json=_serializar_plan(plan),
+            resultado=resumen_plan_snap,
+            aceptada=1 if aceptada_final else 0,
+            motivo_fallo=motivo_fallo,
+        )
     except Exception as e:
         logger.warning(f"No se pudo guardar la ejecución: {e}")
         return None
     agentes_snapshot = _construir_snapshot(scheduler)
     db_path = db.db_path
-    problema_snap = problema or ""
     plan_snap = plan
-    # Se calcula ANTES de lanzar el hilo para no tocar el scheduler vivo
-    # (mutado por la GUI/workers) desde otro hilo.
-    resumen_plan_snap = _construir_resumen_plan(scheduler, plan) if plan is not None else ""
     
     def _worker():
         try:

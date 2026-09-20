@@ -172,3 +172,69 @@ class TestEstadoHonesto:
             duracion_total=1.0,
         )
         assert db2.estado_guardado == "fallida"
+
+
+class TestPersistenciaProblema:
+    """H5: el recorder guarda problema, plan, resultado y aceptación."""
+
+    def test_recorder_guarda_problema_y_aceptacion(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "core.execution_recorder.threading.Thread",
+            lambda *a, **k: type("_T", (), {"start": lambda self: None})(),
+        )
+        from core.execution_recorder import registrar_ejecucion_en_aprendizaje
+        from core.problem_solver.models import ExecutionPlan, StepPlan
+        from storage.database import Database
+
+        db = Database(str(tmp_path / "hist.db"))
+        agente = Agente(
+            nombre="EscribirDocumento",
+            tipo=TipoAgente.FILE,
+            estado=EstadoAgente.ERROR,
+            resultado={"error": "0 imágenes"},
+        )
+
+        class _Scheduler:
+            _agentes_plan_original = []
+
+            def __init__(self):
+                self.agentes = {agente.id: agente}
+
+            def obtener_resultado_aceptacion(self):
+                return {
+                    "aceptada": False,
+                    "motivos": ["'EscribirDocumento': 0 imágenes raster (mínimo 1)"],
+                }
+
+        plan = ExecutionPlan(
+            problema_original="crea un docx con una imagen",
+            titulo="Documento",
+            pasos=[
+                StepPlan(orden=1, nombre="EscribirDocumento", tipo_agente="File")
+            ],
+        )
+
+        ejecucion_id = registrar_ejecucion_en_aprendizaje(
+            scheduler=_Scheduler(),
+            db=db,
+            plan=plan,
+            problema="crea un docx con una imagen",
+            duracion_total=1.5,
+        )
+
+        fila = db.obtener_ejecucion(ejecucion_id)
+        assert fila["problema"] == "crea un docx con una imagen"
+        assert fila["estado"] == "fallida"
+        assert fila["aceptada"] == 0
+        assert "imágenes" in fila["motivo_fallo"]
+        assert "EscribirDocumento" in fila["plan_json"]
+
+
+def test_serializar_plan_es_seguro():
+    from core.execution_recorder import _serializar_plan
+    from core.problem_solver.models import ExecutionPlan, StepPlan
+
+    assert _serializar_plan(None) == ""
+    plan = ExecutionPlan(titulo="t", pasos=[StepPlan(nombre="A", tipo_agente="Python")])
+    texto = _serializar_plan(plan)
+    assert "A" in texto and "Python" in texto
