@@ -355,6 +355,38 @@ class LLMClient:
             modelo=modelo,
         )
 
+    def completar_multimodal(
+        self,
+        texto: str,
+        imagenes: list[Any],
+        *,
+        system_prompt: str | None = None,
+        model: str | None = None,
+        temperature: float = 0.2,
+        max_tokens: int = 800,
+        reasoning_effort: str | None = None,
+        thinking_enabled: bool | None = None,
+        timeout: float | None = None,
+    ) -> "LLMResultado":
+        """Una llamada multimodal (texto + imágenes) compatible con OpenAI.
+
+        ``imagenes`` admite bytes o data URLs (ver ``core.vision``). No cambia
+        el comportamiento del proveedor: usa el mismo ``base_url`` y modelo
+        configurados, así que un servidor local compatible (H12) también sirve.
+        """
+        from core.vision import construir_mensajes_multimodales
+
+        mensajes = construir_mensajes_multimodales(texto, imagenes, system_prompt)
+        return self.completar(
+            mensajes,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+            thinking_enabled=thinking_enabled,
+            timeout=timeout,
+        )
+
     def chat(
         self,
         prompt: str,
