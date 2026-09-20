@@ -1,5 +1,33 @@
 # Changelog
 
+## [v3.2.1] — 2026-09-20
+
+Hotfix de una sola regla del validador. Ver `HARNESS_REPORT_v3.2.1.md`.
+
+### Corregido
+- **Validador (N2)**: `_validar_codigo_python_ast` detectaba los
+  placeholders con llaves (`json.loads('{X}')`) pero no el anti-patrón
+  real de N2: el LLM se inventa un nombre para el contenido y lo usa como
+  literal en vez de construir el valor
+  (`farsi = json.loads("__FARSI_JSON__")`). Ahora todo `ast.Constant` de
+  tipo `str` cuyo valor sea MAYÚSCULAS_CON_GUIONES_BAJOS — con o sin
+  envoltura `__...__` — se marca como `BLOQUEANTE`. El criterio es la
+  FORMA del nombre, no una lista de nombres conocidos ni el caso concreto
+  `__FARSI_JSON__`: cubre igual `__UCRAINIAN_JSON__`, `__NEWS_HTML__`,
+  `__CUENTO_DRAGON__` o `FARSI_JSON`.
+
+### Notas
+- Sin cambios de contrato: la función sigue devolviendo `list[str]` con
+  prefijo `BLOQUEANTE:`. Solo se añade una regla de detección.
+- Falsos positivos evitados sin listas de excepciones hardcodeadas: los
+  dunders legítimos (`__name__`, `__file__`, `__main__`, `__all__`) van en
+  minúsculas y no casan; las constantes de una sola palabra (`"GET"`,
+  `"POST"`, `"CSV"`, `"OK"`) no llevan guion bajo y tampoco se marcan; y el
+  LHS de una asignación (`contexto["__X__"] = ...`) es un nombre de clave
+  elegido por el código, no un placeholder consumido.
+- Coste conocido: un literal tipo variable de entorno (`"API_KEY"`,
+  `"HTTP_PROXY"`) sí casa con la forma. Documentado en el informe.
+
 ## [v3.2.0] — 2026-09-20
 
 Release de estabilización: cierra los tres bugs que quedaban abiertos en
