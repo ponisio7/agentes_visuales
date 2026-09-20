@@ -76,13 +76,18 @@ while IFS= read -r f; do
         fail "SyntaxError en: $f"
         ERR_SINTAXIS=$((ERR_SINTAXIS+1))
     fi
-done < <(find . -name "*.py" -not -path "./.git/*" -not -path "./.*" -not -path "*/__pycache__/*")
+done < <(find . -name "*.py" \
+    -not -path "./.git/*" \
+    -not -path "./.venv/*" \
+    -not -path "./venv/*" \
+    -not -path "./env/*" \
+    -not -path "*/__pycache__/*")
 [ "$ERR_SINTAXIS" -eq 0 ] && ok "Todos los .py compilan"
 
 # ── 7. pyflakes (si está instalado) ───────────────────────────
 info "7. pyflakes (errores reales, no estilo)"
 if command -v pyflakes >/dev/null 2>&1; then
-    PYFLAKES_OUT=$(pyflakes . 2>&1 | grep -v "__pycache__" || true)
+    PYFLAKES_OUT=$(pyflakes . 2>&1 | grep -v "__pycache__" | grep -v ".venv" || true)
     if [ -n "$PYFLAKES_OUT" ]; then
         warn "pyflakes reporta issues (revisar, no bloquean):"
         echo "$PYFLAKES_OUT" | head -30
@@ -97,6 +102,7 @@ fi
 info "8. Prints de debug olvidados"
 PRINTS=$(grep -rn "print(" --include="*.py" \
     --exclude-dir=.git --exclude-dir=__pycache__ \
+    --exclude-dir=.venv --exclude-dir=venv --exclude-dir=env \
     --exclude-dir=tests --exclude-dir=tools \
     | grep -v "if __name__" | grep -v "print(f\"\[TERMINADA\]" | grep -v "file=sys.stderr" || true)
 if [ -n "$PRINTS" ]; then
@@ -109,7 +115,9 @@ fi
 # ── 9. Emojis de debug sospechosos ────────────────────────────
 info "9. Mensajes de debug sospechosos"
 SOSPECHOSOS=$(grep -rn "🥶\|FIXME\|XXX\|HACK\|DEBUG:" --include="*.py" \
-    --exclude-dir=.git --exclude-dir=__pycache__ --exclude-dir=tests || true)
+    --exclude-dir=.git --exclude-dir=__pycache__ \
+    --exclude-dir=.venv --exclude-dir=venv --exclude-dir=env \
+    --exclude-dir=tests || true)
 if [ -n "$SOSPECHOSOS" ]; then
     warn "Encontrados marcadores de debug:"
     echo "$SOSPECHOSOS" | head -20
