@@ -186,11 +186,34 @@ producción (todos usan `tmp_path` / `:memory:`).
 
 ### 4.3 `./tools/pre_tag_check.sh` → exit 0
 
-(Pendiente de la ejecución final; se completa en el commit de cierre.)
+```
+✅ Working tree limpio
+⚠️  Estás en 'harness/fix-v3.2', no en main/master. ¿Seguro?   (esperado)
+⚠️  Sin upstream configurado                                    (repo local)
+✅ Todos los .py compilan
+✅ ruff limpio
+✅ CHANGELOG.md menciona v3.2.0
+Plan: Generar archivo saludo.txt con Hola Mundo | Pasos: 2 | Agentes: 2
+✅ Smoke test completado (plan con >= 2 pasos)
+✅ Suite de tests: todos los grupos OK
+✅ LISTO PARA TAGGEAR (revisa los ⚠️  manualmente)
+```
 
-### 4.4 `python main.py --check-env`
+Los ⚠️ de la sección 8 (prints de `llm_client.run_prueba`, protocolo
+`__RESULT__` del sandbox y `env_checker`) son los mismos que la v3.1.0 §6 ya
+clasificó como salida legítima de CLI/protocolo, no debug olvidado.
 
-(Pendiente; la red del entorno es intermitente, ver informe v3.1.0 §4.4.)
+### 4.4 `python main.py --check-env` → exit 0
+
+```
+✅ API key encontrada: sk-54c46…b6dc
+✅ Respuesta 200 en 15574 ms
+RESULTADO: ✅ Todo OK
+```
+
+La red del entorno sigue siendo intermitente en latencia (el informe v3.1.0
+§4.4 ya lo documentó): la respuesta fue 200 y exit 0. El código no cambió en
+esta sesión en lo relativo a red.
 
 ### 4.5 Lint
 
