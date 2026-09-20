@@ -63,11 +63,22 @@ SQL_CREAR_TABLAS = [
     CREATE TABLE IF NOT EXISTS reparaciones_plan (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         problema TEXT NOT NULL,
-        tipo TEXT NOT NULL,
-        fecha TEXT NOT NULL
+        tipo TEXT NOT NULL,                    -- estrategia de recuperación
+        fecha TEXT NOT NULL,
+        -- ✅ H7: traza completa de la reparación
+        ejecucion_id INTEGER,
+        intento INTEGER DEFAULT 0,
+        agente TEXT DEFAULT '',
+        error TEXT DEFAULT '',
+        estrategia TEXT DEFAULT '',
+        plan_firma TEXT DEFAULT '',
+        resultado TEXT DEFAULT '',
+        exito INTEGER DEFAULT 0
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_reparaciones_tipo ON reparaciones_plan(tipo)",
+    "CREATE INDEX IF NOT EXISTS idx_reparaciones_ejecucion "
+    "ON reparaciones_plan(ejecucion_id)",
     """
     CREATE TABLE IF NOT EXISTS prompts_reescritos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,

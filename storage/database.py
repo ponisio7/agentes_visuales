@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 11  # ✅ H5: problema, plan, resultado y aceptación en 'ejecuciones'
+DB_VERSION = 12  # ✅ H7: traza de reparaciones del Plan B
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -1040,6 +1040,43 @@ class Database:
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 10→11: {e}")
                         fallos.append(f"10→11: {e}")
+
+                # ✅ Migración 11 → 12: traza de reparaciones del Plan B (H7).
+                #    `reparaciones_plan` existía vacía y sin uso. Se añaden las
+                #    columnas para saber qué falló, qué se intentó y qué no
+                #    debe repetirse. La tabla la crea learning/schema.py, así
+                #    que en una BD nueva aquí puede no existir todavía.
+                if current_version < 12:
+                    try:
+                        tablas = self._obtener_tablas(conn)
+                        if 'reparaciones_plan' in tablas:
+                            cols = self._obtener_columnas(conn, 'reparaciones_plan')
+                            nuevas = {
+                                'ejecucion_id': "INTEGER",
+                                'intento': "INTEGER DEFAULT 0",
+                                'agente': "TEXT DEFAULT ''",
+                                'error': "TEXT DEFAULT ''",
+                                'estrategia': "TEXT DEFAULT ''",
+                                'plan_firma': "TEXT DEFAULT ''",
+                                'resultado': "TEXT DEFAULT ''",
+                                'exito': "INTEGER DEFAULT 0",
+                            }
+                            anadidas = []
+                            for columna, tipo in nuevas.items():
+                                if columna not in cols:
+                                    cursor.execute(
+                                        f"ALTER TABLE reparaciones_plan "
+                                        f"ADD COLUMN {columna} {tipo}"
+                                    )
+                                    anadidas.append(columna)
+                            if anadidas:
+                                logger.info(
+                                    f"✅ Migración 11→12: columnas añadidas a "
+                                    f"'reparaciones_plan': {', '.join(anadidas)}"
+                                )
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 11→12: {e}")
+                        fallos.append(f"11→12: {e}")
 
                 if fallos:
                     raise sqlite3.OperationalError(

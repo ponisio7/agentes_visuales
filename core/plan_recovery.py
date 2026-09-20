@@ -12,10 +12,244 @@ Máximo de Plan B por ejecución: 2 (configurable en el Scheduler).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+import os
+import sqlite3
+from contextlib import closing
+from datetime import datetime
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================
+# ESCALERA DE ESTRATEGIAS (H7)
+# ============================================================
+# Cada intento de Plan B usa una estrategia DISTINTA. No se obliga a que
+# todas se usen: el LLM decide, pero el prompt le fuerza a diversificar y el
+# scheduler no reintenta una estrategia que ya produjo un plan idéntico.
+ESTRATEGIAS = (
+    "correccion_puntual",
+    "cambiar_configuracion",
+    "cambiar_tipo_agente",
+    "reestructurar_plan",
+    "fallback_alternativo",
+)
+
+_DESCRIPCION_ESTRATEGIA = {
+    "correccion_puntual": (
+        "Corrige solo el punto que falló, manteniendo la estructura del plan."
+    ),
+    "cambiar_configuracion": (
+        "Cambia la configuración o la fuente de datos del paso que falló "
+        "(otra librería, otra URL, otros parámetros)."
+    ),
+    "cambiar_tipo_agente": (
+        "Sustituye el tipo de agente del paso que falló por otro distinto "
+        "(p. ej. Python → LLM, HTTP → Browser)."
+    ),
+    "reestructurar_plan": (
+        "Reestructura el plan: divide o fusiona pasos, cambia el orden y las "
+        "dependencias para evitar el fallo."
+    ),
+    "fallback_alternativo": (
+        "Usa un enfoque alternativo completo (datos sintéticos, otra vía de "
+        "obtención del resultado) para conseguir el mismo objetivo."
+    ),
+}
+
+
+def estrategia_para_intento(intento: int) -> str:
+    """Estrategia correspondiente al intento N (1-based), con tope."""
+    if intento < 1:
+        intento = 1
+    indice = min(intento - 1, len(ESTRATEGIAS) - 1)
+    return ESTRATEGIAS[indice]
+
+
+def descripcion_estrategia(estrategia: str) -> str:
+    return _DESCRIPCION_ESTRATEGIA.get(estrategia, _DESCRIPCION_ESTRATEGIA[ESTRATEGIAS[0]])
+
+
+def _env_int(nombre: str, defecto: int) -> int:
+    try:
+        valor = int(os.environ.get(nombre, ""))
+    except (TypeError, ValueError):
+        return defecto
+    return valor if valor > 0 else defecto
+
+
+def _env_float(nombre: str, defecto: float) -> float:
+    try:
+        valor = float(os.environ.get(nombre, ""))
+    except (TypeError, ValueError):
+        return defecto
+    return valor if valor > 0 else defecto
+
+
+def configuracion_plan_b() -> dict:
+    """Parámetros del Plan B (H7), configurables por entorno.
+
+    - ``AGENTES_PLAN_B_MAX_INTENTOS`` (por defecto 3)
+    - ``AGENTES_PLAN_B_MAX_SEGUNDOS`` (por defecto 300)
+    """
+    return {
+        "max_intentos": _env_int("AGENTES_PLAN_B_MAX_INTENTOS", 3),
+        "presupuesto_seg": _env_float("AGENTES_PLAN_B_MAX_SEGUNDOS", 300.0),
+    }
+
+
+# ============================================================
+# FIRMAS (ANTI-REPETICIÓN)
+# ============================================================
+
+def _hash(texto: str) -> str:
+    return hashlib.sha256(texto.encode("utf-8")).hexdigest()
+
+
+# Campos de un agente que definen su "esencia" para la firma. Los volátiles
+# (estado, resultado, duración) quedan fuera.
+_CAMPOS_FIRMA_AGENTE = (
+    "tipo", "nombre", "dependencias_nombres", "operacion_file",
+    "archivo_origen", "archivo_destino", "url_http", "metodo_http",
+    "query_search", "fuente_items", "codigo_python", "codigo_por_item",
+    "prompt_llm", "comando_shell",
+)
+
+
+def firma_agente(agente: Any) -> str:
+    """Firma de un agente: tipo + nombre + dependencias + configuración."""
+    partes = []
+    for campo in _CAMPOS_FIRMA_AGENTE:
+        valor = getattr(agente, campo, None)
+        if valor in (None, "", [], {}):
+            continue
+        if campo in ("codigo_python", "codigo_por_item", "prompt_llm", "comando_shell"):
+            valor = str(valor)[:2000]
+        elif not isinstance(valor, (str, int, float, bool)):
+            valor = json.dumps(valor, sort_keys=True, default=str)[:500]
+        partes.append(f"{campo}={valor}")
+    return _hash("|".join(partes))[:16]
+
+
+def firma_plan(plan: Any) -> str:
+    """Firma de un plan completo: agentes/pasos, tipos, dependencias y config.
+
+    Dos planes con la misma firma son «esencialmente el mismo plan»: si uno
+    falló, el otro no debe ejecutarse.
+    """
+    firmas = []
+    agentes = getattr(plan, "agentes_generados", None) or []
+    if agentes:
+        for agente in agentes:
+            firmas.append(firma_agente(agente))
+    else:
+        for paso in getattr(plan, "pasos", None) or []:
+            tipo = getattr(paso, "tipo_agente", "")
+            nombre = getattr(paso, "nombre", "")
+            deps = ",".join(getattr(paso, "dependencia_ids", []) or [])
+            try:
+                config = json.dumps(
+                    getattr(paso, "configuracion", {}) or {}, sort_keys=True, default=str
+                )[:1000]
+            except (TypeError, ValueError):
+                config = str(getattr(paso, "configuracion", ""))[:1000]
+            firmas.append(_hash(f"{tipo}|{nombre}|{deps}|{config}")[:16])
+    return _hash("::".join(firmas))[:16]
+
+
+# ============================================================
+# REGISTRO DE REPARACIONES (reparaciones_plan)
+# ============================================================
+
+def registrar_reparacion(
+    db_path: str,
+    *,
+    problema: str,
+    intento: int,
+    agente: str = "",
+    error: str = "",
+    estrategia: str = "",
+    plan_firma: str = "",
+    resultado: str = "",
+    exito: bool = False,
+    ejecucion_id: int | None = None,
+) -> bool:
+    """Guarda un intento de reparación en ``reparaciones_plan``.
+
+    Es best-effort: nunca debe romper la recuperación. Si la tabla no existe
+    (BD muy antigua) simplemente no registra.
+    """
+    if not db_path:
+        return False
+    try:
+        with closing(sqlite3.connect(db_path, timeout=10)) as conn:
+            conn.execute("PRAGMA busy_timeout=10000")
+            conn.execute(
+                """INSERT INTO reparaciones_plan (
+                       problema, tipo, fecha, ejecucion_id, intento, agente,
+                       error, estrategia, plan_firma, resultado, exito
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    (problema or "")[:2000],
+                    estrategia or "desconocida",
+                    datetime.now().isoformat(),
+                    ejecucion_id,
+                    int(intento or 0),
+                    (agente or "")[:200],
+                    (error or "")[:2000],
+                    estrategia or "",
+                    plan_firma or "",
+                    (resultado or "")[:2000],
+                    1 if exito else 0,
+                ),
+            )
+            conn.commit()
+        return True
+    except Exception as e:
+        logger.debug(f"No se pudo registrar la reparación: {e}")
+        return False
+
+
+# ============================================================
+# CONTEXTO ESTRUCTURADO DEL ERROR (H7)
+# ============================================================
+
+def formatear_error_estructurado(
+    agente_fallido: Any,
+    error: str,
+    estrategia: str,
+    errores_previos: list[dict] | None = None,
+) -> str:
+    """Bloque legible con el error y lo YA INTENTADO, para el prompt del LLM.
+
+    El mensaje no es un texto suelto: describe el paso, su tipo, el error real,
+    lo que ya se probó y qué NO repetir. Así el siguiente plan diversifica de
+    verdad en lugar de reescribir lo mismo.
+    """
+    tipo = getattr(getattr(agente_fallido, "tipo", None), "value", "?")
+    nombre = getattr(agente_fallido, "nombre", "?")
+    lineas = [
+        "INFORMACIÓN ESTRUCTURADA DEL FALLO:",
+        f"- PASO: {nombre}",
+        f"- TIPO: {tipo}",
+        f"- ERROR: {(error or '(sin error registrado)')[:500]}",
+        f"- ESTRATEGIA OBLIGATORIA DE ESTE INTENTO: {estrategia}",
+        f"  ({descripcion_estrategia(estrategia)})",
+        "- NO REPETIR: la misma estrategia sin modificación.",
+    ]
+    if errores_previos:
+        lineas.append("- YA INTENTADO (no lo repitas):")
+        for prev in errores_previos[-5:]:
+            lineas.append(
+                f"    · intento {prev.get('intento', '?')} "
+                f"[{prev.get('estrategia', '?')}] "
+                f"{prev.get('agente', '?')}: "
+                f"{str(prev.get('error', ''))[:180]}"
+            )
+    return "\n".join(lineas)
 
 
 PROMPT_PLAN_B = """Eres un planificador experto. El plan anterior FALLÓ \
@@ -33,6 +267,9 @@ PASO QUE FALLÓ:
 - Tipo: {tipo_agente}
 - Error: {error}
 
+INFORMACIÓN ESTRUCTURADA DEL FALLO (H7):
+{error_estructurado}
+
 CONFIGURACIÓN DEL PASO QUE FALLÓ (no la repitas tal cual):
 {codigo_fallido}
 
@@ -46,9 +283,10 @@ REGLA CRÍTICA E INVIOLABLE:
   o datos sintéticos/alternativos.
 - Distingue errores de SINTAXIS (el código no compila) de errores de
   CONTRATO en tiempo de ejecución (una variable vacía, un formato de
-  archivo no aceptado, una clave que el productor no devuelve). Un error
-  de contrato NO se arregla reescribiendo lo mismo: cambia cómo se
-  obtiene o se transforma el dato.
+  archivo no aceptado, una clave que el productor no devuelve, un artefacto
+  que no cumple su contrato de aceptación). Un error de contrato NO se
+  arregla reescribiendo lo mismo: cambia cómo se obtiene o se transforma el
+  dato.
 - Sé conciso: máximo 6 pasos.
 
 CALIDAD DEL CÓDIGO (OBLIGATORIO):
@@ -181,11 +419,43 @@ class PlanRecovery:
         plan_fallido: Any,
         agente_fallido: Any,
         error: str,
+        *,
+        estrategia: str | None = None,
+        errores_previos: list[dict] | None = None,
+        firmas_fallidas: set[str] | None = None,
+        intento: int = 1,
     ) -> Any | None:
+        """Pide al LLM un plan alternativo y lo devuelve como ExecutionPlan.
+
+        Args:
+            estrategia: estrategia de la escalera (H7) que debe seguir el plan.
+                Si es ``None`` se deriva del número de intento.
+            errores_previos: traza de intentos anteriores para el bloque
+                estructurado y la lista de "no repetir".
+            firmas_fallidas: firmas de planes que ya fallaron. Si el plan
+                generado tiene la misma firma, se reintenta UNA vez con una
+                instrucción explícita y, si vuelve a repetirse, se descarta
+                para pedir otra estrategia.
+            intento: número de intento (1-based).
+
+        Devuelve None si algo falla o si el plan repite una firma fallida.
         """
-        Pide al LLM un plan alternativo y lo devuelve como ExecutionPlan.
-        Devuelve None si algo falla.
-        """
+        estrategia = estrategia or estrategia_para_intento(intento)
+
+        def _aceptar(plan: Any) -> Any | None:
+            """Descarta un plan cuya firma ya falló antes (anti-repetición)."""
+            if plan is None:
+                return None
+            firma = firma_plan(plan)
+            if firmas_fallidas and firma in firmas_fallidas:
+                logger.warning(
+                    f"PlanRecovery: el plan generado repite la firma {firma} "
+                    f"de un plan que YA falló → se descarta y se pedirá otra "
+                    f"estrategia"
+                )
+                return None
+            return plan
+
         try:
             plan_resumen = self._resumir_plan_fallido(plan_fallido)
             lecciones = self._obtener_lecciones()
@@ -193,17 +463,31 @@ class PlanRecovery:
             tipo = getattr(getattr(agente_fallido, "tipo", None), "value", "?")
             nombre = getattr(agente_fallido, "nombre", "?")
             codigo_fallido = self._resumen_agente_fallido(agente_fallido)
+            error_estructurado = formatear_error_estructurado(
+                agente_fallido, error, estrategia, errores_previos
+            )
             prompt = PROMPT_PLAN_B.format(
                 problema=problema_original,
                 plan_resumen=plan_resumen,
                 agente_fallido=nombre,
                 tipo_agente=tipo,
                 error=(error or "")[:500],
+                error_estructurado=error_estructurado,
                 codigo_fallido=codigo_fallido,
                 lecciones=lecciones or "(sin lecciones relevantes)",
             )
+            if firmas_fallidas:
+                prompt += (
+                    f"\n\n⚠️ ANTI-REPETICIÓN: {len(firmas_fallidas)} plan(es) "
+                    f"anterior(es) con este objetivo ya fallaron. No generes un "
+                    f"plan equivalente: cambia de estrategia "
+                    f"({estrategia}).\n"
+                )
 
-            logger.info("🔧 PlanRecovery: pidiendo plan alternativo al LLM...")
+            logger.info(
+                f"🔧 PlanRecovery: pidiendo plan alternativo al LLM "
+                f"(estrategia={estrategia}, intento={intento})..."
+            )
             respuesta = self.llm_client.chat(
                 prompt=prompt,
                 system_prompt=(
@@ -287,6 +571,7 @@ class PlanRecovery:
                     error=error,
                     errores_sintaxis=errores,
                     lecciones=lecciones,
+                    estrategia=estrategia,
                 )
 
                 if plan_b_corregido is not None:
@@ -294,7 +579,7 @@ class PlanRecovery:
                         f"✅ PlanRecovery: segunda versión validada con "
                         f"{len(plan_b_corregido.agentes_generados)} agentes"
                     )
-                    return plan_b_corregido
+                    return _aceptar(plan_b_corregido)
 
                 logger.warning(
                     "PlanRecovery: la segunda versión también falló. "
@@ -307,7 +592,7 @@ class PlanRecovery:
                 f"✅ PlanRecovery: plan alternativo válido con "
                 f"{len(plan_b.agentes_generados)} agentes"
             )
-            return plan_b
+            return _aceptar(plan_b)
 
         except Exception as e:
             logger.exception(f"PlanRecovery: error generando plan B: {e}")
@@ -323,6 +608,7 @@ class PlanRecovery:
         error: str,
         errores_sintaxis: list,
         lecciones: str,
+        estrategia: str | None = None,
     ) -> Any | None:
         """
         Reintenta generar el plan B con una instrucción correctiva que
@@ -402,6 +688,9 @@ Empieza directamente con {{. NO escribas explicaciones antes del JSON.
             agente_fallido=nombre,
             tipo_agente=tipo,
             error=(error or "")[:500],
+            error_estructurado=formatear_error_estructurado(
+                agente_fallido, error, estrategia or ESTRATEGIAS[0]
+            ),
             codigo_fallido=self._resumen_agente_fallido(agente_fallido),
             lecciones=lecciones or "(sin lecciones relevantes)",
         ) + prompt_correccion

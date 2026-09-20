@@ -115,16 +115,38 @@ class Scheduler(QObject):
     _STATS_CACHE_TTL = 0.5         # TTL del cache de estadísticas (500ms)
     _MAX_RESULTADO_LOG = 200       # Caracteres máximos para mostrar en log
 
-    def __init__(self, max_concurrent: int = 4):
+    def __init__(
+        self,
+        max_concurrent: int = 4,
+        *,
+        max_intentos_plan_b: int | None = None,
+        presupuesto_plan_b_seg: float | None = None,
+    ):
         super().__init__()
 
         # ── Plan B (recuperación de fallos críticos) ──
+        # H7: límites configurables (argumento > entorno > default). Antes
+        # estaban fijos en 2 sin presupuesto de tiempo.
+        from .plan_recovery import configuracion_plan_b
+
+        _cfg_plan_b = configuracion_plan_b()
         self.recovery = None
         self._plan_b_intentos = 0
         self._plan_b_en_progreso = False
         self._problema_original = ""
         self._plan_original = None
-        self._max_intentos_plan_b = 2
+        self._max_intentos_plan_b = (
+            _cfg_plan_b["max_intentos"]
+            if max_intentos_plan_b is None else int(max_intentos_plan_b)
+        )
+        self._presupuesto_plan_b_seg = (
+            _cfg_plan_b["presupuesto_seg"]
+            if presupuesto_plan_b_seg is None else float(presupuesto_plan_b_seg)
+        )
+        self._plan_b_inicio: float | None = None
+        # H7: anti-repetición y traza de intentos.
+        self._firmas_plan_fallidas: set[str] = set()
+        self._reparaciones_intentadas: list[dict] = []
 
         # ── Estado de agentes ──
         self.agentes: dict[str, Agente] = {}
@@ -188,6 +210,9 @@ class Scheduler(QObject):
         self._plan_original = plan_original
         self._plan_b_intentos = 0
         self._plan_b_en_progreso = False
+        self._plan_b_inicio = None
+        self._firmas_plan_fallidas = set()
+        self._reparaciones_intentadas = []
         logger.debug("Plan B contexto inyectado en Scheduler")
 
     # ============================================================
@@ -915,9 +940,23 @@ class Scheduler(QObject):
         se agotaron los intentos.
         """
         with self._lock:
-            if (self.recovery is None
-                    or self._plan_b_en_progreso
-                    or self._plan_b_intentos >= self._max_intentos_plan_b):
+            if self.recovery is None or self._plan_b_en_progreso:
+                return False
+            if self._plan_b_intentos >= self._max_intentos_plan_b:
+                logger.info(
+                    f"Plan B agotado: {self._plan_b_intentos}/"
+                    f"{self._max_intentos_plan_b} intentos"
+                )
+                return False
+            # Presupuesto de tiempo (H7): un Plan B no puede estirarse sin fin.
+            if self._plan_b_inicio is None:
+                self._plan_b_inicio = time.time()
+            elif (time.time() - self._plan_b_inicio) > self._presupuesto_plan_b_seg:
+                logger.warning(
+                    f"Plan B agotado por tiempo: "
+                    f"{time.time() - self._plan_b_inicio:.0f}s > "
+                    f"{self._presupuesto_plan_b_seg:.0f}s"
+                )
                 return False
             self._plan_b_en_progreso = True
             return True
@@ -1016,12 +1055,34 @@ class Scheduler(QObject):
             return False
 
         try:
+            from .plan_recovery import (
+                estrategia_para_intento,
+                firma_agente,
+                firma_plan,
+                registrar_reparacion,
+            )
+
+            intento = self._plan_b_intentos + 1
+            estrategia = estrategia_para_intento(intento)
+
+            # H7: la firma del plan que acaba de fallar entra en el conjunto
+            # anti-repetición para que el LLM no genere un plan equivalente.
+            firma_fallida = firma_plan(self._plan_original) if self._plan_original else ""
+            if firma_fallida:
+                self._firmas_plan_fallidas.add(firma_fallida)
+            self._reparaciones_intentadas.append({
+                "intento": intento,
+                "estrategia": estrategia,
+                "agente": getattr(agente_fallido, "nombre", "?"),
+                "error": (razon or "")[:300],
+            })
+
             logger.info(
-                f"🔧 [Plan B #{self._plan_b_intentos + 1}] "
+                f"🔧 [Plan B #{intento}] estrategia={estrategia} "
                 f"'{agente_fallido.nombre}' falló: {razon}"
             )
             self.log_mensaje.emit(
-                f"🔧 Plan B #{self._plan_b_intentos + 1}: "
+                f"🔧 Plan B #{intento} ({estrategia}): "
                 f"'{agente_fallido.nombre}' falló. "
                 f"Consultando al LLM... (puede tardar ~20s)",
                 "#ffc107"
@@ -1038,15 +1099,29 @@ class Scheduler(QObject):
                 plan_fallido=self._plan_original,
                 agente_fallido=agente_fallido,
                 error=razon,
+                estrategia=estrategia,
+                errores_previos=list(self._reparaciones_intentadas),
+                firmas_fallidas=set(self._firmas_plan_fallidas),
+                intento=intento,
             )
 
             if plan_b is None or not getattr(plan_b, "agentes_generados", None):
                 self.log_mensaje.emit(
-                    "⚠️ Plan B descartado: el LLM no devolvió un plan válido. "
+                    "⚠️ Plan B descartado: sin plan válido o plan repetido. "
                     "Bloqueando dependientes.",
                     "#ffc107"
                 )
                 logger.warning("Plan B no disponible, bloqueando como antes")
+                registrar_reparacion(
+                    getattr(self.recovery, "db_path", ""),
+                    problema=self._problema_original,
+                    intento=intento,
+                    agente=getattr(agente_fallido, "nombre", ""),
+                    error=razon,
+                    estrategia=estrategia,
+                    resultado="sin_plan",
+                    exito=False,
+                )
                 self._plan_b_en_progreso = False
                 # ⬇️ NUEVO: marcar todos los agentes no-terminales como BLOQUEADOS
                 # para que el recuento sea coherente y la ejecución termine.
@@ -1074,6 +1149,23 @@ class Scheduler(QObject):
             )
 
             # 2. Detener ejecución actual (cancela tokens, workers)
+            #    Antes de tirar el estado, se guardan los agentes COMPLETADOS
+            #    cuyo artefacto pasó la verificación: H7 evita repetir trabajo
+            #    bueno (A→B→C→D con D fallido no reejecuta A/B/C).
+            reutilizables: dict[str, dict] = {}
+            with self._lock:
+                for ag in self.agentes.values():
+                    if ag.estado != EstadoAgente.COMPLETADO or ag.resultado is None:
+                        continue
+                    verificacion = self._verificaciones.get(ag.id)
+                    if verificacion is not None and not verificacion.get("aceptado", True):
+                        continue
+                    reutilizables[firma_agente(ag)] = {
+                        "resultado": ag.resultado,
+                        "salida": ag.salida,
+                        "verificacion": verificacion,
+                    }
+
             self.detener()
 
             # 3. Limpiar TODO el estado
@@ -1095,8 +1187,54 @@ class Scheduler(QObject):
                 self.agregar_agente(agente)
             self.resolver_dependencias()
 
+            # 4b. Reutilizar los agentes idénticos ya completados y verificados.
+            reutilizados: list[str] = []
+            with self._lock:
+                for agente in plan_b.agentes_generados:
+                    datos = reutilizables.get(firma_agente(agente))
+                    if not datos:
+                        continue
+                    agente.estado = EstadoAgente.COMPLETADO
+                    agente.resultado = datos["resultado"]
+                    agente.salida = datos.get("salida", "")
+                    agente.progreso = 100
+                    agente.mensaje = "♻ reutilizado del plan anterior (artefacto válido)"
+                    self.completed.add(agente.id)
+                    if datos.get("verificacion") is not None:
+                        self._verificaciones[agente.id] = datos["verificacion"]
+                    reutilizados.append(agente.nombre)
+                if reutilizados:
+                    self._invalidar_stats_cache()
+
+            if reutilizados:
+                self.log_mensaje.emit(
+                    f"♻ Plan B reutiliza {len(reutilizados)} agente(s) ya "
+                    f"válidos: {', '.join(reutilizados)}",
+                    "#28a745"
+                )
+                logger.info(
+                    f"Plan B: {len(reutilizados)} agentes reutilizados sin "
+                    f"reejecutar: {reutilizados}"
+                )
+
             # 5. Actualizar el plan original para futuros Plan B
             self._plan_original = plan_b
+
+            # 5b. Registrar el intento de reparación (H7).
+            registrar_reparacion(
+                getattr(self.recovery, "db_path", ""),
+                problema=self._problema_original,
+                intento=intento,
+                agente=getattr(agente_fallido, "nombre", ""),
+                error=razon,
+                estrategia=estrategia,
+                plan_firma=firma_plan(plan_b),
+                resultado=(
+                    f"plan_generado ({len(plan_b.agentes_generados)} agentes, "
+                    f"{len(reutilizados)} reutilizados)"
+                ),
+                exito=True,
+            )
 
             # 6. Notificar a la UI
             self.log_mensaje.emit(
@@ -1602,6 +1740,9 @@ class Scheduler(QObject):
             self._tiempo_inicio_ejecucion = None
             self._plan_b_intentos = 0
             self._plan_b_en_progreso = False
+            self._plan_b_inicio = None
+            self._firmas_plan_fallidas = set()
+            self._reparaciones_intentadas = []
             self._verificaciones.clear()
             self._ultima_aceptacion = None
             self._invalidar_stats_cache()
