@@ -11,7 +11,7 @@ warn() { echo -e "${AMAR}⚠️  $1${NC}"; }
 info() { echo -e "${CYAN}▸ $1${NC}"; }
 
 echo "════════════════════════════════════════════════════════════"
-echo "  VERIFICACIÓN PRE-TAG v3.0 — Agentes Visuales"
+echo "  VERIFICACIÓN PRE-TAG v3.0.1 — Agentes Visuales"
 echo "════════════════════════════════════════════════════════════"
 
 # ── 1. Git limpio ─────────────────────────────────────────────
@@ -152,7 +152,7 @@ if [ "$FALLOS" -eq 0 ]; then
     echo -e "${VERDE}✅ LISTO PARA TAGGEAR (revisa los ⚠️  manualmente)${NC}"
     echo ""
     echo "  Siguiente paso:"
-    echo "    git tag -a v3.0 -m 'Release v3.0: DeepSeek Harness integration'"
+    echo "    git tag -a v3.0 -m 'Release v3.0.1: DeepSeek Harness integration'"
     echo "    git push origin v3.0"
 else
     echo -e "${ROJO}❌ $FALLOS fallos bloqueantes. Corrige antes de taggear.${NC}"
