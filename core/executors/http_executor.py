@@ -293,6 +293,16 @@ class HTTPExecutor:
         finally:
             if cancellation_token and cancelar_peticion:
                 cancellation_token.eliminar_callback(cancelar_peticion)
+            # Cerrar la sesión SIEMPRE. Sin esto, cada ejecución de un agente
+            # HTTP dejaba vivo un pool de conexiones (sockets/fds) hasta que
+            # el GC recogiera el objeto. La respuesta ya viene descargada en
+            # memoria (no se usa stream=True), así que cerrar aquí no
+            # invalida response.content/text de más abajo.
+            if session is not None:
+                try:
+                    session.close()
+                except Exception as e:
+                    logger.debug(f"Error cerrando sesión HTTP: {e}")
 
         cls.actualizar_progreso(agente, 80, f"📥 Procesando respuesta {response.status_code}...")
 

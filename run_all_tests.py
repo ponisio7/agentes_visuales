@@ -160,6 +160,7 @@ GRUPOS_TESTS = {
         "tests/test_executor_helpers.py",
         "tests/test_file_executor_escritura.py",
         "tests/test_file_executor_seguridad.py",
+        "tests/test_http_executor_recursos.py",
         "tests/test_llm_executor.py",
         "tests/test_plan_recovery.py",
         "tests/test_plan_validator.py",

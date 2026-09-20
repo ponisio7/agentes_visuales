@@ -74,3 +74,36 @@ resultado = {'ok': True}
 
         assert exito is True, mensaje
         assert resultado.get("ok") is True
+
+
+class TestRecursosCerrados:
+    def test_ficheros_temporales_se_cierran(self, monkeypatch):
+        """Invariante: stdout/stderr temporales se cierran al terminar.
+
+        ``PythonSandbox.ejecutar`` los cierra en el ``finally`` del bloque
+        principal. Este test mantiene la garantía bajo vigilancia: al
+        conservar referencias fuertes a los ficheros creados, un cierre
+        basado solo en el recolector de basura no bastaría para pasarlo, así
+        que si alguien elimina ese cierre el descriptor quedaría abierto.
+        """
+        import tempfile as tempfile_mod
+
+        real = tempfile_mod.TemporaryFile
+        creados = []
+
+        def _fabrica(*args, **kwargs):
+            fichero = real(*args, **kwargs)
+            creados.append(fichero)
+            return fichero
+
+        monkeypatch.setattr(tempfile_mod, "TemporaryFile", _fabrica)
+
+        exito, mensaje, resultado = PythonSandbox.ejecutar(
+            "resultado = {'ok': True}", {}, timeout=30, use_cache=False
+        )
+
+        assert exito is True, mensaje
+        assert resultado.get("ok") is True
+        assert len(creados) >= 2, "no se crearon los dos ficheros temporales"
+        abiertos = [f for f in creados if not f.closed]
+        assert abiertos == [], f"quedaron {len(abiertos)} ficheros temporales abiertos"
