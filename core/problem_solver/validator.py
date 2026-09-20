@@ -39,6 +39,13 @@ from .models import ExecutionPlan, StepPlan
 
 logger = logging.getLogger(__name__)
 
+# Alias que el LLM inventa con frecuencia para referirse a las dependencias.
+# En el sandbox la ÚNICA variable disponible es ``contexto`` (ver
+# ``core/problem_solver/prompt_builder.py`` y ``core/sandbox.py``), así que
+# leer cualquiera de estos nombres provoca ``NameError`` en tiempo de
+# ejecución. Se detectan como variable suelta igual que los nombres de agente.
+ALIAS_CONTEXTO_PROHIBIDOS = {"dependencias"}
+
 
 class PlanValidator:
     """Valida y completa configuración de pasos, y valida el plan completo."""
@@ -266,6 +273,31 @@ class PlanValidator:
         return len(errores) == 0, errores
 
     @staticmethod
+    def _nombres_ligados(arbol: ast.AST) -> set:
+        """Nombres que el propio código define antes de usarlos.
+
+        Cubre asignaciones, parámetros, bucles, ``with ... as``,
+        ``except ... as``, imports, walrus y ``global``/``nonlocal``. Se usa
+        para no marcar como error un alias de contexto que el código
+        redefine localmente (``dependencias = contexto`` es legítimo).
+        """
+        ligados: set = set()
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Name) and isinstance(nodo.ctx, (ast.Store, ast.Del)):
+                ligados.add(nodo.id)
+            elif isinstance(nodo, ast.arg):
+                ligados.add(nodo.arg)
+            elif isinstance(nodo, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                ligados.add(nodo.name)
+            elif isinstance(nodo, ast.ExceptHandler) and nodo.name:
+                ligados.add(nodo.name)
+            elif isinstance(nodo, ast.alias):
+                ligados.add((nodo.asname or nodo.name).split(".")[0])
+            elif isinstance(nodo, (ast.Global, ast.Nonlocal)):
+                ligados.update(nodo.names)
+        return ligados
+
+    @staticmethod
     def _validar_codigo_python_ast(
         codigo: str,
         nombre: str,
@@ -288,13 +320,27 @@ class PlanValidator:
             )
             return errores
 
-        # 2. NameError - agente usado como variable suelta
+        # 2. NameError - agente usado como variable suelta, o alias de
+        #    contexto inventado (``dependencias``) que el sandbox no define.
+        nombres_ligados = PlanValidator._nombres_ligados(arbol)
         for nodo in ast.walk(arbol):
-            if isinstance(nodo, ast.Name) and nodo.id in nombres_agentes:
+            if not isinstance(nodo, ast.Name):
+                continue
+            if nodo.id in nombres_agentes:
                 errores.append(
                     f"BLOQUEANTE: {nombre}: usa '{nodo.id}' como variable Python "
                     f"(provocará NameError). Debería ser: "
                     f"contexto.get('{nodo.id}', {{}})"
+                )
+            elif (
+                nodo.id in ALIAS_CONTEXTO_PROHIBIDOS
+                and nodo.id not in nombres_ligados
+            ):
+                errores.append(
+                    f"BLOQUEANTE: {nombre}: usa '{nodo.id}' como variable Python "
+                    f"(provocará NameError: en el sandbox solo existe "
+                    f"'contexto'). Debería ser: "
+                    f"contexto.get('NombreDependencia', {{}})"
                 )
 
         # 3. json.loads con placeholder literal

@@ -128,6 +128,7 @@ GRUPOS_TESTS = {
         "tests/test_scheduler_reintentos.py",
         "tests/test_scheduler_resolucion.py",
         "tests/test_scheduler_terminal.py",
+        "tests/test_scheduler_plan_b.py",
         "tests/test_ejecucion_individual.py",
     ],
     "C_integration": [

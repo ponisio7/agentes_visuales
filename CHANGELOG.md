@@ -1,5 +1,38 @@
 # Changelog
 
+## [v3.2.0] — 2026-09-20
+
+Release de estabilización: cierra los tres bugs que quedaban abiertos en
+el informe v3.1.0 y en la auditoría posterior (H2, H4, N1). Ver
+`HARNESS_REPORT_v3.2.0.md`.
+
+### Corregido
+- **Scheduler (H2)**: el Plan B ejecutaba `llm_client.chat(...)` con el
+  `RLock` del scheduler tomado, así que durante ~15-20 s la UI se congelaba
+  (`obtener_estadisticas()` usa el mismo lock) y los demás workers se
+  paraban al llegar a FASE 5. Ahora FASE 5 decide el bloqueo bajo lock y lo
+  ejecuta fuera; el turno de Plan B se reserva de forma atómica
+  (`_reclamar_plan_b`) antes de soltar el lock.
+- **Base de datos (H4)**: `_transaction` usaba siempre `BEGIN IMMEDIATE`,
+  también para los SELECT, de modo que una lectura con otro escritor activo
+  agotaba los reintentos y devolvía `[]`/`{}` ("historial vacío" en la UI).
+  Los 9 métodos de solo lectura usan ahora `BEGIN DEFERRED`, y los fallos de
+  lectura dejan de ser silenciosos: se registran en el log y se consultan
+  con `Database.ultimo_error_lectura()`. `verificar_integridad` también los
+  registra (antes se los tragaba sin log).
+- **Validador (N1)**: `_validar_codigo_python_ast` no detectaba el alias
+  `dependencias` que el LLM inventa a menudo (`dependencias.get(...)`); el
+  sandbox solo define `contexto`, así que el paso fallaba con `NameError`.
+  Ahora se marca como bloqueante (salvo si el código lo liga antes de
+  usarlo).
+
+### Notas
+- El cuarto bug del encargo no llegó (el mensaje se truncó al empezar N1):
+  se documenta en `HARNESS_REPORT_v3.2.0.md` y no se inventó un arreglo.
+- Sin cambios de contrato de retorno en `storage/database.py`: los métodos
+  de lectura siguen devolviendo `[]`/`{}`/`None`, pero el error es
+  observable.
+
 ## [v3.1.0] — 2026-09-20
 
 Release de estabilización: cierra los 7 hallazgos de la auditoría de

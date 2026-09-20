@@ -4,7 +4,7 @@
 [project]
 name = "agentes-visuales"
 # Única fuente de verdad de la versión: main.py la lee de aquí con tomllib.
-version = "3.1.0"
+version = "3.2.0"
 description = "Orquestador de agentes autónomos con backend DeepSeek."
 requires-python = ">=3.11"
 

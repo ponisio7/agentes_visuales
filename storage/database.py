@@ -294,18 +294,33 @@ class Database:
             self._local.connection = None
 
     @contextmanager
-    def _transaction(self, retries: int = MAX_RETRIES):
+    def _transaction(self, retries: int = MAX_RETRIES, *, lectura: bool = False):
         """Context manager para transacciones con retry automático.
 
-        Solo se reintenta el ``BEGIN IMMEDIATE`` cuando la BD está
-        bloqueada; el cuerpo NUNCA se reintenta (podría duplicar efectos
-        secundarios) y siempre se hace ROLLBACK si algo falla dentro.
+        ``lectura=True`` usa ``BEGIN DEFERRED``: la transacción NO toma el
+        lock de escritura (solo un snapshot de lectura al primer SELECT), así
+        que los SELECT no se bloquean entre sí ni bloquean a los escritores.
+        Sin este parámetro (por defecto) se usa ``BEGIN IMMEDIATE``, que es
+        lo correcto para cualquier transacción que vaya a escribir: toma el
+        lock al abrir para evitar fallos de "database is locked" a mitad del
+        cuerpo.
+
+        Solo se reintenta el ``BEGIN`` cuando la BD está bloqueada; el cuerpo
+        NUNCA se reintenta (podría duplicar efectos secundarios) y siempre se
+        hace ROLLBACK si algo falla dentro.
+
+        Al abrir una lectura se limpia ``ultimo_error_lectura`` del hilo
+        actual: si la operación falla, el método de consulta lo vuelve a
+        registrar (ver ``_registrar_error_lectura``).
         """
         conn = self._get_connection()
+        if lectura:
+            self._local.ultimo_error_lectura = None
+        sentencia_begin = "BEGIN DEFERRED" if lectura else "BEGIN IMMEDIATE"
         last_error: sqlite3.OperationalError | None = None
         for attempt in range(retries):
             try:
-                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(sentencia_begin)
             except sqlite3.OperationalError as e:
                 if "database is locked" in str(e) and attempt < retries - 1:
                     last_error = e
@@ -329,6 +344,32 @@ class Database:
         if last_error is not None:
             raise last_error
         raise RuntimeError("No se pudo completar la transacción después de varios intentos")
+
+    def _registrar_error_lectura(self, operacion: str, error: Exception) -> None:
+        """Registra en el hilo actual el fallo de una consulta de lectura.
+
+        Es la contrapartida del parámetro ``lectura=True`` de
+        ``_transaction``. Los métodos de consulta mantienen su contrato de
+        devolver ``[]``/``{}``/``None``, pero ahora el error queda en el log
+        (``logger.error``) y disponible vía ``ultimo_error_lectura()``, de
+        modo que quien llama puede distinguir "vacío" de "error".
+        """
+        self._local.ultimo_error_lectura = {
+            "operacion": operacion,
+            "error": str(error),
+            "tipo": type(error).__name__,
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    def ultimo_error_lectura(self) -> dict | None:
+        """Último error de lectura del hilo actual, o ``None`` si la última
+        consulta de lectura terminó bien.
+
+        Permite distinguir "no hay datos" (``None`` + resultado vacío) de
+        "la consulta falló" (dict + resultado vacío). Se reinicia al abrir
+        cada transacción de lectura y al registrar un nuevo error.
+        """
+        return getattr(self._local, "ultimo_error_lectura", None)
 
     # ============================================================
     # UTILIDADES DE ESQUEMA
@@ -492,7 +533,7 @@ class Database:
             if resultado["existe"]:
                 resultado["tamaño_bytes"] = os.path.getsize(self.db_path)
 
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 # Verificar integridad
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA integrity_check")
@@ -521,6 +562,7 @@ class Database:
 
         except Exception as e:
             logger.error(f"Error en diagnóstico: {e}")
+            self._registrar_error_lectura("diagnostico", e)
             resultado["error"] = str(e)
             return resultado
 
@@ -1367,7 +1409,7 @@ class Database:
     ) -> list[dict]:
         """Obtiene el historial de ejecuciones."""
         try:
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 cursor = conn.cursor()
                 query = 'SELECT * FROM ejecuciones WHERE 1=1'
                 params = []
@@ -1387,12 +1429,13 @@ class Database:
 
         except sqlite3.Error as e:
             logger.error(f"Error obteniendo historial: {e}")
+            self._registrar_error_lectura("obtener_historial", e)
             return []
 
     def obtener_ejecucion(self, ejecucion_id: int) -> dict | None:
         """Obtiene una ejecución específica por ID."""
         try:
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 cursor = conn.cursor()
                 cursor.execute('SELECT * FROM ejecuciones WHERE id = ?', (ejecucion_id,))
                 result = cursor.fetchone()
@@ -1401,12 +1444,13 @@ class Database:
                 return None
         except sqlite3.Error as e:
             logger.error(f"Error obteniendo ejecución {ejecucion_id}: {e}")
+            self._registrar_error_lectura("obtener_ejecucion", e)
             return None
 
     def obtener_detalle_ejecucion(self, ejecucion_id: int) -> list[dict]:
         """Obtiene el detalle de agentes de una ejecución."""
         try:
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     SELECT * FROM agentes_ejecucion
@@ -1428,13 +1472,14 @@ class Database:
 
         except sqlite3.Error as e:
             logger.error(f"Error obteniendo detalle de ejecución {ejecucion_id}: {e}")
+            self._registrar_error_lectura("obtener_detalle_ejecucion", e)
             return []
 
     def obtener_estadisticas(self, dias: int = 30) -> dict:
         """Obtiene estadísticas agregadas de las últimas N días."""
         try:
             cutoff = (datetime.now() - timedelta(days=dias)).isoformat()
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 cursor = conn.cursor()
 
                 cursor.execute('SELECT COUNT(*) FROM ejecuciones WHERE fecha > ?', (cutoff,))
@@ -1480,6 +1525,7 @@ class Database:
 
         except sqlite3.Error as e:
             logger.error(f"Error obteniendo estadísticas: {e}")
+            self._registrar_error_lectura("obtener_estadisticas", e)
             return {}
 
     def buscar_ejecuciones(
@@ -1493,7 +1539,7 @@ class Database:
     ) -> list[dict]:
         """Busca ejecuciones con filtros."""
         try:
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 cursor = conn.cursor()
                 query = "SELECT * FROM ejecuciones WHERE 1=1"
                 params = []
@@ -1528,6 +1574,7 @@ class Database:
 
         except sqlite3.Error as e:
             logger.error(f"Error buscando ejecuciones: {e}")
+            self._registrar_error_lectura("buscar_ejecuciones", e)
             return []
 
     # ============================================================
@@ -1726,7 +1773,7 @@ class Database:
     def verificar_integridad(self) -> tuple[bool, str]:
         """Verifica la integridad de la base de datos."""
         try:
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 cursor = conn.cursor()
                 cursor.execute("PRAGMA integrity_check")
                 result = cursor.fetchone()
@@ -1735,6 +1782,8 @@ class Database:
                 else:
                     return False, result[0] if result else "Error desconocido"
         except sqlite3.Error as e:
+            logger.error(f"Error verificando integridad: {e}")
+            self._registrar_error_lectura("verificar_integridad", e)
             return False, f"Error de SQLite: {e}"
 
     # ============================================================
@@ -1822,7 +1871,7 @@ class Database:
     def obtener_auditoria(self, limit: int = 100) -> list[dict]:
         """Obtiene el log de auditoría."""
         try:
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
                     SELECT * FROM auditoria
@@ -1832,6 +1881,7 @@ class Database:
                 return [dict(row) for row in cursor.fetchall()]
         except sqlite3.Error as e:
             logger.error(f"Error obteniendo auditoría: {e}")
+            self._registrar_error_lectura("obtener_auditoria", e)
             return []
 
     # ============================================================
@@ -1840,7 +1890,7 @@ class Database:
     def obtener_info_db(self) -> dict:
         """Obtiene información general de la base de datos."""
         try:
-            with self._transaction() as conn:
+            with self._transaction(lectura=True) as conn:
                 cursor = conn.cursor()
                 size = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
 
@@ -1868,6 +1918,7 @@ class Database:
 
         except Exception as e:
             logger.error(f"Error obteniendo info de DB: {e}")
+            self._registrar_error_lectura("obtener_info_db", e)
             return {}
 
     # ============================================================

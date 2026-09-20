@@ -7,6 +7,7 @@ restore. Se usa una base de datos temporal por test para no tocar el
 historial real del proyecto.
 """
 
+import logging
 import sqlite3
 
 import pytest
@@ -223,3 +224,75 @@ class TestCompatibilidadSqlite:
     def test_es_sqlite_valido(self, db):
         conn = db._get_connection()
         assert isinstance(conn, sqlite3.Connection)
+
+
+class TestLecturaNoBloquea:
+    """H4: los SELECT usan ``BEGIN DEFERRED`` (no toman el lock de
+    escritura) y sus fallos dejan de ser silenciosos."""
+
+    def test_lectura_con_escritor_activo_no_se_bloquea(self, db):
+        """Un escritor con el lock tomado y sin commitear no debe impedir
+        una lectura: con ``BEGIN IMMEDIATE`` la lectura fallaba con
+        "database is locked" y el error se veía como "historial vacío"."""
+        db.guardar_ejecucion([_agente()], 1.0)
+        # Acota el busy_timeout para que una regresión a BEGIN IMMEDIATE
+        # falle rápido en vez de agotar los 10 s del connection timeout.
+        db._get_connection().execute("PRAGMA busy_timeout=200")
+
+        otra = sqlite3.connect(db.db_path, timeout=0.5)
+        try:
+            otra.execute("BEGIN IMMEDIATE")
+            otra.execute(
+                "INSERT INTO ejecuciones (fecha, duracion_total, agentes_total, "
+                "completados, errores, cancelados) "
+                "VALUES ('2026-01-01', 1.0, 1, 1, 0, 0)"
+            )
+
+            # Snapshot ya commiteado: ve 1 fila (la del guardar_ejecucion),
+            # no la transacción abierta del otro escritor.
+            historial = db.obtener_historial(limit=10)
+            assert len(historial) == 1
+            assert db.ultimo_error_lectura() is None
+        finally:
+            otra.execute("ROLLBACK")
+            otra.close()
+
+    def test_error_de_lectura_se_registra_y_loguea(self, db, caplog):
+        """El contrato (``[]``) se mantiene, pero el error ya no se traga:
+        queda en el log y en ``ultimo_error_lectura()``."""
+        db._get_connection().execute("DROP TABLE ejecuciones")
+
+        with caplog.at_level(logging.ERROR, logger="storage.database"):
+            resultado = db.obtener_historial(limit=5)
+
+        assert resultado == []
+        error = db.ultimo_error_lectura()
+        assert error is not None
+        assert error["operacion"] == "obtener_historial"
+        assert "no such table" in error["error"]
+        assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+    def test_lectura_correcta_limpia_el_error(self, db):
+        db._get_connection().execute("DROP TABLE auditoria")
+        assert db.obtener_auditoria() == []
+        assert db.ultimo_error_lectura() is not None
+
+        # Una lectura posterior correcta reinicia el indicador del hilo.
+        assert db.obtener_historial(limit=1) == []
+        assert db.ultimo_error_lectura() is None
+
+    def test_verificar_integridad_loguea_el_fallo(self, db, caplog, monkeypatch):
+        """``verificar_integridad`` era el único método de lectura que se
+        tragaba el ``sqlite3.Error`` sin registrar nada."""
+        def _transaction_rota(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(db, "_transaction", _transaction_rota)
+
+        with caplog.at_level(logging.ERROR, logger="storage.database"):
+            integro, mensaje = db.verificar_integridad()
+
+        assert integro is False
+        assert "Error de SQLite" in mensaje
+        assert db.ultimo_error_lectura()["operacion"] == "verificar_integridad"
+        assert any(r.levelno == logging.ERROR for r in caplog.records)

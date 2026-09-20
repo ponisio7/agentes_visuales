@@ -585,6 +585,13 @@ class Scheduler(QObject):
             tiempo_fin = time.time()
             duracion = tiempo_fin - tiempo_inicio
 
+            # Bajo lock SOLO se decide si hay que bloquear dependientes. El
+            # bloqueo (que puede llamar al LLM para el Plan B) se ejecuta
+            # después, fuera del crítico: con el lock tomado, la llamada de
+            # red (~15-20 s) congelaba la UI (obtener_estadisticas usa el
+            # mismo lock) y paraba al resto de workers en FASE 5.
+            bloquear_razon: str | None = None
+
             with self._lock:
                 agente.tiempo_fin = tiempo_fin
                 agente.duracion = duracion  # ← persistir duración real
@@ -637,7 +644,7 @@ class Scheduler(QObject):
                         f"⛔ [{agente.nombre}] {razon}",
                         "#6c757d"
                     )
-                    self._bloquear_dependientes(agente.id, f"{razon}")
+                    bloquear_razon = f"{razon}"
 
                 elif exito:
                     try:
@@ -681,7 +688,7 @@ class Scheduler(QObject):
                             f"⏱️ [{agente.nombre}] Timeout después de {duracion:.2f}s",
                             "#dc3545"
                         )
-                        self._bloquear_dependientes(agente.id, f"Timeout: {mensaje[:100]}")
+                        bloquear_razon = f"Timeout: {mensaje[:100]}"
 
                     # ── Verificar reintentos ──
                     elif agente.reintentos < agente.max_reintentos:
@@ -732,8 +739,21 @@ class Scheduler(QObject):
                             f"❌ [{agente.nombre}] Error después de {duracion:.2f}s → {error_resumen}",
                             "#dc3545"
                         )
-                        self._bloquear_dependientes(agente.id, f"Error: {mensaje[:100]}")
+                        bloquear_razon = f"Error: {mensaje[:100]}"
 
+            # ── Plan B / bloqueo de dependientes (FUERA del lock) ──
+            # ``_bloquear_dependientes`` puede llamar al LLM para generar el
+            # Plan B (red, ~15-20 s). Se ejecuta aquí, sin el lock, y la
+            # decisión de reclamar el turno de Plan B se toma de forma atómica
+            # dentro del propio método (``_reclamar_plan_b``).
+            if bloquear_razon is not None:
+                if self._bloquear_dependientes(agente.id, bloquear_razon):
+                    # Plan B lanzado: ya reemplazó los agentes y relanzó la
+                    # ejecución. Mutar aquí el estado del plan anterior solo
+                    # ensuciaría el nuevo (p. ej. añadiría su id a completed).
+                    return
+
+            with self._lock:
                 # ── Actualizar conjuntos de estado ──
                 self.running.discard(agente.id)
                 if agente.estado in (
@@ -812,20 +832,47 @@ class Scheduler(QObject):
 
     # core/scheduler.py - MÉTODO _bloquear_dependientes COMPLETO
 
-    def _bloquear_dependientes(self, agente_id: str, razon: str):
+    def _reclamar_plan_b(self) -> bool:
+        """Reclama de forma atómica el turno de Plan B.
+
+        Antes la comprobación del turno vivía dentro del ``with self._lock``
+        de FASE 5, que serializaba a los workers. Al sacar la llamada al LLM
+        fuera del crítico hay que reservar el turno con el lock tomado y
+        soltarlo antes de la llamada de red, para que dos fallos simultáneos
+        no generen dos Plan B en paralelo.
+
+        Devuelve True si este worker se queda el turno (deja
+        ``_plan_b_en_progreso`` a True); False si ya hay un Plan B en curso o
+        se agotaron los intentos.
+        """
+        with self._lock:
+            if (self.recovery is None
+                    or self._plan_b_en_progreso
+                    or self._plan_b_intentos >= self._max_intentos_plan_b):
+                return False
+            self._plan_b_en_progreso = True
+            return True
+
+    def _bloquear_dependientes(self, agente_id: str, razon: str) -> bool:
         """
         Bloquea a todos los agentes que dependen directamente del agente que falló.
         Incluye cancelación de tokens activos.
         Intenta Plan B antes de bloquear si hay recovery inyectado.
+
+        Devuelve True si el Plan B se lanzó (la ejecución se reinició con un
+        plan nuevo) y False si se aplicó el bloqueo normal.
+
+        ⚠️ Puede llamar al LLM (Plan B) y por eso debe invocarse SIEMPRE
+        fuera de ``self._lock``.
         """
-        # ⬇ PARCHE PLAN B: intentar recuperación antes de bloquear
-        agente_fallido_pre = self.agentes.get(agente_id)
-        if (self.recovery is not None
-                and not self._plan_b_en_progreso
-                and self._plan_b_intentos < self._max_intentos_plan_b
-                and agente_fallido_pre is not None):
+        # ⬇ PARCHE PLAN B: intentar recuperación antes de bloquear.
+        # El turno se reclama con el lock tomado, pero la llamada al LLM se
+        # hace ya sin él.
+        with self._lock:
+            agente_fallido_pre = self.agentes.get(agente_id)
+        if agente_fallido_pre is not None and self._reclamar_plan_b():
             if self._intentar_plan_b(agente_fallido_pre, razon):
-                return  # Plan B lanzado con éxito, no bloquear nada
+                return True  # Plan B lanzado con éxito, no bloquear nada
 
         with self._lock:
             dependientes_bloqueados = []
@@ -877,10 +924,16 @@ class Scheduler(QObject):
             # la UI queda esperando `ejecucion_terminada` para siempre.
             self._verificar_terminado_internal()
 
+        return False
+
     def _intentar_plan_b(self, agente_fallido, razon: str) -> bool:
         """
         Intenta generar y ejecutar un plan alternativo.
         Devuelve True si lo lanzó con éxito, False si hay que bloquear como antes.
+
+        Debe llamarse SOLO tras un ``_reclamar_plan_b()`` que devolvió True:
+        el turno (``_plan_b_en_progreso``) ya viene reservado y aquí se hace
+        la llamada al LLM sin el lock del scheduler.
         """
         try:
             logger.info(
@@ -894,11 +947,12 @@ class Scheduler(QObject):
                 "#ffc107"
             )
 
-            # Bloquear reentradas durante la generación
-            self._plan_b_en_progreso = True
+            # El turno ya está reclamado (``_plan_b_en_progreso=True``) por
+            # ``_reclamar_plan_b`` antes de entrar aquí.
             self._plan_b_intentos += 1
 
-            # 1. Pedir plan B al LLM (bloqueante ~5-15s, es aceptable)
+            # 1. Pedir plan B al LLM (bloqueante ~5-15s, SIN el lock del
+            #    scheduler: por eso se reclama el turno antes de entrar).
             plan_b = self.recovery.generar_plan_b(
                 problema_original=self._problema_original,
                 plan_fallido=self._plan_original,
