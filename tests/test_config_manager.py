@@ -718,6 +718,43 @@ class TestConfigCache:
         
         assert len(config_manager._cache) == 0
 
+    def test_actualizar_entrada_no_expulsa_al_lru(self, config_manager):
+        """Actualizar una clave existente no debe expulsar a otra entrada.
+
+        Regresión: _put_in_cache() comprobaba ``len(cache) >= max_cache``
+        antes de mirar si la clave ya existía. Con la caché llena, actualizar
+        una entrada expulsaba al LRU sin necesidad; la caché encogía y se
+        perdía una entrada viva.
+        """
+        manager = ConfigManager(config_manager.config_dir, max_cache=2)
+        manager._put_in_cache("a.json", {"v": 1})
+        time.sleep(0.002)
+        manager._put_in_cache("b.json", {"v": 1})
+        time.sleep(0.002)
+        # 'b.json' pasa a ser la entrada más reciente; 'a.json' es el LRU.
+        assert manager._get_from_cache("b.json") == {"v": 1}
+
+        # Actualizar 'b.json' (clave ya presente) con la caché llena.
+        manager._put_in_cache("b.json", {"v": 2})
+
+        assert set(manager._cache) == {"a.json", "b.json"}
+        assert manager._get_from_cache("a.json") == {"v": 1}
+        assert manager._get_from_cache("b.json") == {"v": 2}
+
+    def test_clave_nueva_si_expulsa_al_lru(self, config_manager):
+        """Con la caché llena, una clave nueva sí expulsa al LRU."""
+        manager = ConfigManager(config_manager.config_dir, max_cache=2)
+        manager._put_in_cache("a.json", {"v": 1})
+        time.sleep(0.002)
+        manager._put_in_cache("b.json", {"v": 1})
+        time.sleep(0.002)
+        assert manager._get_from_cache("a.json") == {"v": 1}  # 'b' es el LRU
+
+        manager._put_in_cache("c.json", {"v": 3})
+
+        assert "b.json" not in manager._cache
+        assert set(manager._cache) == {"a.json", "c.json"}
+
 
 # ============================================================
 # PRUEBAS DE UTILIDADES Y MÉTODOS ADICIONALES

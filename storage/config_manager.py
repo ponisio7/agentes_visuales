@@ -456,8 +456,11 @@ class ConfigManager:
         with self._cache_lock:
             key = self._get_cache_key(ruta)
 
-            # Si la caché está llena, eliminar el elemento menos recientemente usado
-            if len(self._cache) >= self.max_cache:
+            # Si la caché está llena, eliminar el elemento menos recientemente
+            # usado. Solo se expulsa cuando la clave es NUEVA: si se está
+            # actualizando una entrada existente no hace falta hacer sitio y
+            # expulsar al LRU sería una pérdida gratuita de una entrada viva.
+            if key not in self._cache and len(self._cache) >= self.max_cache:
                 oldest = min(self._cache_accessed, key=self._cache_accessed.get)
                 self._cache.pop(oldest, None)
                 self._cache_accessed.pop(oldest, None)
