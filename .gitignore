@@ -80,3 +80,29 @@ outputs/
 .~lock.*#
 *.lock
 sqlite3
+
+# ── Outputs web/docx generados por agentes ──
+*.html
+*.htm
+*.docx
+*.xlsx
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+
+# ── Directorios de trabajo / temporales ──
+tmp/
+temp/
+imagenes/
+images/
+outputs/
+.playwright-browsers/
+.playwright/
+
+# ── Archivos raros / lock ──
+.~lock.*#
+*.lock
+sqlite3
