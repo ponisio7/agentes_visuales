@@ -1,63 +1,56 @@
-# === Sandbox y artefactos de ejecución ===
-sandbox_light/
-logs/
-*.log
-tmp/
-lotes/
+# ── Outputs de agentes (no versionar) ──
+*.csv
+*.json
+*.svg
+*.md
+*.txt
+!README.md
+!CHANGELOG.md
+!requirements.txt
+!pyproject.toml
+!setup.cfg
+!*.template.json
 
-# === Output del pipeline (pruebas de agentes) ===
-imagenes/
-clima.txt
-cuento_*.txt
-cuento_*.docx
-embeding.txt
-Estructura del Proyecto.txt
-
-# === Bases de datos locales ===
+# ── Base de datos y logs ──
 agent_history.db
-*.sqlite
-*.sqlite3
+agent_history.db-*
+*.db
+*.db-wal
+*.db-shm
+*.log
+logs/
+outputs/
+learning_models/
+configs/.journal/
 
-# === Modelos entrenados (grandes, regenerables) ===
-learning_models/*.joblib
-learning_models/*.pkl
-
-# === Coverage y testing ===
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .coverage
 htmlcov/
-.pytest_cache/
 
-# === Basura accidental ===
-sqlite3
-*.pdf
-~/
-.recon/
+# ── Editores ──
+.vscode/
+.idea/
+*.swp
+*~
 
-# === Resúmenes personales ===
-resumenhoy.md
-RESUMEN_SESION_*.md
+# ── Sistema ──
+.DS_Store
+Thumbs.db
 
-# === Entornos ===
-.venv/
-__pycache__/
-*.pyc
-
-# === Navegadores de Playwright (descarga local, regenerable) ===
-.playwright-browsers/
-
-# === Artefactos de los agentes Browser (screenshots, etc.) ===
-outputs/
-
-# Locks de LibreOffice
-.~lock.*
-
-# Outputs del pipeline (archivos generados por los agentes)
-calculadora*.html
-
-# Locks de LibreOffice
-.~lock.*
-
-# Outputs del pipeline
-*.html
-
-
+# ── Backups ──
+*.backup_*
+*.before_restore
