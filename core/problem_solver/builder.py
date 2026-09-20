@@ -275,6 +275,13 @@ class PlanBuilder:
             paso.dependencia_ids
         )
         kwargs['codigo_python'] = codigo_corregido
+        # ✅ El código corregido es el que se ejecuta en el sandbox: se
+        # escribe de vuelta en el paso para que `PlanValidator.validar_plan`
+        # valide EXACTAMENTE el programa que va a correr (antes validaba el
+        # código crudo del LLM y el sandbox ejecutaba otro distinto).
+        if codigo_corregido != codigo_original:
+            config['codigo'] = codigo_corregido
+            paso.configuracion = config
         kwargs['timeout_python'] = _a_int(config.get('timeout'), 30)
         if config.get('memory_limit_mb') is not None:
             kwargs['memory_limit_mb'] = _a_int(config.get('memory_limit_mb'), 0) or None
