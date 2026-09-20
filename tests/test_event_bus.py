@@ -126,6 +126,17 @@ class TestHistorialYEstado:
         bus.limpiar_historial()
         assert bus.obtener_historial() == []
 
+    def test_historial_limit_cero_devuelve_vacio(self, bus):
+        """H6: ``[-0:]`` es la lista entera, no una lista vacía."""
+        bus.publicar(Event(EventType.LOG_MENSAJE, datos={}))
+        assert bus.obtener_historial(limit=0) == []
+
+    def test_historial_limit_negativo_devuelve_vacio(self, bus):
+        for i in range(10):
+            bus.publicar(Event(EventType.LOG_MENSAJE, datos={"i": i}))
+        # Con limit negativo, [-(-5):] == [5:] devolvería la mitad del historial.
+        assert bus.obtener_historial(limit=-5) == []
+
     def test_detener_y_reiniciar(self, bus):
         bus.detener()
         assert bus.publicar(Event(EventType.LOG_MENSAJE, datos={})) is False
