@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 8  # ✅ FASE 5b: columna embedding en prompts_reescritos
+DB_VERSION = 9  # ✅ H6: backfill de 'estado' (completada con errores → fallida)
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -955,6 +955,28 @@ class Database:
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 7→8: {e}")
                         fallos.append(f"7→8: {e}")
+
+                # ✅ Migración 8 → 9: etiqueta de éxito honesta (H6).
+                #    Antes el estado se guardaba fijo como 'completada' aunque
+                #    hubiera agentes en error (la ejecución 469 figuraba como
+                #    completada con errores=1). Se corrigen las filas
+                #    históricas incoherentes; a partir de ahora el recorder
+                #    pasa el veredicto del gate de aceptación.
+                if current_version < 9:
+                    try:
+                        cursor.execute(
+                            "UPDATE ejecuciones SET estado = 'fallida' "
+                            "WHERE errores > 0 AND "
+                            "(estado IS NULL OR estado = 'completada')"
+                        )
+                        if cursor.rowcount:
+                            logger.info(
+                                f"✅ Migración 8→9: {cursor.rowcount} ejecución(es) "
+                                f"con errores reclasificadas como 'fallida'"
+                            )
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 8→9: {e}")
+                        fallos.append(f"8→9: {e}")
 
                 if fallos:
                     raise sqlite3.OperationalError(

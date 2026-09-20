@@ -296,3 +296,55 @@ class TestLecturaNoBloquea:
         assert "Error de SQLite" in mensaje
         assert db.ultimo_error_lectura()["operacion"] == "verificar_integridad"
         assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+class TestMigracionEstadoHonesto:
+    """H6: una ejecución con errores no puede figurar como 'completada'."""
+
+    def test_backfill_reclasifica_completadas_con_errores(self, db):
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("DELETE FROM version")
+            conn.execute(
+                "INSERT INTO version (version, fecha_actualizacion) VALUES (8, '')"
+            )
+            conn.execute(
+                """
+                INSERT INTO ejecuciones (
+                    fecha, duracion_total, agentes_total,
+                    completados, errores, cancelados, estado
+                ) VALUES ('2026-01-01T00:00:00', 1.0, 5, 4, 1, 0, 'completada')
+                """
+            )
+            conn.commit()
+
+        db._migrar_db()
+
+        with sqlite3.connect(db.db_path) as conn:
+            estado = conn.execute(
+                "SELECT estado FROM ejecuciones ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        assert estado == "fallida"
+
+    def test_backfill_no_toca_las_ejecuciones_sin_errores(self, db):
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("DELETE FROM version")
+            conn.execute(
+                "INSERT INTO version (version, fecha_actualizacion) VALUES (8, '')"
+            )
+            conn.execute(
+                """
+                INSERT INTO ejecuciones (
+                    fecha, duracion_total, agentes_total,
+                    completados, errores, cancelados, estado
+                ) VALUES ('2026-01-01T00:00:00', 1.0, 5, 5, 0, 0, 'completada')
+                """
+            )
+            conn.commit()
+
+        db._migrar_db()
+
+        with sqlite3.connect(db.db_path) as conn:
+            estado = conn.execute(
+                "SELECT estado FROM ejecuciones ORDER BY id DESC LIMIT 1"
+            ).fetchone()[0]
+        assert estado == "completada"

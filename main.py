@@ -452,6 +452,25 @@ def _asegurar_qt():
 # ---------------------------------------------------------------------------
 # Modo headless: pipeline real (ProblemSolver -> Scheduler)
 # ---------------------------------------------------------------------------
+def _calcular_estado_final(
+    salida_agentes: list[dict[str, Any]],
+    aceptacion: dict[str, Any] | None,
+) -> tuple[bool, str]:
+    """Calcula el ``ok`` y el estado honestos de una ejecución.
+
+    «Los agentes terminaron» no basta (H6): además, todos deben haber
+    terminado bien y la aceptación de la salida debe pasar. Devuelve
+    ``(ok, estado)`` con estado ``'completada'`` o ``'fallida'``.
+    """
+    completados = [a for a in salida_agentes if a.get("ok")]
+    correcto = (
+        bool(completados)
+        and len(completados) == len(salida_agentes)
+        and bool((aceptacion or {}).get("aceptada", True))
+    )
+    return correcto, ("completada" if correcto else "fallida")
+
+
 def _ejecutar_pipeline(
     problema: str,
     *,
@@ -596,7 +615,8 @@ def _ejecutar_pipeline(
         })
 
     completados = [a for a in salida_agentes if a["ok"]]
-    correcto = bool(completados) and len(completados) == len(salida_agentes)
+    aceptacion = scheduler.obtener_resultado_aceptacion()
+    correcto, estado_final = _calcular_estado_final(salida_agentes, aceptacion)
 
     ejecucion_id = None
     if aprender and estado["terminada"]:
@@ -610,12 +630,14 @@ def _ejecutar_pipeline(
                 plan=plan,
                 problema=problema,
                 duracion_total=duracion,
+                estado=estado_final,
             )
         except Exception as e:
             log.warning("No se pudo registrar la ejecución en aprendizaje: %s", e)
 
     return {
         "ok": correcto,
+        "estado": estado_final,
         "problema": problema,
         "titulo": plan.titulo,
         "plan_id": plan.id,
@@ -628,6 +650,7 @@ def _ejecutar_pipeline(
         "duracion": round(duracion, 2),
         "timeout_agotado": agotado,
         "ejecucion_id": ejecucion_id,
+        "aceptacion": _json_limpio(aceptacion),
         "advertencias": list(getattr(plan, "advertencias", []) or []),
     }
 
@@ -701,6 +724,9 @@ def _ejecutar_run(args) -> int:
             if not a.get("ok"):
                 detalle = a.get("error") or a.get("estado")
                 print(f"❌ [{a.get('tipo')}] {a.get('nombre')}: {detalle}", file=sys.stderr)
+        aceptacion = salida.get("aceptacion") or {}
+        if not salida.get("ok") and aceptacion.get("motivos"):
+            print(f"🔎 Aceptación: {aceptacion.get('resumen')}", file=sys.stderr)
 
     return EXIT_OK if salida.get("ok") else EXIT_RUN_ERROR
 

@@ -10,7 +10,39 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, duracion_total: float) -> int | None:
+
+def _estado_desde_aceptacion(scheduler) -> str:
+    """Etiqueta honesta de la ejecución: 'completada' solo si pasa aceptación.
+
+    Antes el estado estaba fijo en 'completada' (la ejecución 469 se guardó
+    como completada con errores=1). Ahora lo decide el gate de aceptación del
+    scheduler; si el scheduler no lo expone, se cae a contar errores.
+    """
+    try:
+        aceptacion = scheduler.obtener_resultado_aceptacion()
+        return "completada" if aceptacion.get("aceptada") else "fallida"
+    except Exception as e:
+        logger.debug(f"No se pudo consultar la aceptación: {e}")
+    try:
+        errores = 0
+        for agente in scheduler.agentes.values():
+            estado = getattr(agente, "estado", None)
+            if getattr(estado, "value", str(estado)) == "Error":
+                errores += 1
+        return "fallida" if errores else "completada"
+    except Exception:
+        return "completada"
+
+
+def registrar_ejecucion_en_aprendizaje(
+    scheduler, db, plan, problema: str, duracion_total: float,
+    estado: str | None = None,
+) -> int | None:
+    # 0. Etiqueta real de éxito (H6): se calcula ANTES del hilo para no
+    #    depender de un scheduler que la GUI/workers pueden mutar después.
+    if estado is None:
+        estado = _estado_desde_aceptacion(scheduler)
+
     # 1. Guardar en DB - incluir plan original si hubo Plan B, deduplicando por id
     try:
         vistos_db: set = set()
@@ -31,7 +63,7 @@ def registrar_ejecucion_en_aprendizaje(scheduler, db, plan, problema: str, durac
                 agentes_data.append(a.to_dict())
             except Exception as e:
                 logger.warning(f"No se pudo serializar agente {aid}: {e}")
-        ejecucion_id = db.guardar_ejecucion(agentes_data, duracion_total)
+        ejecucion_id = db.guardar_ejecucion(agentes_data, duracion_total, estado=estado)
     except Exception as e:
         logger.warning(f"No se pudo guardar la ejecución: {e}")
         return None

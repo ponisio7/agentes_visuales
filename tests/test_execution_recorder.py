@@ -113,3 +113,62 @@ class TestResumenPlan:
         plan = SimpleNamespace()  # sin agentes_generados
 
         assert _construir_resumen_plan(scheduler, plan) == "ok"
+
+
+class TestEstadoHonesto:
+    """H6: la ejecución se guarda como 'fallida' si no pasa la aceptación."""
+
+    class _DbFalso:
+        def __init__(self):
+            self.db_path = ":memory:"
+            self.estado_guardado = None
+
+        def guardar_ejecucion(self, agentes, duracion_total, estado="completada", **kwargs):
+            self.estado_guardado = estado
+            return 123
+
+    class _SchedulerFalso:
+        def __init__(self, aceptada: bool):
+            self._aceptada = aceptada
+            self.agentes = {}
+
+        def obtener_resultado_aceptacion(self):
+            return {
+                "aceptada": self._aceptada,
+                "motivos": [] if self._aceptada else ["x"],
+            }
+
+    def _plan(self):
+        from core.problem_solver.models import ExecutionPlan, StepPlan
+
+        return ExecutionPlan(problema_original="x", pasos=[
+            StepPlan(orden=1, nombre="P", tipo_agente="Python", configuracion={})
+        ])
+
+    def test_sin_aceptacion_se_guarda_fallida(self, monkeypatch):
+        # Sin hilo de aprendizaje: solo interesa el estado que se persiste.
+        monkeypatch.setattr(
+            "core.execution_recorder.threading.Thread",
+            lambda *a, **k: type("_T", (), {"start": lambda self: None})(),
+        )
+        from core.execution_recorder import registrar_ejecucion_en_aprendizaje
+
+        db = self._DbFalso()
+        registrar_ejecucion_en_aprendizaje(
+            scheduler=self._SchedulerFalso(aceptada=True),
+            db=db,
+            plan=self._plan(),
+            problema="x",
+            duracion_total=1.0,
+        )
+        assert db.estado_guardado == "completada"
+
+        db2 = self._DbFalso()
+        registrar_ejecucion_en_aprendizaje(
+            scheduler=self._SchedulerFalso(aceptada=False),
+            db=db2,
+            plan=self._plan(),
+            problema="x",
+            duracion_total=1.0,
+        )
+        assert db2.estado_guardado == "fallida"
