@@ -6,6 +6,7 @@ __pycache__/
 
 # Datos y estado
 agent_history.db
+agent_history.db.*
 learning_models/
 logs/
 outputs/screenshots/
@@ -13,3 +14,47 @@ outputs/screenshots/
 # Config local
 .env
 *.env
+
+# Artefactos de ejecución
+*.joblib
+*.pkl
+.coverage
+
+# Basura de sesión / temporales
+.playwright-browsers/
+.~lock.*#
+tmp/
+sqlite3
+
+# Salidas de ejemplo (artefactos generados por el programa)
+albondigas*.png
+albondigas*.svg
+calculadora*.html
+ciudades_mas_pobladas.csv
+commits_python.json
+cuento*.html
+cuento*.docx
+formulario_contacto.html
+grafico_ventas.svg
+informacion_traducida.html
+informe_clima_madrid.*
+juego_memoria.html
+noticiaex.txt
+noticias_traducidas.*
+peliculas_taquilleras.csv
+recuento_guerra_ucrania.html
+titulares_hacker_news.txt
+titulares_hn.json
+top10_ciudades.csv
+salida.txt
+saludo.txt
+embeding.txt
+*.txt
+*.csv
+*.svg
+lotes/
+imagenes/
+
+# Notas de sesión
+RESUMEN_SESION_*.md
+resumenhoy.md
