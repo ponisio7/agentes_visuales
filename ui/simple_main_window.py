@@ -1003,7 +1003,7 @@ class SimpleMainWindow(QMainWindow):
         r = random.random()
         logger.info(f"[FEEDBACK] random={r:.3f} umbral={1/3:.3f} → {'pide' if r < 1/3 else 'no pide'}")
         if r >= 1/3:
-            logger.info("🥶 adentro a r >= 1 / 3 simple_main_windows.py")
+            
             return
         
 
