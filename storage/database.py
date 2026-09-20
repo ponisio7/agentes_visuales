@@ -1922,16 +1922,36 @@ class Database:
                 if conn is not None:
                     conn.close()
 
-            # Backup de la base actual
+            # Backup de la base actual, con la API de SQLite (consistente e
+            # incluye el WAL; shutil.copy2 solo copiaba el .db principal).
             if os.path.exists(self.db_path):
                 backup_path = f"{self.db_path}.before_restore"
-                import shutil
-                shutil.copy2(self.db_path, backup_path)
-                logger.info(f"Backup de base actual creado: {backup_path}")
+                try:
+                    actual = sqlite3.connect(self.db_path, timeout=CONNECTION_TIMEOUT)
+                    destino_backup = sqlite3.connect(backup_path)
+                    try:
+                        actual.backup(destino_backup)
+                    finally:
+                        destino_backup.close()
+                        actual.close()
+                    logger.info(f"Backup de base actual creado: {backup_path}")
+                except Exception as e:
+                    logger.warning(f"No se pudo respaldar la BD actual antes de restaurar: {e}")
 
-            # Restaurar
-            import shutil
-            shutil.copy2(ruta, self.db_path)
+            # Restaurar con la API de backup de SQLite en lugar de copiar el
+            # fichero: así SQLite gestiona el WAL y no se reaplican frames de
+            # un -wal antiguo sobre el fichero restaurado (lo que resucitaba
+            # filas borradas o corrompía la BD).
+            destino = sqlite3.connect(self.db_path, timeout=CONNECTION_TIMEOUT)
+            try:
+                origen = sqlite3.connect(ruta, timeout=CONNECTION_TIMEOUT)
+                try:
+                    origen.backup(destino)
+                finally:
+                    origen.close()
+            finally:
+                destino.close()
+
             self._initialized = False
             self._closed = False    # ← AÑADIR: permitir reabrir tras restore
             self._init_db()
