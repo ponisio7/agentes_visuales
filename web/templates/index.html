@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agentes Visuales — web</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>Agentes Visuales</h1>
+    <p class="meta">
+      versión {{ version }} &middot;
+      <a href="/api/health">/api/health</a> &middot;
+      <a href="/api/agents">/api/agents</a>
+    </p>
+  </header>
+
+  <main>
+    <form id="formulario">
+      <label for="prompt">Prompt</label>
+      <textarea id="prompt" name="prompt" rows="4" required
+                placeholder="Ej.: di hola"></textarea>
+
+      <div class="fila">
+        <div>
+          <label for="max_pasos">Máx. pasos</label>
+          <input id="max_pasos" name="max_pasos" type="number" min="1"
+                 value="{{ max_pasos }}">
+        </div>
+        <div>
+          <label for="timeout">Timeout de la ejecución (s)</label>
+          <input id="timeout" name="timeout" type="number" min="1" step="1"
+                 value="{{ timeout or '' }}" placeholder="sin límite">
+        </div>
+        <div>
+          <label for="agent">Agente (opcional)</label>
+          <input id="agent" name="agent" type="text"
+                 placeholder="por defecto: todos">
+        </div>
+      </div>
+
+      <label class="check">
+        <input id="aprender" name="aprender" type="checkbox" checked>
+        Guardar la ejecución en aprendizaje (<code>agent_history.db</code>)
+      </label>
+
+      <div class="acciones">
+        <button type="submit">Ejecutar</button>
+        <span id="estado" class="estado"></span>
+      </div>
+    </form>
+
+    <h2>Resultado</h2>
+    <pre id="resultado">—</pre>
+  </main>
+
+  <script>
+    const formulario = document.getElementById('formulario');
+    const estado = document.getElementById('estado');
+    const salida = document.getElementById('resultado');
+
+    formulario.addEventListener('submit', async (evento) => {
+      evento.preventDefault();
+
+      const datos = {
+        prompt: document.getElementById('prompt').value,
+        max_pasos: Number(document.getElementById('max_pasos').value) || {{ max_pasos }},
+        aprender: document.getElementById('aprender').checked,
+      };
+      const timeout = document.getElementById('timeout').value;
+      if (timeout) datos.timeout = Number(timeout);
+      const agent = document.getElementById('agent').value.trim();
+      if (agent) datos.agent = agent;
+
+      estado.textContent = '⏳ ejecutando…';
+      salida.textContent = '—';
+
+      try {
+        const respuesta = await fetch('/api/run', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(datos),
+        });
+        const json = await respuesta.json();
+        estado.textContent = `HTTP ${respuesta.status} · ok=${json.ok}`;
+        salida.textContent = JSON.stringify(json, null, 2);
+      } catch (e) {
+        estado.textContent = '❌ error de red';
+        salida.textContent = String(e);
+      }
+    });
+  </script>
+</body>
+</html>

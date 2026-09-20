@@ -1,0 +1,103 @@
+/* web/static/style.css — hoja de estilos mínima del formulario web. */
+:root {
+  --fondo: #12151c;
+  --panel: #1b1f29;
+  --borde: #2c3242;
+  --texto: #e6e9ef;
+  --suave: #9aa4b8;
+  --acento: #4f8cff;
+  --ok: #2fbf71;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 2rem 1rem 4rem;
+  background: var(--fondo);
+  color: var(--texto);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+header, main {
+  max-width: 780px;
+  margin: 0 auto;
+}
+
+h1 { margin: 0 0 .25rem; font-size: 1.5rem; }
+h2 { margin: 2rem 0 .5rem; font-size: 1.1rem; }
+
+.meta { margin: 0 0 1.5rem; color: var(--suave); font-size: .85rem; }
+.meta a { color: var(--acento); text-decoration: none; }
+.meta a:hover { text-decoration: underline; }
+
+form {
+  background: var(--panel);
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+label { display: block; margin: 0 0 .35rem; font-size: .85rem; color: var(--suave); }
+
+textarea, input[type="text"], input[type="number"] {
+  width: 100%;
+  padding: .55rem .65rem;
+  background: #0e1117;
+  border: 1px solid var(--borde);
+  border-radius: 8px;
+  color: var(--texto);
+  font: inherit;
+}
+
+textarea { resize: vertical; }
+
+.fila {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: .9rem;
+  margin-top: .9rem;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin-top: 1rem;
+  color: var(--texto);
+  font-size: .85rem;
+}
+
+.acciones {
+  display: flex;
+  align-items: center;
+  gap: .9rem;
+  margin-top: 1.25rem;
+}
+
+button {
+  padding: .6rem 1.2rem;
+  border: 0;
+  border-radius: 8px;
+  background: var(--acento);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:hover { filter: brightness(1.08); }
+
+.estado { color: var(--suave); font-size: .85rem; }
+
+pre {
+  background: #0e1117;
+  border: 1px solid var(--borde);
+  border-radius: 10px;
+  padding: 1rem;
+  overflow: auto;
+  max-height: 60vh;
+  font-size: .82rem;
+}
+
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
