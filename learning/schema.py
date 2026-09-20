@@ -99,6 +99,7 @@ SQL_CREAR_TABLAS = [
         ejecucion_id INTEGER NOT NULL,
         score REAL,                          -- relleno después por el aprendizaje
         fecha TEXT NOT NULL,
+        motivo TEXT DEFAULT '',              -- ✅ H2: por qué se usó esa variante
         FOREIGN KEY (prompt_reescrito_id)
             REFERENCES prompts_reescritos(id)
             ON DELETE CASCADE

@@ -376,6 +376,7 @@ class Agente:
     reasoning_effort_llm: str = "low"
     thinking_enabled_llm: bool = False          
     prompt_reescrito_id: int = 0        # ✅ FASE 4c: ID de la versión reescrita usada
+    prompt_reescrito_motivo: str = ""   # ✅ H2: por qué se eligió esa versión
     
     # ── Loop ──
     fuente_items: str = ""
@@ -1052,6 +1053,9 @@ class Agente:
         # cual; si se truncara más agresivamente se perdería contexto útil.
         if self.tipo == TipoAgente.LLM:
             data["prompt_usado"] = (self.prompt_llm or "")[:4000]
+            if self.prompt_reescrito_id:
+                data["prompt_reescrito_id"] = self.prompt_reescrito_id
+                data["prompt_reescrito_motivo"] = self.prompt_reescrito_motivo
 
         return data
     

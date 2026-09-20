@@ -348,3 +348,37 @@ class TestMigracionEstadoHonesto:
                 "SELECT estado FROM ejecuciones ORDER BY id DESC LIMIT 1"
             ).fetchone()[0]
         assert estado == "completada"
+
+
+class TestMigracionMotivoAB:
+    """H2: la migración 9→10 añade 'motivo' a prompt_reescrito_usos."""
+
+    def test_anade_motivo_y_es_idempotente(self, db):
+        with sqlite3.connect(db.db_path) as conn:
+            conn.execute("DROP TABLE IF EXISTS prompt_reescrito_usos")
+            conn.execute(
+                """CREATE TABLE prompt_reescrito_usos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    prompt_reescrito_id INTEGER,
+                    ejecucion_id INTEGER,
+                    score REAL,
+                    fecha TEXT
+                )"""
+            )
+            conn.execute("DELETE FROM version")
+            conn.execute(
+                "INSERT INTO version (version, fecha_actualizacion) VALUES (9, '')"
+            )
+            conn.commit()
+
+        db._migrar_db()
+        db._migrar_db()  # idempotente
+
+        with sqlite3.connect(db.db_path) as conn:
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(prompt_reescrito_usos)")]
+            version = conn.execute(
+                "SELECT version FROM version ORDER BY version DESC LIMIT 1"
+            ).fetchone()[0]
+
+        assert "motivo" in cols
+        assert version >= 10

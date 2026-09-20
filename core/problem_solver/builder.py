@@ -470,9 +470,10 @@ class PlanBuilder:
         # ── 2. Endurecer el prompt (idempotente) ──
         prompt_endurecido = self._endurecer_prompt_llm(prompt_original)
 
-        # ── 3. ✅ FASE 5b: matching semántico por embeddings ──
+        # ── 3. ✅ FASE 5b: matching semántico por embeddings (H2) ──
         prompt_final = prompt_endurecido  # fallback si no hay match
         prompt_id_elegido = 0
+        motivo_elegido = "sin match semántico (prompt original)"
         try:
             from learning.embedding_matcher import obtener_matcher
             from learning.prompt_ab_evaluator import PromptABEvaluator
@@ -508,17 +509,32 @@ class PlanBuilder:
                     prompt_candidato=(match_candidato or {}).get("prompt"),
                     prompt_id_candidato=(match_candidato or {}).get("id"),
                 )
+                elegido = None
+                if prompt_id_elegido == (match_activo or {}).get("id"):
+                    elegido = match_activo
+                elif prompt_id_elegido == (match_candidato or {}).get("id"):
+                    elegido = match_candidato
                 if prompt_elegido:
                     prompt_final = prompt_elegido
+                if elegido:
+                    motivo_elegido = (
+                        f"{elegido.get('motivo', '')} "
+                        f"(id={prompt_id_elegido}, "
+                        f"similitud={elegido.get('similitud'):.3f}, "
+                        f"estado={elegido.get('estado')})"
+                    )
                 sim_act = match_activo["similitud"] if match_activo else None
                 sim_cand = match_candidato["similitud"] if match_candidato else None
+                # H2: registrar POR QUÉ se usó la variante.
                 self.logger.info(
-                    f"✨ AB: '{paso.nombre}' usa id={prompt_id_elegido} "
+                    f"✨ AB: '{paso.nombre}' usa id={prompt_id_elegido} — "
+                    f"motivo: {motivo_elegido} "
                     f"(sim_activo={sim_act}, sim_candidato={sim_cand})"
                 )
             else:
                 self.logger.debug(
-                    f"AB: sin match semántico para '{paso.nombre}'"
+                    f"AB: sin match seguro para '{paso.nombre}'; "
+                    f"se conserva el prompt original"
                 )
 
         except Exception as e:
@@ -527,6 +543,7 @@ class PlanBuilder:
         # ── 4. Asignar al kwargs ──
         kwargs['prompt_llm'] = self._endurecer_prompt_llm(prompt_final)
         kwargs['prompt_reescrito_id'] = _a_int(prompt_id_elegido, 0)
+        kwargs['prompt_reescrito_motivo'] = motivo_elegido
 
     def _endurecer_prompt_llm(self, prompt_original: str) -> str: # modificado 16 septiembre 2026 12:38 hora Madrid
         """

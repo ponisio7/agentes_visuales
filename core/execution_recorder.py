@@ -91,7 +91,12 @@ def registrar_ejecucion_en_aprendizaje(
                 for item in agentes_snapshot:
                     pid = getattr(item["proxy"], "prompt_reescrito_id", 0)
                     if pid:
-                        ab.registrar_uso(pid, ejecucion_id)
+                        # H2: se registra POR QUÉ se eligió la variante.
+                        ab.registrar_uso(
+                            pid,
+                            ejecucion_id,
+                            motivo=getattr(item["proxy"], "prompt_reescrito_motivo", ""),
+                        )
             except Exception as e:
                 logger.debug(f"AB registrar_uso falló: {e}")
 
@@ -185,6 +190,7 @@ def _snapshot_de_agente(a) -> dict[str, Any] | None:
             reasoning_effort_llm=getattr(a, "reasoning_effort_llm", "low"),
             thinking_enabled_llm=bool(getattr(a, "thinking_enabled_llm", False)),
             prompt_reescrito_id=getattr(a, "prompt_reescrito_id", 0),  # ✅ FASE 4c
+            prompt_reescrito_motivo=getattr(a, "prompt_reescrito_motivo", ""),  # ✅ H2
             url_http=getattr(a, "url_http", "") or "", url=getattr(a, "url_http", "") or "",
             metodo=getattr(a, "metodo_http", "GET"), operacion=getattr(a, "operacion_file", "") or "",
             archivo_origen=getattr(a, "archivo_origen", "") or "", archivo_destino=getattr(a, "archivo_destino", "") or "",

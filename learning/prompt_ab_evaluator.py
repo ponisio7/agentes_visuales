@@ -97,9 +97,16 @@ class PromptABEvaluator:
     # ------------------------------------------------------------
     # 2. Registro de uso (background, tras la ejecución)
     # ------------------------------------------------------------
-    def registrar_uso(self, prompt_id: int | None, ejecucion_id: int) -> bool:
+    def registrar_uso(
+        self, prompt_id: int | None, ejecucion_id: int, motivo: str = ""
+    ) -> bool:
         """
         Registra que una ejecución usó una versión concreta de prompt.
+
+        ``motivo`` (H2) explica POR QUÉ se eligió esa variante (similitud,
+        firma coincidente, solape léxico...). Si la columna no existe en una
+        BD antigua, se reintenta sin ella para no perder el registro.
+
         Idempotente: si ya existe la pareja (prompt_id, ejecucion_id),
         no duplica.
         """
@@ -115,12 +122,21 @@ class PromptABEvaluator:
                 ).fetchone()
                 if existe:
                     return True
-                conn.execute(
-                    """INSERT INTO prompt_reescrito_usos
-                       (prompt_reescrito_id, ejecucion_id, score, fecha)
-                       VALUES (?, ?, NULL, ?)""",
-                    (prompt_id, ejecucion_id, datetime.now().isoformat()),
-                )
+                try:
+                    conn.execute(
+                        """INSERT INTO prompt_reescrito_usos
+                           (prompt_reescrito_id, ejecucion_id, score, fecha, motivo)
+                           VALUES (?, ?, NULL, ?, ?)""",
+                        (prompt_id, ejecucion_id, datetime.now().isoformat(), motivo),
+                    )
+                except sqlite3.OperationalError:
+                    # BD antigua sin la columna 'motivo'.
+                    conn.execute(
+                        """INSERT INTO prompt_reescrito_usos
+                           (prompt_reescrito_id, ejecucion_id, score, fecha)
+                           VALUES (?, ?, NULL, ?)""",
+                        (prompt_id, ejecucion_id, datetime.now().isoformat()),
+                    )
                 # Incrementar el contador en prompts_reescritos.
                 conn.execute(
                     "UPDATE prompts_reescritos SET n_usos = n_usos + 1 WHERE id = ?",

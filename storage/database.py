@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 9  # ✅ H6: backfill de 'estado' (completada con errores → fallida)
+DB_VERSION = 10  # ✅ H2: motivo de uso de reescrituras (prompt_reescrito_usos)
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -977,6 +977,26 @@ class Database:
                     except sqlite3.OperationalError as e:
                         logger.warning(f"Error en migración 8→9: {e}")
                         fallos.append(f"8→9: {e}")
+
+                # ✅ Migración 9 → 10: motivo de uso de una reescritura (H2).
+                #    Permite auditar POR QUÉ se aplicó una variante de prompt
+                #    (similitud, firma coincidente, solape léxico...). La tabla
+                #    la crea learning/schema.py DESPUÉS de las migraciones, así
+                #    que en una BD nueva aquí no existe todavía: se comprueba.
+                if current_version < 10:
+                    try:
+                        tablas = self._obtener_tablas(conn)
+                        if 'prompt_reescrito_usos' in tablas:
+                            cols = self._obtener_columnas(conn, 'prompt_reescrito_usos')
+                            if 'motivo' not in cols:
+                                cursor.execute(
+                                    "ALTER TABLE prompt_reescrito_usos "
+                                    "ADD COLUMN motivo TEXT DEFAULT ''"
+                                )
+                                logger.info("✅ Migración 9→10: columna 'motivo' añadida")
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 9→10: {e}")
+                        fallos.append(f"9→10: {e}")
 
                 if fallos:
                     raise sqlite3.OperationalError(

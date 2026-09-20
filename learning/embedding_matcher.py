@@ -21,8 +21,11 @@ Uso típico:
 from __future__ import annotations
 
 import logging
+import os
+import re
 import sqlite3
 import threading
+import unicodedata
 from contextlib import closing
 
 import numpy as np
@@ -40,8 +43,122 @@ logging.getLogger("transformers").setLevel(logging.WARNING)
 # CONSTANTES
 # ============================================================
 MODELO_DEFAULT = "paraphrase-multilingual-MiniLM-L12-v2"
-UMBRAL_DEFAULT = 0.68       # similitud mínima para considerar match
+
+# ── Umbrales (H2) ──
+# Antes 0.68: demasiado permisivo. Una reescritura de OTRA tarea entraba por
+# similitud semántica y sustituía el prompt pedido (el caso albóndigas →
+# cuento de terror). Ahora el umbral es conservador y, además, hay que pasar
+# la comprobación de intención.
+UMBRAL_DEFAULT = 0.85
+# Si el mejor y el segundo mejor candidato (de otra tarea) están a menos de
+# este margen, hay duda → no se aplica ninguna reescritura.
+MARGEN_DUDA_DEFAULT = 0.03
+# Solape léxico mínimo (Jaccard) entre la consulta y la tarea de la
+# reescritura cuando la firma NO coincide.
+MIN_SOLAPE_DEFAULT = 0.5
+
 MAX_CANDIDATOS = 500         # límite de filas a cargar en cada búsqueda
+
+
+def _env_float(nombre: str, defecto: float) -> float:
+    """Lee un umbral de una variable de entorno, con fallback seguro."""
+    try:
+        valor = float(os.environ.get(nombre, ""))
+    except (TypeError, ValueError):
+        return defecto
+    return valor if 0.0 < valor <= 1.0 else defecto
+
+
+def configuracion() -> dict:
+    """Umbrales efectivos del matcher (configurables por entorno)."""
+    return {
+        "umbral": _env_float("AGENTES_AB_UMBRAL", UMBRAL_DEFAULT),
+        "margen_duda": _env_float("AGENTES_AB_MARGEN_DUDA", MARGEN_DUDA_DEFAULT),
+        "min_solape": _env_float("AGENTES_AB_MIN_SOLAPE", MIN_SOLAPE_DEFAULT),
+    }
+
+
+# ============================================================
+# COMPATIBILIDAD DE INTENCIÓN
+# ============================================================
+
+_STOPWORDS = frozenset({
+    "de", "la", "el", "los", "las", "un", "una", "unos", "unas",
+    "y", "o", "u", "e", "a", "en", "con", "por", "para", "que", "es",
+    "son", "al", "del", "se", "su", "sus", "lo", "le", "les", "tu",
+    "tus", "mi", "mis", "si", "no", "the", "of", "and", "or", "to",
+    "in", "on", "at", "by", "for", "with", "from", "as", "is", "are",
+    "be", "been", "escribe", "genera", "crea", "redacta", "elabora",
+    "produce", "construye", "haz",
+})
+
+
+def tokens_significativos(texto: str) -> set[str]:
+    """Tokens normalizados (sin acentos, sin stopwords) de un texto."""
+    if not texto:
+        return set()
+    normalizado = unicodedata.normalize("NFKD", str(texto).lower())
+    normalizado = "".join(c for c in normalizado if not unicodedata.combining(c))
+    return {
+        p for p in re.findall(r"[a-z0-9]+", normalizado)
+        if p not in _STOPWORDS and len(p) > 2
+    }
+
+
+def solape_lexico(a: str, b: str) -> float:
+    """Jaccard de tokens significativos entre dos textos (0..1)."""
+    ta, tb = tokens_significativos(a), tokens_significativos(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def compatible_por_intencion(
+    consulta: str,
+    candidato: dict,
+    similitud: float,
+    cfg: dict | None = None,
+) -> tuple[bool, str]:
+    """¿La reescritura del candidato pertenece a la misma intención?
+
+    Solo hay dos vías de compatibilidad, y ninguna permite el salto entre
+    tareas distintas (la regla de H2: un prompt de la tarea A NUNCA debe
+    recibir la reescritura de la tarea B):
+
+    1. **Misma firma** (mismo conjunto de palabras significativas) → sí.
+    2. **Solape léxico suficiente** con la tarea original del candidato → sí.
+
+    La similitud semántica por sí sola NO basta: es justo la señal que
+    producía el falso positivo entre tareas. Si ninguna vía se cumple, la
+    reescritura NO se aplica (fallback al prompt original).
+    """
+    cfg = cfg or configuracion()
+    firma_consulta = _firmar(consulta)
+    firma_cand = candidato.get("firma") or ""
+
+    if firma_consulta and firma_cand and firma_consulta == firma_cand:
+        return True, "firma coincidente"
+
+    solape = solape_lexico(consulta, candidato.get("prompt_original") or "")
+    if solape >= cfg["min_solape"]:
+        return True, f"solape léxico {solape:.2f} >= {cfg['min_solape']:.2f}"
+
+    return False, (
+        f"intención incompatible (solape {solape:.2f} < {cfg['min_solape']:.2f}, "
+        f"firma distinta; similitud {similitud:.3f} insuficiente por sí sola)"
+    )
+
+
+def _firmar(prompt: str) -> str:
+    """Firma semántica del FeedbackProcessor (import perezoso, sin ciclos)."""
+    try:
+        from learning.feedback_processor import FeedbackProcessor
+
+        return FeedbackProcessor._firmar(prompt)
+    except Exception as e:
+        logger.debug(f"No se pudo calcular la firma: {e}")
+        return ""
+
 
 
 # ============================================================
@@ -151,24 +268,34 @@ class EmbeddingMatcher:
         self,
         db_path: str,
         texto: str,
-        umbral: float = UMBRAL_DEFAULT,
+        umbral: float | None = None,
         estados_validos: tuple = ("activo", "candidato"),
     ) -> dict | None:
         """
-        Busca la reescritura más similar al texto dado.
+        Busca la reescritura más similar al texto dado, con guardas de
+        intención (H2).
 
-        Args:
-            db_path: ruta a la BD.
-            texto: prompt crudo a comparar.
-            umbral: similitud mínima (0..1). Por debajo, no hay match.
-            estados_validos: estados que se consideran candidatos al match.
+        Una reescritura solo se devuelve si:
+
+        1. su similitud supera el umbral (conservador por defecto);
+        2. supera la comprobación de intención (firma o solape léxico)
+           contra la tarea que la originó;
+        3. no hay un segundo candidato de OTRA tarea a menos de
+           ``margen_duda`` (en caso de duda, no se aplica nada).
+
+        Si algo falla, devuelve ``None`` y el builder conserva el prompt
+        original.
 
         Returns:
-            Dict con {'id', 'similitud', 'estado', 'prompt', 'n_usos'}
-            o None si no hay match por encima del umbral.
+            Dict con ``id``, ``similitud``, ``estado``, ``prompt``,
+            ``n_usos``, ``prompt_original``, ``firma`` y ``motivo``;
+            o ``None`` si no hay match seguro.
         """
         if not texto or not texto.strip():
             return None
+
+        cfg = configuracion()
+        umbral = cfg["umbral"] if umbral is None else umbral
 
         # 1. Calcular el embedding del texto de consulta
         vector_bytes = self.calcular(texto)
@@ -181,27 +308,47 @@ class EmbeddingMatcher:
         if not candidatos:
             return None
 
-        # 3. Comparar contra todos y quedarse con el mejor
-        mejor = None
-        mejor_sim = -1.0
+        # 3. Puntuar todos y ordenar por similitud descendente
+        puntuados = []
         for cand in candidatos:
             vec_cand = np.frombuffer(cand["embedding"], dtype=np.float32)
-            sim = self._coseno(vec_consulta, vec_cand)
-            if sim > mejor_sim:
-                mejor_sim = sim
-                mejor = cand
+            puntuados.append((self._coseno(vec_consulta, vec_cand), cand))
+        puntuados.sort(key=lambda par: par[0], reverse=True)
+
+        mejor_sim, mejor = puntuados[0]
 
         # 4. ¿Supera el umbral?
-        if mejor is None or mejor_sim < umbral:
+        if mejor_sim < umbral:
             logger.debug(
-                f"Sin match (mejor similitud={mejor_sim:.3f}, "
-                f"umbral={umbral})"
+                f"Sin match (mejor similitud={mejor_sim:.3f}, umbral={umbral})"
+            )
+            return None
+
+        # 5. Duda: ¿hay otro candidato de una tarea distinta casi igual?
+        for sim, cand in puntuados[1:]:
+            if sim < mejor_sim - cfg["margen_duda"]:
+                break
+            if (cand.get("prompt_original") or "") != (mejor.get("prompt_original") or ""):
+                logger.info(
+                    f"AB: match ambiguo para '{texto[:40]}…' "
+                    f"(mejor={mejor_sim:.3f}, segundo={sim:.3f} de otra tarea) "
+                    f"→ se conserva el prompt original"
+                )
+                return None
+
+        # 6. Compatibilidad de intención
+        compatible, motivo = compatible_por_intencion(texto, mejor, mejor_sim, cfg)
+        if not compatible:
+            logger.info(
+                f"AB: reescritura id={mejor['id']} descartada por intención "
+                f"({motivo}) → se conserva el prompt original"
             )
             return None
 
         logger.info(
-            f"🎯 Match encontrado: id={mejor['id']} "
-            f"(similitud={mejor_sim:.3f}, estado={mejor['estado']})"
+            f"🎯 Match seguro: id={mejor['id']} "
+            f"(similitud={mejor_sim:.3f}, estado={mejor['estado']}, "
+            f"motivo={motivo})"
         )
         return {
             "id": mejor["id"],
@@ -209,6 +356,9 @@ class EmbeddingMatcher:
             "estado": mejor["estado"],
             "prompt": mejor["prompt_nuevo"],
             "n_usos": mejor["n_usos"],
+            "prompt_original": mejor.get("prompt_original") or "",
+            "firma": mejor.get("firma") or "",
+            "motivo": motivo,
         }
 
     # ------------------------------------------------------------
@@ -226,7 +376,7 @@ class EmbeddingMatcher:
                 placeholders = ",".join("?" * len(estados_validos))
                 cursor = conn.execute(
                     f"""SELECT id, embedding, embedding_model, estado,
-                               n_usos, prompt_nuevo
+                               n_usos, prompt_nuevo, prompt_original, firma
                         FROM prompts_reescritos
                         WHERE embedding IS NOT NULL
                           AND embedding_model = ?
