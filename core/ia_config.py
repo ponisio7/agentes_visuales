@@ -373,7 +373,12 @@ def probar_conexion(
         return False, "No hay API key configurada."
 
     url_base = (base_url or leer_configuracion()["base_url"]).rstrip("/")
-    url = f"{url_base}/v1/models"
+    # Acepta tanto la raíz del proveedor (https://api.deepseek.com) como una
+    # base ya versionada (http://localhost:8000/v1) de un servidor local.
+    if url_base.endswith("/v1"):
+        url = f"{url_base}/models"
+    else:
+        url = f"{url_base}/v1/models"
 
     try:
         import requests

@@ -190,3 +190,37 @@ def test_builder_usa_el_modelo_configurado(config_temporal, monkeypatch):
     agentes = builder.generar_agentes(plan)
 
     assert agentes[0].modelo_llm == MODELO_FLASH
+
+
+# ============================================================
+# SERVIDOR LOCAL COMPATIBLE (H12)
+# ============================================================
+
+def test_probar_conexion_usa_base_url_custom(monkeypatch, config_temporal):
+    import requests
+
+    capturado = {}
+
+    class _Respuesta:
+        status_code = 200
+
+    def _get(url, headers=None, timeout=None):
+        capturado["url"] = url
+        capturado["auth"] = (headers or {}).get("Authorization")
+        return _Respuesta()
+
+    monkeypatch.setattr(requests, "get", _get)
+
+    ok, _ = ia_config.probar_conexion(
+        "local", "http://localhost:8000/v1", timeout=2
+    )
+
+    assert ok is True
+    assert capturado["url"] == "http://localhost:8000/v1/models"
+    assert capturado["auth"] == "Bearer local"
+
+
+def test_herramienta_servidor_local_importable():
+    import tools.comprobar_servidor_local as herramienta
+
+    assert callable(herramienta.main)
