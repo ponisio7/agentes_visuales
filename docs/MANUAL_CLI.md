@@ -1,12 +1,12 @@
 # Manual de la CLI de Agentes Visuales
 
 Guía de uso de `main.py` en línea de comandos, incluidos los modos
-headless (`run`, `list-agents`, `serve`) que ejecutan el mismo pipeline
-que la GUI sin abrir ventana.
+headless (`run`, `list-agents`, `serve`) y el entorno web (`web`) que
+ejecutan el mismo pipeline que la GUI sin abrir ventana.
 
-- **Versión del documento**: v3.2.1
+- **Versión del documento**: v3.3.0
 - **Punto de entrada**: `main.py`
-- **Rama**: `harness/mejora-main`
+- **Rama**: `harness/fix-all-flask-web`
 
 ---
 
@@ -63,6 +63,7 @@ python main.py [OPCIONES GLOBALES] [COMANDO] [OPCIONES DEL COMANDO]
 | `run` | Ejecuta una tarea de principio a fin, sin GUI |
 | `list-agents` | Lista los tipos de agente disponibles |
 | `serve` | Servidor HTTP con `POST /run` para otras apps |
+| `web` | Entorno web Flask (`/`, `/api/run`, `/api/health`, `/api/agents`) |
 
 ### Opciones globales
 
@@ -267,7 +268,7 @@ Salida `--json` (ejemplo real, recortado):
 ## 6. `list-agents` — catálogo de agentes
 
 ```
-python main.py list-agents [--json]
+python main.py list-agents [--json] [--quiet]
 ```
 
 Lee el catálogo real de `core.agent` (`TipoAgente` + `TIPOS_AGENTES_CONFIG`).
@@ -293,11 +294,44 @@ Programación:
 ```
 
 ```bash
-$ python main.py list-agents --json
-{"ok": true, "agentes": [{"nombre": "File", "categoria": "Archivos",
- "descripcion": "Operaciones con archivos del sistema",
- "campos_requeridos": ["operacion_file"]}, ...]}
+$ python main.py list-agents --json | python -m json.tool
+{
+  "ok": true,
+  "agentes": [
+    {
+      "nombre": "File",
+      "categoria": "Archivos",
+      "descripcion": "Operaciones con archivos del sistema",
+      "campos_requeridos": ["operacion_file"]
+    },
+    {
+      "nombre": "LLM",
+      "categoria": "IA",
+      "descripcion": "Llama a modelos de lenguaje (DeepSeek)",
+      "campos_requeridos": ["prompt_llm", "modelo_llm"]
+    },
+    {
+      "nombre": "Search",
+      "categoria": "Búsqueda",
+      "descripcion": "",
+      "campos_requeridos": []
+    }
+  ]
+}
 ```
+
+Cada entrada del catálogo tiene **siempre** los cuatro campos:
+
+| Campo | Tipo | Descripción |
+|---|---|---|
+| `nombre` | string | Nombre del tipo de agente (`File`, `LLM`, `Python`…) |
+| `categoria` | string | Categoría para agrupar en la UI (`Archivos`, `IA`…) |
+| `descripcion` | string | Descripción del tipo (puede ser `""`) |
+| `campos_requeridos` | array de strings | Campos obligatorios de configuración; `[]` si no declara ninguno |
+
+`campos_requeridos` se calcula con `obtener_config_tipo()` para cada
+`TipoAgente`; es el mismo formato que sirve `GET /api/agents` en el entorno
+web (§7.bis).
 
 Salida: `0` si hay catálogo; `4` si no se puede cargar o está vacío (antes
 devolvía una lista vacía con `ok: true` y exit 0).
@@ -311,13 +345,14 @@ devolvía una lista vacía con `ok: true` y exit 0).
 ## 7. `serve` — servidor HTTP
 
 ```
-python main.py serve [--host HOST] [--port PUERTO]
+python main.py serve [--host HOST] [--port PUERTO] [--quiet]
 ```
 
 | Opción | Por defecto |
 |---|---|
 | `--host` | `127.0.0.1` |
 | `--port` | `8765` |
+| `--quiet`, `-q` | *(desactivado)* — solo errores por stderr |
 
 El servidor HTTP corre en un hilo y las ejecuciones se despachan al hilo
 principal (el único con bucle de eventos Qt, que es lo que necesita el
@@ -356,7 +391,7 @@ En otra terminal:
 ```bash
 # Salud
 curl -s http://127.0.0.1:8765/health
-# {"ok": true, "version": "3.2.1"}
+# {"ok": true, "version": "3.3.0"}
 
 # Ejecutar una tarea
 curl -s -X POST http://127.0.0.1:8765/run \
@@ -375,6 +410,102 @@ Ctrl-C detiene el servidor (sale con `130`).
 espera el cliente HTTP por el trabajo; el `timeout` del cuerpo JSON limita
 la ejecución en sí. Si no se indica ninguno, la petición espera sin límite.
 
+**Qué significa un `504` (y qué no)**: el `504` lo devuelve el servidor
+cuando se agota el `--timeout` **global** esperando el resultado; **no
+cancela la ejecución interna**. El `Scheduler` sigue ejecutando el plan en
+el hilo principal hasta el final (o hasta el `timeout` del cuerpo JSON) y,
+si `aprender` está activo, la ejecución se registra igualmente en
+`agent_history.db` con su `ejecucion_id`. No hay endpoint de cancelación:
+para cortar una ejecución en curso, detén el servidor o usa el `timeout`
+del cuerpo JSON. Sube `--timeout` si tus tareas tardan más que ese valor.
+
+---
+
+## 7.bis. `web` — servidor Flask
+
+```
+python main.py web [--host HOST] [--port PUERTO] [--timeout SEGUNDOS] [--quiet]
+```
+
+| Opción | Por defecto |
+|---|---|
+| `--host` | `127.0.0.1` |
+| `--port` | `5000` |
+| `--timeout` | *(sin límite)* — espera máxima del cliente HTTP |
+| `--quiet`, `-q` | *(desactivado)* — solo errores por stderr |
+
+Arranca el entorno web Flask. **Reutiliza el mismo pipeline** que `run` y
+`serve`: `_ejecutar_pipeline()` para ejecutar, `_listar_agentes()` para el
+catálogo, `_asegurar_qt()` para la `QCoreApplication`, `main.__version__`
+para `/api/health` y `obtener_llm_client_compartido()` (singleton) para el
+LLM. No hay un segundo pipeline ni un `LLMClient()` nuevo por petición.
+
+La integración es **Qt-safe**: Flask (werkzeug) atiende en un hilo
+secundario y solo *encola* los trabajos en una `queue.Queue` compartida;
+el hilo principal de Qt los consume con `QTimer.singleShot(25, …)` porque
+el `Scheduler` es un `QObject` y necesita el bucle de eventos del hilo
+principal. Cada trabajo lleva su propio `threading.Event` para que el
+request HTTP espere el resultado sin bloquear a Qt, y las conexiones de
+señales de este flujo usan `Qt.ConnectionType.QueuedConnection` (mismo
+patrón que `simple_main_window.py` tras el fix del segfault por hilos).
+
+### Endpoints
+
+| Método | Ruta | Descripción |
+|---|---|---|
+| `GET` | `/` | Formulario HTML (prompt, `max_pasos`, `timeout` de la tarea, `agent`, `aprender`) |
+| `POST` | `/api/run` | Ejecuta el pipeline; devuelve el mismo JSON que `run --json` (§5.3) |
+| `GET` | `/api/health` | `{ok, version}` |
+| `GET` | `/api/agents` | Catálogo de agentes (mismo formato que `list-agents --json`, §6) |
+
+`POST /api/run` acepta el mismo JSON de tarea que `--file`/`--stdin`
+(§5.1).
+
+### Códigos HTTP
+
+| Código | Cuándo |
+|---|---|
+| `200` | Ejecución terminada con `ok: true` |
+| `400` | El cuerpo no es un objeto JSON o falta `prompt` |
+| `404` | Ruta desconocida |
+| `500` | La ejecución falló (`ok: false`) o hubo una excepción |
+| `504` | Se agotó el `--timeout` global esperando el resultado (no cancela la ejecución interna, ver §7) |
+
+### Ejemplo
+
+```bash
+python main.py web --port 5000
+# 🌐 Web en http://127.0.0.1:5000/ (Ctrl-C para parar)
+```
+
+Abre el formulario en el navegador o usa la API:
+
+```bash
+# Salud
+curl -s http://127.0.0.1:5000/api/health | jq
+# {"ok": true, "version": "3.3.0"}
+
+# Catálogo de agentes (mismo formato que list-agents --json)
+curl -s http://127.0.0.1:5000/api/agents | jq '.agentes | length'
+# 8
+
+# Ejecutar una tarea
+curl -s -X POST http://127.0.0.1:5000/api/run \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"di hola","aprender":false}' | jq .ok
+# true
+
+# Error de entrada
+curl -s -X POST http://127.0.0.1:5000/api/run -d 'no soy json'
+# {"ok": false, "error": "el cuerpo debe ser un objeto JSON"}
+```
+
+Ctrl-C detiene el servidor (sale con `130`).
+
+Si Flask no está instalado, `web` **no arranca**: sale con `3`
+(`EXIT_ENV_ERROR`) e imprime `pip install flask`. Desde v3.3.0 Flask entra
+en `requirements.txt` (`flask>=3.0`).
+
 ---
 
 ## 8. `--check-env` y `--version`
@@ -382,7 +513,7 @@ la ejecución en sí. Si no se indica ninguno, la petición espera sin límite.
 ```bash
 python main.py --check-env                 # ping con timeout 5 s
 python main.py --check-env --timeout 15    # red lenta
-python main.py --version                   # agentes-visuales 3.2.1
+python main.py --version                   # agentes-visuales 3.3.0
 ```
 
 Salida típica de `--check-env`:
@@ -449,19 +580,24 @@ nohup python main.py serve --host 127.0.0.1 --port 8765 > logs/serve.log 2>&1 &
 | La ejecución se queda colgada | No hay `--timeout`; pásalo, o Ctrl-C (sale con `130`) |
 | `❌ No se pudo abrir 127.0.0.1:8765` | Puerto ocupado: usa `--port` |
 | Los agentes escriben ficheros en un sitio raro | Las rutas son relativas al `cwd`; ejecuta desde la raíz del proyecto |
-| Ruido `weasyprint`/`INFO` en stderr | Añade `--quiet` (solo afecta a `run`) |
+| Ruido `weasyprint`/`INFO` en stderr | Añade `--quiet` (disponible en `run`, `list-agents`, `serve` y `web`) |
+| `❌ Flask no está instalado` al usar `web` (exit `3`) | El subcomando `web` necesita Flask: `pip install flask` (está en `requirements.txt` desde v3.3.0) |
+| `POST /api/run` devuelve `504` | Se agotó el `--timeout` global del servidor. Sube `--timeout` al arrancar `web`: **el 504 no cancela la ejecución**, que sigue y se registra en `agent_history.db` (ver §7) |
+| `⚠️ El LLM no devolvió JSON válido en la parte 1/1` | Era el bug B1: el preámbulo anti-alucinación del `ProblemSolver` menciona JSON aunque la tarea sea de texto plano, y el ejecutor exigía JSON. Corregido en v3.3.0 (`tarea_pide_json()`); si reaparece con un prompt propio, pide el JSON explícitamente en la `TAREA:` |
 
 ---
 
 ## 11. Relación con la GUI
 
-| | GUI | `run` / `serve` |
-|---|---|---|
-| Plan + ejecución | Sí | Sí (mismo `ProblemSolver` + `Scheduler`) |
-| Interfaz | Qt Widgets | Ninguna (solo `QtCore`) |
-| Aprendizaje / Plan B | Sí | Sí, salvo `--no-aprender` |
-| Interrupción | Botón detener | Ctrl-C |
-| Feedback interactivo | Sí | No |
-| Apto para CI/servidor | No | Sí |
+| | GUI | `run` / `serve` | `web` |
+|---|---|---|---|
+| Plan + ejecución | Sí | Sí (mismo `ProblemSolver` + `Scheduler`) | Sí (mismo pipeline) |
+| Interfaz | Qt Widgets | Ninguna (solo `QtCore`) | HTML en el navegador |
+| Aprendizaje / Plan B | Sí | Sí, salvo `--no-aprender` | Sí, salvo `"aprender": false` |
+| Interrupción | Botón detener | Ctrl-C | Ctrl-C |
+| Feedback interactivo | Sí | No | Formulario HTML |
+| Apto para CI/servidor | No | Sí | Sí |
 
-`serve` es, en la práctica, `run` expuesto por HTTP.
+`serve` es, en la práctica, `run` expuesto por HTTP. `web` añade el
+formulario HTML y los endpoints `/api/health` y `/api/agents` reutilizando
+el mismo pipeline (§7.bis).

@@ -3,7 +3,8 @@
 Tests del LLMExecutor: troceado de prompts grandes, fusión de respuestas y
 detección de respuestas inutilizables.
 
-No llaman a la API: se sustituyen `openai.OpenAI` y `LLMClient` por dobles.
+No llaman a la API: se sustituye ``obtener_llm_client_compartido`` por un
+doble de ``LLMClient`` que implementa ``completar()``.
 """
 
 from types import SimpleNamespace
@@ -12,49 +13,50 @@ import pytest
 
 from core.agent import Agente, TipoAgente
 from core.executors.llm_executor import LLMExecutor, fusionar_json, json_util
+from core.llm_client import LLMResultado
 
 
-class _Respuesta:
-    def __init__(self, contenido, finish_reason="stop"):
-        self.choices = [SimpleNamespace(
-            message=SimpleNamespace(content=contenido, reasoning_content=None),
-            finish_reason=finish_reason,
-        )]
-        self.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5, total_tokens=15)
+class _LLMFalso:
+    """Doble de ``LLMClient`` con la misma interfaz que usa el ejecutor.
 
+    B1 (v3.3.0): el ejecutor no crea un ``OpenAI()`` por llamada; pide el
+    cliente compartido y llama a ``LLMClient.completar()`` pasando
+    ``reasoning_effort``/``thinking_enabled`` del agente. El doble se engancha
+    a ese seam y registra mensajes y llamadas completas.
+    """
 
-class _Completions:
     def __init__(self, estado):
         self.estado = estado
+        self.api_key = "clave-falsa"
+        self.base_url = "http://falso"
+        self.reasoning_effort = "high"
+        self.thinking_enabled = True
 
-    def create(self, **kwargs):
-        self.estado.setdefault("mensajes", []).append(kwargs.get("messages"))
+    def completar(self, mensajes, **kwargs):
+        self.estado.setdefault("mensajes", []).append(mensajes)
+        self.estado.setdefault("llamadas", []).append(kwargs)
         idx = len(self.estado["mensajes"]) - 1
         respuestas = self.estado["respuestas"]
         contenido = respuestas[min(idx, len(respuestas) - 1)]
-        return _Respuesta(contenido, self.estado.get("finish_reason", "stop"))
-
-
-class _OpenAI:
-    def __init__(self, estado):
-        self.estado = estado
-
-    @property
-    def chat(self):
-        return SimpleNamespace(completions=_Completions(self.estado))
+        return LLMResultado(
+            contenido=contenido,
+            razonamiento=None,
+            finish_reason=self.estado.get("finish_reason", "stop"),
+            uso=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=5, total_tokens=15
+            ),
+            modelo=kwargs.get("model"),
+        )
 
 
 @pytest.fixture
 def api_falsa(monkeypatch):
     estado = {"respuestas": [""], "finish_reason": "stop"}
-    import openai
-
     from core import llm_client as modulo_cliente
 
-    monkeypatch.setattr(openai, "OpenAI", lambda **kw: _OpenAI(estado))
     monkeypatch.setattr(
-        modulo_cliente, "LLMClient",
-        lambda: SimpleNamespace(api_key="clave-falsa", base_url="http://falso"),
+        modulo_cliente, "obtener_llm_client_compartido",
+        lambda *a, **kw: _LLMFalso(estado),
     )
     return estado
 
@@ -190,3 +192,64 @@ def test_timeout_crece_con_el_prompt():
     assert timeout_para_prompt("x" * 1000) == 60
     assert timeout_para_prompt("x" * 32000) > 60
     assert timeout_para_prompt("x" * 32000, SimpleNamespace(timeout_llm=200)) == 200
+
+
+# ---------------------------------------------------------------------------
+# B1 (v3.3.0): propagación de thinking/reasoning y detección de la TAREA
+# ---------------------------------------------------------------------------
+
+def test_b1_propaga_reasoning_y_thinking_del_agente(api_falsa):
+    """La petición lleva los valores del AGENTE, no los del cliente (B1)."""
+    api_falsa["respuestas"] = ["Había una vez..."]
+    agente = _agente(
+        "Escribe un cuento corto",
+        reasoning_effort_llm="low",
+        thinking_enabled_llm=False,
+    )
+
+    ok, _, _ = LLMExecutor.ejecutar(agente, {})
+
+    assert ok is True
+    llamada = api_falsa["llamadas"][0]
+    assert llamada["reasoning_effort"] == "low"
+    assert llamada["thinking_enabled"] is False
+
+
+def test_b1_tarea_texto_plano_ignora_el_json_del_preambulo(api_falsa):
+    """El preámbulo del builder menciona JSON; la TAREA es texto plano (B1).
+
+    Antes, ``"json" in prompt`` forzaba el parseo JSON y la ejecución fallaba
+    con "El LLM no devolvió JSON válido en la parte 1/1".
+    """
+    api_falsa["respuestas"] = ["hola"]
+
+    agente = _agente(
+        "INSTRUCCIONES CRÍTICAS:\n"
+        "5. Devuelve la respuesta como JSON válido y COMPLETO (sin truncar).\n"
+        "\n"
+        "TAREA:\n"
+        "Responde únicamente con la palabra 'hola'."
+    )
+
+    ok, _, resultado = LLMExecutor.ejecutar(agente, {})
+
+    assert ok is True
+    assert resultado["respuesta"] == "hola"
+    assert resultado["json"] is None
+
+
+def test_b1_tarea_pide_json():
+    from core.executors.llm_executor import tarea_pide_json
+
+    preambulo = (
+        "INSTRUCCIONES CRÍTICAS:\n"
+        "5. Devuelve la respuesta como JSON válido y COMPLETO (sin truncar).\n"
+        "\n"
+        "TAREA:\n"
+    )
+    assert tarea_pide_json(preambulo + "Responde solo con 'hola'.") is False
+    assert tarea_pide_json(preambulo + "Devuelve un JSON con la lista.") is True
+    # Sin marcador TAREA se analiza el prompt completo (sin cambios).
+    assert tarea_pide_json("Devuelve un JSON") is True
+    assert tarea_pide_json("Escribe un cuento") is False
+    assert tarea_pide_json("") is False

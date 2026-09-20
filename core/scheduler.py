@@ -136,6 +136,11 @@ class Scheduler(QObject):
         self.ejecutando = False
         self.pausado = False
         self._terminado_notificado = False
+        # ⛔ B2: True desde la primera llamada a ``detener()``. Lo consulta
+        # ``_intentar_plan_b`` para no volver a arrancar (submit) un plan
+        # después de un shutdown (executor o intérprete). ``iniciar()`` lo
+        # vuelve a poner a False porque es un arranque explícito.
+        self._detenido = False
         self._cancelados: set[str] = set()
 
         # ── Seguimiento de loops ──
@@ -935,6 +940,17 @@ class Scheduler(QObject):
         el turno (``_plan_b_en_progreso``) ya viene reservado y aquí se hace
         la llamada al LLM sin el lock del scheduler.
         """
+        # ⛔ B2: si el scheduler ya se detuvo, no se arranca otro plan. Sin
+        # este guard, un Plan B en vuelo durante el cierre del proceso llegaba
+        # a ``iniciar()`` y fallaba con "cannot schedule new futures after
+        # interpreter shutdown" (RuntimeError en scheduler.py).
+        if self._detenido:
+            logger.info(
+                "Plan B descartado: el scheduler está detenido (_detenido=True)"
+            )
+            self._plan_b_en_progreso = False
+            return False
+
         try:
             logger.info(
                 f"🔧 [Plan B #{self._plan_b_intentos + 1}] "
@@ -1363,6 +1379,9 @@ class Scheduler(QObject):
             return
 
         with self._lock:
+            # Arranque explícito: se limpia la marca de parada de B2 para que
+            # un Plan B posterior vuelva a estar permitido.
+            self._detenido = False
             self.ejecutando = True
             self.pausado = False
             self._terminado_notificado = False
@@ -1402,9 +1421,19 @@ class Scheduler(QObject):
     def detener(self):
         """
         Detiene la ejecución de forma segura con cancelación real de workers.
+
+        Idempotente: la primera llamada marca ``_detenido`` (para que
+        ``_intentar_plan_b`` no vuelva a arrancar) y sustituye el executor
+        por uno nuevo; las siguientes no hacen nada si ya no queda trabajo.
         """
         # ── Fase 1: Cancelar tokens activos ──
         with self._lock:
+            # ⛔ B2: marca de parada consultada por ``_intentar_plan_b``.
+            ya_detenido = self._detenido
+            self._detenido = True
+            if ya_detenido and not self.ejecutando and not self.running:
+                return
+
             self.ejecutando = False
             self.pausado = False
 
@@ -1450,7 +1479,16 @@ class Scheduler(QObject):
         self.estado_cambiado.emit(False)
 
         # ── Fase 3: Shutdown del executor (FUERA del lock) ──
-        old_executor.shutdown(wait=False, cancel_futures=True)
+        # ``wait=True`` garantiza que al volver no queda ningún worker capaz
+        # de hacer ``submit`` (era el origen de B2: "cannot schedule new
+        # futures after interpreter shutdown"). Si ``detener()`` se invoca
+        # desde un worker de ESE executor (lo hace ``_intentar_plan_b``), un
+        # ``join`` del hilo actual lanzaría "cannot join current thread": en
+        # ese caso se cierra sin esperar.
+        es_worker_propio = threading.current_thread() in tuple(
+            getattr(old_executor, "_threads", ())
+        )
+        old_executor.shutdown(wait=not es_worker_propio, cancel_futures=True)
 
         # ── Fase 4: Verificar terminado ──
         with self._lock:

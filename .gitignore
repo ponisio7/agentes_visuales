@@ -88,3 +88,14 @@ images/
 .~lock.*#
 *.lock
 sqlite3
+
+# ── Documentación versionable (excepciones a *.md) ──
+!MANUAL_CLI.md
+!CHANGELOG.md
+!CONTRIBUTING.md
+!docs/**/*.md
+
+# ── Plantillas del entorno web (excepción a *.html) ──
+# Sin esta excepción, `*.html` (outputs de agentes) dejaría fuera
+# web/templates/index.html, que es código de la aplicación.
+!web/templates/*.html

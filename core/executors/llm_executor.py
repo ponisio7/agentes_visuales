@@ -51,6 +51,28 @@ def json_util(datos) -> bool:
     return not es_valor_placeholder(datos)
 
 
+# ``ProblemSolver`` antepone a TODOS los prompts LLM un preámbulo
+# anti-alucinación que incluye, en su punto 5, "Devuelve la respuesta como
+# JSON válido y COMPLETO (sin truncar)" — aunque la tarea real sea texto plano
+# ("responde únicamente con la palabra 'hola'"). Buscar "json" en el prompt
+# completo daba ``pide_json=True`` para esas tareas y el ejecutor fallaba con
+# "El LLM no devolvió JSON válido en la parte 1/1" (B1) cuando el modelo
+# respondía correctamente con texto plano.
+_MARCADOR_TAREA = "TAREA:"
+
+
+def tarea_pide_json(prompt: str) -> bool:
+    """¿La TAREA del prompt pide JSON (ignorando el preámbulo del builder)?
+
+    Si el prompt no trae el marcador ``TAREA:`` se analiza completo, para no
+    cambiar el comportamiento de los prompts que no pasan por el builder.
+    """
+    texto = prompt or ""
+    if _MARCADOR_TAREA in texto:
+        texto = texto.split(_MARCADOR_TAREA, 1)[1]
+    return "json" in texto.lower()
+
+
 def _fusionar_valor(a, b):
     """Combina dos valores del mismo campo de dos respuestas."""
     a_vacio, b_vacio = es_valor_placeholder(a), es_valor_placeholder(b)
@@ -196,7 +218,7 @@ class LLMExecutor:
     def _llamar_una_vez(
         cls,
         agente,
-        client,
+        llm,
         modelo: str,
         contenido_usuario: str,
         contexto: dict,
@@ -239,25 +261,24 @@ class LLMExecutor:
                     )
                 )
 
-        response = None
+        resultado = None
         error = None
         completed = threading.Event()
 
         def hacer_llamada():
-            nonlocal response, error
+            nonlocal resultado, error
             try:
-                response = client.chat.completions.create(
+                # ✅ B1: la petición sale por ``LLMClient.completar()`` con
+                # reasoning_effort/thinking_enabled del AGENTE como parámetros
+                # explícitos (no se heredan los defaults del cliente
+                # compartido: high + thinking activado).
+                resultado = llm.completar(
+                    messages,
                     model=modelo,
-                    messages=messages,
                     temperature=temperatura,
                     max_tokens=max_tokens,
                     reasoning_effort=reasoning_effort,
-                    stream=False,
-                    extra_body={
-                        "thinking": {
-                            "type": "enabled" if thinking_enabled else "disabled"
-                        }
-                    },
+                    thinking_enabled=thinking_enabled,
                     timeout=timeout_llamada,
                 )
             except Exception as e:
@@ -283,21 +304,16 @@ class LLMExecutor:
 
         if error:
             raise error
-        if response is None or not response.choices:
+        if resultado is None:
             raise RuntimeError("No se recibió respuesta de la API")
 
-        eleccion = response.choices[0]
-        respuesta = eleccion.message.content or ""
+        respuesta = resultado.contenido or ""
         elapsed = time.time() - start_time
-        finish_reason = getattr(eleccion, "finish_reason", None)
-        tokens = {
-            'prompt': response.usage.prompt_tokens if response.usage else 0,
-            'completion': response.usage.completion_tokens if response.usage else 0,
-            'total': response.usage.total_tokens if response.usage else 0,
-        }
+        finish_reason = resultado.finish_reason
+        tokens = resultado.tokens()
 
         if not respuesta.strip():
-            reasoning = getattr(eleccion.message, "reasoning_content", None)
+            reasoning = resultado.razonamiento
             if reasoning:
                 return False, (
                     "⚠️ LLM solo devolvió razonamiento (no respuesta final). "
@@ -346,10 +362,14 @@ class LLMExecutor:
         se_sustituyo_algo = prompt_procesado != agente.prompt_llm
 
         try:
-            from core.llm_client import LLMClient
-            _cliente_llm = LLMClient()
+            # ✅ B1: usar el cliente COMPARTIDO del proceso (singleton de
+            # ``core.llm_client``). Antes se instanciaba ``LLMClient()`` por
+            # agente, lo que construía un ``OpenAI``/``httpx.Client`` nuevos
+            # en cada ejecución (patrón conocido de corrupción de heap en
+            # procesos largos; ver comentario del singleton en llm_client.py).
+            from core.llm_client import obtener_llm_client_compartido
+            _cliente_llm = obtener_llm_client_compartido()
             api_key = _cliente_llm.api_key
-            base_url = _cliente_llm.base_url
         except Exception as e:
             cls.actualizar_progreso(agente, 100, "Error cargando config LLM")
             return False, (
@@ -365,12 +385,23 @@ class LLMExecutor:
                 "Prueba: python main.py --check-env"
             ), {'error': 'missing_api_key'}
 
-        modelo = getattr(agente, 'modelo_llm', 'deepseek-v4-pro')
-        reasoning_effort = getattr(agente, 'reasoning_effort_llm', 'low') or 'low'
-        thinking_enabled = bool(getattr(agente, 'thinking_enabled_llm', False))
+        # ✅ B1: TODOS los parámetros de la llamada salen del agente, en un
+        # único sitio (``Agente.parametros_llm``). El cliente compartido se
+        # crea con los valores por defecto (reasoning_effort="high",
+        # thinking_enabled=True); si no se pasan explícitamente, la petición
+        # los heredaría del cliente y no del agente ("low"/False).
+        parametros = agente.parametros_llm()
+        modelo = parametros["modelo"] or "deepseek-v4-pro"
+        reasoning_effort = parametros["reasoning_effort"] or "low"
+        thinking_enabled = bool(parametros["thinking_enabled"])
+        logger.info(
+            f"[{agente.nombre}] LLM: modelo={modelo} "
+            f"reasoning_effort={reasoning_effort} "
+            f"thinking={'enabled' if thinking_enabled else 'disabled'}"
+        )
 
         max_tokens_efectivos = int(
-            getattr(agente, 'max_tokens_llm', MIN_TOKENS_SEGUROS) or MIN_TOKENS_SEGUROS
+            parametros["max_tokens"] or MIN_TOKENS_SEGUROS
         )
         if max_tokens_efectivos < MIN_TOKENS_SEGUROS:
             logger.warning(
@@ -387,8 +418,6 @@ class LLMExecutor:
         try:
             rate_limiter = get_rate_limiter()
             rate_limiter.wait()
-
-            client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
             chunks = planificar_chunks(agente.prompt_llm, variables)
             if chunks:
@@ -407,7 +436,7 @@ class LLMExecutor:
             else:
                 llamadas = [prompt_procesado]
 
-            pide_json = "json" in (agente.prompt_llm or "").lower()
+            pide_json = tarea_pide_json(agente.prompt_llm)
 
             respuestas: list[str] = []
             json_fusionado = None
@@ -423,7 +452,7 @@ class LLMExecutor:
                 )
                 ok, mensaje, datos = cls._llamar_una_vez(
                     agente=agente,
-                    client=client,
+                    llm=_cliente_llm,
                     modelo=modelo,
                     contenido_usuario=contenido,
                     contexto=contexto,

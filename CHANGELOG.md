@@ -1,5 +1,53 @@
 # Changelog
 
+## [v3.3.0] — 2026-09-20
+
+Release de correcciones de la CLI headless y del nuevo entorno web Flask.
+Ver `docs/MANUAL_CLI.md` (v3.3.0).
+
+### Corregido
+- **B1 — LLMAgent propaga thinking/reasoning**: el ejecutor LLM tomaba
+  `reasoning_effort`/`thinking_enabled` del agente (`low`/`False`) pero
+  creaba un `LLMClient()` nuevo por ejecución y un `OpenAI()` por llamada.
+  Ahora usa el cliente compartido (`obtener_llm_client_compartido()`) y
+  propaga explícitamente los valores del agente en cada petición.
+  Causa raíz del síntoma "El LLM no devolvió JSON válido en la parte 1/1":
+  el preámbulo anti-alucinación del `ProblemSolver` menciona "JSON" en
+  TODOS los prompts (también en tareas de texto plano) y el ejecutor exigía
+  JSON por esa palabra. La detección (`tarea_pide_json()`) analiza ahora
+  solo la sección `TAREA:`.
+- **B2 — Plan B tras `detener()`**: `_intentar_plan_b()` comprueba
+  `_detenido` antes de arrancar y `Scheduler.detener()` cierra el executor
+  con `shutdown(wait=True, cancel_futures=True)` (sin esperar cuando se
+  invoca desde un worker de ese mismo executor, para no hacer `join` del
+  hilo actual). Evita `RuntimeError: cannot schedule new futures after
+  interpreter shutdown`.
+- **B3 — `--quiet` en `serve` y `list-agents`**: `--quiet`/`-q` estaba solo
+  en `run`; ahora también en `serve`, `list-agents` y `web`, y se propaga a
+  `_configurar_logging(quiet=...)`.
+
+### Añadido
+- **Subcomando `web`** (Flask): `GET /` (formulario), `POST /api/run`,
+  `GET /api/health`, `GET /api/agents`. Reutiliza `_ejecutar_pipeline`,
+  `_listar_agentes`, `_asegurar_qt`, `main.__version__` y
+  `obtener_llm_client_compartido()`. Qt-safe vía `queue.Queue` +
+  `QTimer.singleShot(25, …)` + `threading.Event` por trabajo y
+  `Qt.ConnectionType.QueuedConnection`.
+- `requirements.txt`: `flask>=3.0` (si falta, `web` sale con `3` y pide
+  `pip install flask`).
+- `docs/MANUAL_CLI.md` v3.3.0: §7.bis (`web`), §3 (tabla de comandos), §6
+  (ejemplo JSON completo con `campos_requeridos`), §7 (el `504` no cancela
+  la ejecución interna), §10 (3 problemas nuevos) y §11 (columna `web`).
+- `.gitignore`: excepciones a `*.md` para `MANUAL_CLI.md`, `CHANGELOG.md`,
+  `CONTRIBUTING.md` y `docs/**/*.md`, y a `*.html` para
+  `web/templates/*.html` (la plantilla es código, no un output de agente).
+
+### Notas
+- Versión de `pyproject.toml` subida a `3.3.0` (única fuente de verdad de
+  `main.__version__`, que sirven `/api/health` y `--version`).
+- Sin cambios en los códigos de salida (0/1/2/3/4/130) ni en el contrato
+  stdout/stderr de `run`.
+
 ## [v3.2.1] — 2026-09-20
 
 Hotfix de una sola regla del validador. Ver `HARNESS_REPORT_v3.2.1.md`.

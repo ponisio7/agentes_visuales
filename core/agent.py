@@ -686,6 +686,25 @@ class Agente:
             )
 
         return True, ""
+
+    def parametros_llm(self) -> dict[str, Any]:
+        """Parámetros de la llamada al LLM, tomados de ESTE agente (B1).
+
+        El cliente compartido (``obtener_llm_client_compartido``) se crea con
+        los valores por defecto (``reasoning_effort="high"``,
+        ``thinking_enabled=True``). El ejecutor debe imponer los del agente en
+        cada petición: centralizarlos aquí evita que un ``getattr`` con el
+        valor equivocado (o los defaults del cliente) los pise y que un
+        agente configurado como ``low``/sin thinking acabe llamando en
+        ``high``/con thinking.
+        """
+        return {
+            "modelo": self.modelo_llm,
+            "temperatura": self.temperatura_llm,
+            "max_tokens": self.max_tokens_llm,
+            "reasoning_effort": self.reasoning_effort_llm,
+            "thinking_enabled": bool(self.thinking_enabled_llm),
+        }
     
     def _validar_file(self) -> tuple[bool, str]:
         """Valida configuración de File."""

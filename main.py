@@ -13,6 +13,7 @@ Uso desde otras apps (headless, sin GUI):
     cat tarea.json | agentes_visuales run --stdin
     agentes_visuales list-agents
     agentes_visuales serve --port 8765       # servidor HTTP (POST /run)
+    agentes_visuales web --port 5000         # entorno web Flask (GET /, /api/*)
 
 Contrato del modo ``run``:
     - stdout: SOLO el resultado (texto, o JSON con ``--json``)
@@ -125,6 +126,8 @@ def _construir_parser() -> argparse.ArgumentParser:
             "  agentes_visuales run --file tarea.json    # Desde fichero\n"
             "  cat tarea.json | agentes_visuales run --stdin\n"
             "  agentes_visuales list-agents\n"
+            "  agentes_visuales serve --port 8765        # HTTP (POST /run)\n"
+            "  agentes_visuales web --port 5000          # web Flask\n"
             "  agentes_visuales --version\n"
         ),
     )
@@ -145,7 +148,7 @@ def _construir_parser() -> argparse.ArgumentParser:
         help=(
             "Timeout por defecto en segundos. "
             f"check-env: {TIMEOUT_CHECK_ENV_DEFAULT} si no se indica. "
-            "run: sin límite si no se indica."
+            "run, serve y web: sin límite si no se indica."
         ),
     )
     parser.add_argument(
@@ -194,6 +197,8 @@ def _construir_parser() -> argparse.ArgumentParser:
     # --- list-agents ---------------------------------------------------------
     p_list = sub.add_parser("list-agents", help="Lista los tipos de agente disponibles.")
     p_list.add_argument("--json", action="store_true", help="Salida JSON.")
+    p_list.add_argument("--quiet", "-q", action="store_true",
+                        help="Silencia logs en stderr (solo errores).")
 
     # --- serve ---------------------------------------------------------------
     p_serve = sub.add_parser("serve", help="Servidor HTTP para otras apps (POST /run).")
@@ -201,6 +206,39 @@ def _construir_parser() -> argparse.ArgumentParser:
                          help="Interfaz de escucha (por defecto: 127.0.0.1).")
     p_serve.add_argument("--port", type=int, default=8765,
                          help="Puerto de escucha (por defecto: 8765).")
+    p_serve.add_argument("--quiet", "-q", action="store_true",
+                         help="Silencia logs en stderr (solo errores).")
+
+    # --- web -----------------------------------------------------------------
+    p_web = sub.add_parser(
+        "web",
+        help="Servidor web Flask (GET /, POST /api/run, GET /api/health, "
+             "GET /api/agents).",
+        description=(
+            "Levanta el entorno web Flask reutilizando el mismo pipeline que "
+            "la CLI y la GUI. Flask corre en un hilo y solo encola; el hilo "
+            "principal de Qt ejecuta los trabajos (Qt-safe)."
+        ),
+        epilog=(
+            "Ejemplos:\n"
+            "  agentes_visuales web                          # 127.0.0.1:5000\n"
+            "  agentes_visuales web --port 8080\n"
+            "  agentes_visuales web --host 0.0.0.0 --timeout 600\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_web.add_argument("--host", default="127.0.0.1",
+                       help="Interfaz de escucha (por defecto: 127.0.0.1).")
+    p_web.add_argument("--port", type=int, default=5000,
+                       help="Puerto de escucha (por defecto: 5000).")
+    # default=SUPPRESS: si no se pasa, NO pisa el --timeout global (mismo
+    # patrón que `run`), de modo que valen tanto `--timeout 30 web` como
+    # `web --timeout 30`.
+    p_web.add_argument("--timeout", type=_timeout_positivo, default=argparse.SUPPRESS,
+                       help="Espera máxima del cliente HTTP en segundos "
+                            "(por defecto: sin límite).")
+    p_web.add_argument("--quiet", "-q", action="store_true",
+                       help="Silencia logs en stderr (solo errores).")
 
     return parser
 
@@ -428,7 +466,7 @@ def _ejecutar_pipeline(
     Devuelve un dict serializable con el plan, el estado de cada agente, el
     texto del último resultado correcto y metadatos de la ejecución.
     """
-    from PyQt6.QtCore import QEventLoop, QTimer
+    from PyQt6.QtCore import QEventLoop, Qt, QTimer
 
     from core.agent import EstadoAgente
     from core.llm_client import obtener_llm_client_compartido
@@ -491,7 +529,13 @@ def _ejecutar_pipeline(
         estado["terminada"] = True
         bucle.quit()
 
-    scheduler.ejecucion_terminada.connect(_al_terminar)
+    # QueuedConnection explícita (mismo patrón que ui/simple_main_window.py
+    # tras el fix del segfault por hilos): la señal se entrega SIEMPRE a
+    # través del bucle de eventos del hilo principal, nunca directamente
+    # desde el worker del Scheduler.
+    scheduler.ejecucion_terminada.connect(
+        _al_terminar, Qt.ConnectionType.QueuedConnection
+    )
 
     # Latido: obliga al intérprete a ejecutar código cada 200 ms para que
     # Ctrl-C (SIGINT) no quede bloqueado dentro del bucle de eventos de Qt.
@@ -508,6 +552,12 @@ def _ejecutar_pipeline(
 
     log.info("Ejecutando %d agentes (max_concurrent=%d)", len(agentes), MAX_CONCURRENT_DEFAULT)
     scheduler.iniciar()
+
+    # Con QueuedConnection, una ejecución que termina durante iniciar() deja
+    # la señal encolada: hay que drenarla antes de decidir si entramos en
+    # bucle.exec(), o el chequeo de abajo vería "no terminada" y "no
+    # ejecutando" a la vez y abortaría una ejecución válida.
+    _asegurar_qt().processEvents()
 
     try:
         if not estado["terminada"]:
@@ -702,28 +752,40 @@ def _ejecutar_serve(args) -> int:
 
     app = _asegurar_qt()
     trabajos: queue.Queue = queue.Queue()
+    procesando = [False]
 
     def _procesar_trabajos():
-        while True:
-            try:
-                trabajo = trabajos.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                trabajo["resultado"] = _ejecutar_pipeline(
-                    trabajo["problema"],
-                    max_pasos=trabajo["max_pasos"],
-                    timeout=trabajo["timeout"],
-                    aprender=trabajo["aprender"],
-                    agente=trabajo["agente"],
-                    log=logging.getLogger("serve"),
-                )
-            except Exception as e:
-                logger.exception("Error ejecutando un trabajo de /run")
-                trabajo["error"] = str(e)
-            finally:
-                trabajo["evento"].set()
-        QTimer.singleShot(25, _procesar_trabajos)
+        # Anti-reentrada: _ejecutar_pipeline abre un QEventLoop anidado que
+        # vuelve a disparar este QTimer. Sin el guard, dos trabajos podrían
+        # solaparse (el Scheduler no es reentrante y la ejecución debe
+        # serializarse, como documenta el manual).
+        if procesando[0]:
+            QTimer.singleShot(25, _procesar_trabajos)
+            return
+        procesando[0] = True
+        try:
+            while True:
+                try:
+                    trabajo = trabajos.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    trabajo["resultado"] = _ejecutar_pipeline(
+                        trabajo["problema"],
+                        max_pasos=trabajo["max_pasos"],
+                        timeout=trabajo["timeout"],
+                        aprender=trabajo["aprender"],
+                        agente=trabajo["agente"],
+                        log=logging.getLogger("serve"),
+                    )
+                except Exception as e:
+                    logger.exception("Error ejecutando un trabajo de /run")
+                    trabajo["error"] = str(e)
+                finally:
+                    trabajo["evento"].set()
+        finally:
+            procesando[0] = False
+            QTimer.singleShot(25, _procesar_trabajos)
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f"agentes-visuales/{__version__}"
@@ -834,13 +896,114 @@ def _ejecutar_serve(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Modo headless: web (Flask)
+# ---------------------------------------------------------------------------
+def _ejecutar_web(args) -> int:
+    """Servidor web Flask: ``GET /``, ``POST /api/run``, ``GET /api/health``
+    y ``GET /api/agents``.
+
+    Igual que ``serve``: Flask (werkzeug) atiende en un hilo secundario y solo
+    ENCOLA; el hilo principal de Qt ejecuta los trabajos desde un ``QTimer``,
+    porque el ``Scheduler`` es un ``QObject`` y necesita ese bucle de eventos.
+    El pipeline NO se duplica: se reutiliza ``_ejecutar_pipeline``.
+    """
+    try:
+        import flask  # noqa: F401  (solo se comprueba que está instalado)
+    except ImportError:
+        print(
+            "❌ Flask no está instalado.\n"
+            "   Instálalo con: pip install flask",
+            file=sys.stderr,
+        )
+        return EXIT_ENV_ERROR
+
+    import signal
+    import threading
+
+    from PyQt6.QtCore import QTimer
+    from werkzeug.serving import make_server
+
+    from web.app import ColaTrabajos, create_app
+
+    app_qt = _asegurar_qt()
+    cola = ColaTrabajos()
+    procesando = [False]
+
+    def _procesar_trabajos():
+        # Anti-reentrada (ver _ejecutar_serve): el QEventLoop anidado de
+        # _ejecutar_pipeline vuelve a disparar este QTimer.
+        if procesando[0]:
+            QTimer.singleShot(25, _procesar_trabajos)
+            return
+        procesando[0] = True
+        try:
+            # Misma ruta que `run` y `serve`: no se duplica el pipeline.
+            cola.ejecutar_pendientes(
+                _ejecutar_pipeline, log=logging.getLogger("web")
+            )
+        finally:
+            procesando[0] = False
+            QTimer.singleShot(25, _procesar_trabajos)
+
+    flask_app = create_app(
+        cola,
+        timeout=args.timeout,
+        max_pasos_defecto=MAX_PASOS_DEFAULT,
+        version=__version__,
+    )
+
+    try:
+        servidor = make_server(args.host, args.port, flask_app, threaded=True)
+    except OSError as e:
+        print(f"❌ No se pudo abrir {args.host}:{args.port}: {e}", file=sys.stderr)
+        return EXIT_RUN_ERROR
+
+    hilo = threading.Thread(
+        target=servidor.serve_forever, name="flask-agentes", daemon=True
+    )
+    hilo.start()
+    print(
+        f"🌐 Web en http://{args.host}:{args.port}/ (Ctrl-C para parar)",
+        file=sys.stderr,
+    )
+    QTimer.singleShot(25, _procesar_trabajos)
+
+    # Ctrl-C: el bucle de Qt bloquea al intérprete, así que se instala un
+    # manejador de SIGINT que cierra la aplicación, más un latido que deja
+    # al intérprete ejecutarlo.
+    parada = {"manual": False}
+
+    def _parar(*_):
+        parada["manual"] = True
+        app_qt.quit()
+
+    sigint_anterior = signal.signal(signal.SIGINT, _parar)
+    latido = QTimer()
+    latido.timeout.connect(lambda: None)
+    latido.start(200)
+
+    try:
+        codigo = app_qt.exec()
+        if parada["manual"]:
+            print("\n⏹  Servidor web detenido.", file=sys.stderr)
+            return EXIT_USER_ABORT
+        return codigo
+    finally:
+        latido.stop()
+        signal.signal(signal.SIGINT, sigint_anterior)
+        servidor.shutdown()
+        servidor.server_close()
+        hilo.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 def main() -> int:
     parser = _construir_parser()
     args = parser.parse_args()
 
-    # Logging: silencioso si --quiet en run
+    # Logging: silencioso si --quiet (disponible en run, list-agents, serve y web)
     quiet = bool(getattr(args, "quiet", False))
     _configurar_logging(quiet=quiet)
 
@@ -855,6 +1018,8 @@ def main() -> int:
         return _ejecutar_list_agents(args)
     if args.comando == "serve":
         return _ejecutar_serve(args)
+    if args.comando == "web":
+        return _ejecutar_web(args)
 
     # Sin subcomando: GUI (comportamiento original)
     return _arrancar_gui()

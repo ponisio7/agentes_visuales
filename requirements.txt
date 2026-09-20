@@ -23,6 +23,9 @@ scikit-learn>=1.4.0
 fpdf2
 weasyprint>=60.0
 
+# Entorno web (subcomando `python main.py web`)
+flask>=3.0
+
 # Navegación web y búsqueda (agentes Browser y Search)
 # Tras instalar, Browser necesita el navegador Chromium de Playwright:
 #     python -m playwright install chromium
