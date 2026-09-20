@@ -1,8 +1,9 @@
 """Pruebas del validador AST de código Python de ``PlanValidator``.
 
 Se comprueba la función pura ``_validar_codigo_python_ast`` que detecta
-SyntaxError, nombres de agente usados como variables, ``json.loads`` con
-placeholder literal y sintaxis de plantilla ``{{X}}``.
+SyntaxError, nombres de agente usados como variables, alias de contexto
+inventados (``dependencias``), ``json.loads`` con placeholder literal y
+sintaxis de plantilla ``{{X}}``.
 """
 import pytest
 
@@ -38,6 +39,16 @@ NOMBRES = {"GenerarCuento", "CrearImagenes"}
             "datos = contexto.get('GenerarCuento', {})",
             0,
             "Código correcto",
+        ),
+        (
+            "cuento = dependencias.get('GenerarCuento', '')",
+            1,
+            "N1: alias 'dependencias' como variable suelta (NameError en sandbox)",
+        ),
+        (
+            "dependencias = contexto\ncuento = dependencias.get('GenerarCuento', '')",
+            0,
+            "N1: 'dependencias' ligado localmente antes de usarse es legítimo",
         ),
         (
             "html = f'''<style>body {{ margin: 0; }}</style>'''",
