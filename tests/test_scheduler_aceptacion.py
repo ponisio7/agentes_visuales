@@ -128,6 +128,12 @@ def test_docx_sin_imagen_ejecucion_fallida(cwd_temporal, qapp, esperar):
     assert any("imagen" in motivo.lower() for motivo in aceptacion["motivos"])
     assert "0 imágenes raster" in aceptacion["resumen"]
 
+    # El detalle por criterio queda expuesto (H6): qué falló y qué se comprobó.
+    paso = next(p for p in aceptacion["pasos"] if p["nombre"] == "EscribirDocumento")
+    assert paso["aceptado"] is False
+    assert any("imagenes_documento" in c for c in paso["criterios_fallidos"])
+    assert "archivo:documento.docx" in paso["criterios_comprobados"]
+
     # El motivo concreto llega al Plan B (recovery) y al historial.
     assert "Aceptación fallida" in (escritor.error or "")
     assert "documento.docx" in (escritor.error or "")

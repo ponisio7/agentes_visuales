@@ -261,3 +261,104 @@ def test_resultado_de_verificacion_es_serializable(tmp_path):
 
     datos = resultado.to_dict()
     assert json.loads(json.dumps(datos))["aceptado"] is True
+
+
+# ============================================================
+# H6 REFINADO: MOTOR, DIRECTORIOS Y CONTENEDORES
+# ============================================================
+
+def test_verification_engine_fachada(tmp_path, png_real):
+    from core.verification import VerificationEngine, VerificationResult
+
+    engine = VerificationEngine(cwd=str(tmp_path))
+    (tmp_path / "salida.txt").write_text("contenido", encoding="utf-8")
+
+    resultado = engine.verificar_contrato(
+        ContratoAceptacion(archivos=["salida.txt"])
+    )
+
+    assert isinstance(resultado, VerificationResult)
+    assert resultado.ok is True
+    assert resultado.estado == "verificado"
+    assert "archivo:salida.txt" in resultado.criterios_comprobados
+    assert resultado.evidencias
+    assert "contenedor" in VerificationEngine.criterios_disponibles()
+
+
+def test_resultado_no_verificable_se_marca(tmp_path):
+    contrato = ContratoAceptacion(archivos=["x.pdf"], requiere_imagen=True)
+    # .pdf con require_image pero sin validar_contenedor: se inspecciona.
+    (tmp_path / "x.pdf").write_bytes(b"%PDF-1.4 no real")
+
+    resultado = verificar_contrato(contrato, {}, cwd=str(tmp_path))
+
+    assert resultado.aceptado is False
+    assert resultado.estado == "fallido"
+    assert resultado.criterios_fallidos
+
+
+def test_directorio_con_archivos_esperados(tmp_path):
+    carpeta = tmp_path / "salidas"
+    carpeta.mkdir()
+    (carpeta / "a.txt").write_text("a", encoding="utf-8")
+    (carpeta / "b.txt").write_text("b", encoding="utf-8")
+
+    ok = verificar_contrato(
+        ContratoAceptacion(
+            directorio="salidas", min_archivos=2, archivos_esperados=["a.txt", "b.txt"]
+        ),
+        {}, cwd=str(tmp_path),
+    )
+    assert ok.aceptado is True, ok.motivos
+
+    falta = verificar_contrato(
+        ContratoAceptacion(directorio="salidas", archivos_esperados=["c.txt"]),
+        {}, cwd=str(tmp_path),
+    )
+    assert falta.aceptado is False
+    assert any("faltan" in m for m in falta.motivos)
+
+
+def test_directorio_inexistente_falla(tmp_path):
+    resultado = verificar_contrato(
+        ContratoAceptacion(directorio="no_existe", min_archivos=1),
+        {}, cwd=str(tmp_path),
+    )
+    assert resultado.aceptado is False
+    assert any("no existe el directorio" in m for m in resultado.motivos)
+
+
+def test_validar_contenedor_docx(tmp_path, png_real):
+    ruta = tmp_path / "documento.docx"
+    _docx_con_imagen(ruta, png_real)
+
+    ok = verificar_contrato(
+        ContratoAceptacion(archivos=["documento.docx"], validar_contenedor=True),
+        {}, cwd=str(tmp_path),
+    )
+    assert ok.aceptado is True, ok.motivos
+    assert any("contenedor" in e for e in ok.evidencias)
+
+
+def test_validar_contenedor_docx_corrupto(tmp_path):
+    (tmp_path / "documento.docx").write_text("no soy un zip", encoding="utf-8")
+
+    resultado = verificar_contrato(
+        ContratoAceptacion(archivos=["documento.docx"], validar_contenedor=True),
+        {}, cwd=str(tmp_path),
+    )
+    assert resultado.aceptado is False
+    assert any("ZIP" in m or "contenedor" in m for m in resultado.motivos)
+
+
+def test_contrato_from_dict_lee_campos_nuevos():
+    contrato = ContratoAceptacion.from_dict({
+        "directorio": "out",
+        "min_archivos": "3",
+        "archivos_esperados": ["a.txt"],
+        "validar_contenedor": True,
+    })
+    assert contrato.directorio == "out"
+    assert contrato.min_archivos == 3
+    assert contrato.archivos_esperados == ["a.txt"]
+    assert contrato.validar_contenedor is True

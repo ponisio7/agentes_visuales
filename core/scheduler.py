@@ -1684,6 +1684,14 @@ class Scheduler(QObject):
                     "verificado": True,
                     "aceptado": bool(verificacion.get("aceptado")),
                     "motivos": list(verificacion.get("motivos") or []),
+                    "advertencias": list(verificacion.get("advertencias") or []),
+                    "evidencias": list(verificacion.get("evidencias") or []),
+                    "criterios_comprobados": list(
+                        verificacion.get("criterios_comprobados") or []
+                    ),
+                    "criterios_fallidos": list(
+                        verificacion.get("criterios_fallidos") or []
+                    ),
                 })
                 continue
 

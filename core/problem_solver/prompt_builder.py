@@ -548,6 +548,12 @@ declaras tú, se comprueban todos. Campos disponibles en `aceptacion`:
 - `min_imagenes`: número mínimo de imágenes incrustadas en el documento.
 - `min_items`: número mínimo de items (resultados de Loop / listas).
 - `max_errores`: número máximo de errores tolerados en el resultado.
+- `directorio`: directorio que debe existir y contener archivos.
+- `min_archivos`: número mínimo de archivos dentro de `directorio`.
+- `archivos_esperados`: nombres que deben estar dentro de `directorio`.
+- `validar_contenedor`: true para comprobar la estructura interna de un
+  documento (.docx, .pdf, .xlsx, .pptx, .odt...); detecta archivos corruptos
+  o vacíos aunque la extensión sea correcta.
 
 Ejemplos:
 - Un paso `File` que escribe `cuento.docx` con una imagen obligatoria:

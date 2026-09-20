@@ -71,6 +71,10 @@ def test_builder_deriva_archivo_de_paso_file():
         "min_imagenes": 0,
         "min_items": 0,
         "max_errores": None,
+        "directorio": "",
+        "min_archivos": 0,
+        "archivos_esperados": [],
+        "validar_contenedor": False,
     }
 
 

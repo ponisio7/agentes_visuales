@@ -84,11 +84,48 @@ class Comprobacion:
 
 @dataclass
 class ResultadoVerificacion:
-    """Veredicto del verificador sobre la salida de un paso."""
+    """Veredicto del verificador sobre la salida de un paso.
+
+    Es el ``VerificationResult`` del motor de verificación: el nombre
+    ``VerificationResult`` se mantiene como alias.
+
+    Campos:
+        aceptado: el artefacto cumple TODOS los criterios (``ok``).
+        verificado: se ejecutó al menos una comprobación real (distinguir
+            «no verificable» de «verificado»).
+        comprobaciones: cada criterio con su resultado y detalle.
+        motivos: motivos legibles de cada criterio fallido.
+        advertencias: criterios que no se pudieron evaluar (no se dan por
+            buenos, pero no son un fallo del artefacto en sí).
+        evidencias: detalle observable de los criterios que pasaron
+            (tamaño, formato real, claves...).
+    """
     aceptado: bool
     verificado: bool = False
     comprobaciones: list[Comprobacion] = field(default_factory=list)
     motivos: list[str] = field(default_factory=list)
+    advertencias: list[str] = field(default_factory=list)
+    evidencias: list[str] = field(default_factory=list)
+
+    # ── Compatibilidad con la forma pedida del VerificationResult ──
+    @property
+    def ok(self) -> bool:
+        return self.aceptado
+
+    @property
+    def estado(self) -> str:
+        """'verificado' | 'no_verificable' | 'fallido'."""
+        if not self.aceptado:
+            return "fallido"
+        return "verificado" if self.verificado else "no_verificable"
+
+    @property
+    def criterios_comprobados(self) -> list[str]:
+        return [c.nombre for c in self.comprobaciones if c.ok]
+
+    @property
+    def criterios_fallidos(self) -> list[str]:
+        return [c.nombre for c in self.comprobaciones if not c.ok]
 
     def motivo(self) -> str:
         """Motivo legible (uno o varios) del rechazo."""
@@ -99,10 +136,20 @@ class ResultadoVerificacion:
     def to_dict(self) -> dict:
         return {
             "aceptado": self.aceptado,
+            "ok": self.ok,
+            "estado": self.estado,
             "verificado": self.verificado,
             "motivos": list(self.motivos),
+            "advertencias": list(self.advertencias),
+            "evidencias": list(self.evidencias),
+            "criterios_comprobados": self.criterios_comprobados,
+            "criterios_fallidos": self.criterios_fallidos,
             "comprobaciones": [c.to_dict() for c in self.comprobaciones],
         }
+
+
+# Alias explícito pedido por la misión (H6).
+VerificationResult = ResultadoVerificacion
 
 
 # ============================================================
@@ -297,19 +344,28 @@ def _formato_bytes(datos: bytes, extension: str) -> str | None:
 # ============================================================
 
 class _Acumulador:
-    """Acumula comprobaciones y motivos de fallo."""
+    """Acumula comprobaciones, motivos, advertencias y evidencias."""
 
     def __init__(self):
         self.comprobaciones: list[Comprobacion] = []
         self.motivos: list[str] = []
+        self.advertencias: list[str] = []
+        self.evidencias: list[str] = []
 
     def anota(self, nombre: str, ok: bool, detalle: str = "", no_verificable: bool = False):
         self.comprobaciones.append(
             Comprobacion(nombre=nombre, ok=ok, detalle=detalle, no_verificable=no_verificable)
         )
-        if not ok:
-            etiqueta = "no verificable" if no_verificable else "falló"
-            self.motivos.append(f"{nombre} ({etiqueta}): {detalle}" if detalle else nombre)
+        if ok:
+            if detalle:
+                self.evidencias.append(f"{nombre}: {detalle}")
+            return
+        if no_verificable:
+            etiqueta = "no verificable"
+            self.advertencias.append(f"{nombre}: {detalle}" if detalle else nombre)
+        else:
+            etiqueta = "falló"
+        self.motivos.append(f"{nombre} ({etiqueta}): {detalle}" if detalle else nombre)
 
 
 def _comprobar_archivo(
@@ -379,6 +435,8 @@ def verificar_contrato(
             verificado=verificado,
             comprobaciones=acumulador.comprobaciones,
             motivos=acumulador.motivos,
+            advertencias=acumulador.advertencias,
+            evidencias=acumulador.evidencias,
         )
 
     min_bytes = int(normalizado.get("min_bytes") or 0)
@@ -463,12 +521,109 @@ def verificar_contrato(
             f"{errores} errores (máximo {max_errores})",
         )
 
+    # ── Directorio y su contenido ──
+    if normalizado.get("directorio") or int(normalizado.get("min_archivos") or 0) > 0:
+        _comprobar_directorio(acumulador, normalizado, cwd)
+
+    # ── Contenedor válido (docx/xlsx/pptx/odt/zip/pdf) ──
+    if normalizado.get("validar_contenedor"):
+        for nombre, real in rutas_reales.items():
+            ok, detalle = _comprobar_contenedor(real)
+            acumulador.anota(f"contenedor:{nombre}", ok, detalle)
+
     return ResultadoVerificacion(
         aceptado=not acumulador.motivos,
         verificado=True,
         comprobaciones=acumulador.comprobaciones,
         motivos=acumulador.motivos,
+        advertencias=acumulador.advertencias,
+        evidencias=acumulador.evidencias,
     )
+
+
+def _comprobar_directorio(
+    acumulador: _Acumulador,
+    contrato: dict,
+    cwd: str | None,
+) -> None:
+    """Comprueba que un directorio existe y contiene lo esperado."""
+    directorio = str(contrato.get("directorio") or "").strip()
+    min_archivos = int(contrato.get("min_archivos") or 0)
+    esperados = list(contrato.get("archivos_esperados") or [])
+
+    if not directorio:
+        acumulador.anota(
+            "directorio", False,
+            "el contrato exige archivos en un directorio pero no lo declara",
+            no_verificable=True,
+        )
+        return
+
+    if not validar_ruta_archivo(directorio):
+        acumulador.anota("directorio", False, f"ruta no válida: {directorio}")
+        return
+
+    real = _resolver_ruta(directorio, cwd)
+    if not os.path.isdir(real):
+        acumulador.anota("directorio", False, f"no existe el directorio '{directorio}'")
+        return
+
+    try:
+        contenidos = sorted(
+            n for n in os.listdir(real)
+            if os.path.isfile(os.path.join(real, n))
+        )
+    except OSError as e:
+        acumulador.anota("directorio", False, f"no se pudo listar: {e}")
+        return
+
+    faltan = [n for n in esperados if n not in contenidos]
+    if faltan:
+        acumulador.anota(
+            "directorio", False,
+            f"faltan en '{directorio}': {faltan} (hay {contenidos[:10]})",
+        )
+        return
+    if min_archivos > 0 and len(contenidos) < min_archivos:
+        acumulador.anota(
+            "directorio", False,
+            f"{len(contenidos)} archivos < mínimo {min_archivos} en '{directorio}'",
+        )
+        return
+
+    acumulador.anota(
+        "directorio", True,
+        f"'{directorio}' con {len(contenidos)} archivos",
+    )
+
+
+def _comprobar_contenedor(ruta: str) -> tuple[bool, str]:
+    """Valida la estructura interna de un contenedor ofimático o PDF."""
+    extension = os.path.splitext(ruta)[1].lower()
+    if extension == ".pdf":
+        try:
+            from pypdf import PdfReader
+
+            lector = PdfReader(ruta)
+            return True, f"PDF válido ({len(lector.pages)} páginas)"
+        except ImportError:
+            return False, "pypdf no disponible: PDF no verificable"
+        except Exception as e:
+            return False, f"PDF inválido: {str(e)[:120]}"
+
+    if extension in _MEDIOS_ZIP:
+        try:
+            with zipfile.ZipFile(ruta) as paquete:
+                nombres = paquete.namelist()
+            if not nombres:
+                return False, "contenedor vacío"
+            return True, f"contenedor {extension} válido ({len(nombres)} partes)"
+        except zipfile.BadZipFile:
+            return False, "no es un ZIP válido (documento corrupto)"
+        except OSError as e:
+            return False, f"no se pudo abrir: {e}"
+
+    return False, f"formato '{extension or '?'}' no verificable como contenedor"
 
 
 def _comprobar_json(
@@ -622,3 +777,69 @@ def verificar_agente(
         cwd=cwd,
         comprobar_sospechoso=es_critico or bool(normalizado),
     )
+
+
+# ============================================================
+# MOTOR DE VERIFICACIÓN (fachada de primera clase)
+# ============================================================
+
+class VerificationEngine:
+    """Motor de verificación/aceptación de la salida (H6).
+
+    Fachada estable sobre el verificador determinista: comprueba el
+    ARTEFACTO real (disco/bytes) contra el contrato de aceptación declarado
+    y devuelve un :class:`VerificationResult`.
+
+    No es otro agente LLM: no decide por semántica, no ejecuta nada y no
+    escribe. Solo lee y comprueba. Si algo no se puede comprobar, lo marca
+    como «no verificable» en lugar de darlo por bueno.
+
+    Uso:
+        engine = VerificationEngine()
+        resultado = engine.verificar(agente, resultado_del_ejecutor)
+        if resultado is not None and not resultado.ok:
+            ...  # fallo con motivo → Plan B
+    """
+
+    CRITERIOS = (
+        "resultado_no_vacio", "archivo", "imagen", "json", "claves_requeridas",
+        "min_caracteres", "imagenes_documento", "min_items", "max_errores",
+        "directorio", "contenedor",
+    )
+
+    def __init__(self, cwd: str | None = None):
+        self.cwd = cwd
+
+    def verificar(self, agente: Any, resultado: Any) -> ResultadoVerificacion | None:
+        """Verifica la salida de un agente (``None`` si no hay nada que verificar)."""
+        return verificar_agente(agente, resultado, cwd=self.cwd)
+
+    def verificar_contrato(
+        self,
+        contrato: Any,
+        resultado: Any = None,
+        *,
+        comprobar_sospechoso: bool = False,
+    ) -> ResultadoVerificacion:
+        """Verifica un contrato explícito sobre un resultado."""
+        return verificar_contrato(
+            contrato,
+            resultado,
+            cwd=self.cwd,
+            comprobar_sospechoso=comprobar_sospechoso,
+        )
+
+    @classmethod
+    def criterios_disponibles(cls) -> tuple[str, ...]:
+        """Criterios que el motor puede comprobar (para documentación/GUI)."""
+        return cls.CRITERIOS
+
+
+__all__ = [
+    "Comprobacion",
+    "ResultadoVerificacion",
+    "VerificationResult",
+    "VerificationEngine",
+    "verificar_agente",
+    "verificar_contrato",
+]

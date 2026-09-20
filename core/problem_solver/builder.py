@@ -341,6 +341,9 @@ class PlanBuilder:
             contrato.imagenes = [destino]
 
         if extension in _EXT_DOCUMENTO:
+            # El documento debe ser un contenedor válido (no un archivo
+            # corrupto con la extensión correcta).
+            contrato.validar_contenedor = True
             problema = ""
             if plan_actual is not None:
                 problema = (getattr(plan_actual, "problema_original", "") or "").lower()

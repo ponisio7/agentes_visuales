@@ -66,19 +66,30 @@ class ContratoAceptacion:
     min_items: int = 0
     # Número máximo de errores tolerados en el resultado (None = sin límite).
     max_errores: int | None = None
+    # Directorio que debe existir y contener al menos 'min_archivos' ficheros.
+    directorio: str = ""
+    min_archivos: int = 0
+    # Nombres de archivo que deben estar dentro de 'directorio'.
+    archivos_esperados: list[str] = field(default_factory=list)
+    # Validar la estructura interna del contenedor (docx/xlsx/pptx/odt/zip/pdf).
+    validar_contenedor: bool = False
 
     def __post_init__(self):
         self.archivos = _lista_str(self.archivos)
         self.imagenes = _lista_str(self.imagenes)
         self.claves_requeridas = _lista_str(self.claves_requeridas)
+        self.archivos_esperados = _lista_str(self.archivos_esperados)
         if self.formato_imagen is not None:
             self.formato_imagen = str(self.formato_imagen).upper().strip() or None
         self.min_bytes = _a_int_seguro(self.min_bytes, 0)
         self.min_caracteres = _a_int_seguro(self.min_caracteres, 0)
         self.min_imagenes = _a_int_seguro(self.min_imagenes, 0)
         self.min_items = _a_int_seguro(self.min_items, 0)
+        self.min_archivos = _a_int_seguro(self.min_archivos, 0)
         self.json_parseable = bool(self.json_parseable)
         self.requiere_imagen = bool(self.requiere_imagen)
+        self.validar_contenedor = bool(self.validar_contenedor)
+        self.directorio = str(self.directorio or "").strip()
         if self.max_errores is not None:
             self.max_errores = _a_int_seguro(self.max_errores, 0)
 
@@ -95,6 +106,10 @@ class ContratoAceptacion:
             or self.min_imagenes > 0
             or self.min_items > 0
             or self.max_errores is not None
+            or self.directorio
+            or self.min_archivos > 0
+            or self.archivos_esperados
+            or self.validar_contenedor
         )
 
     def to_dict(self) -> dict:
@@ -110,6 +125,10 @@ class ContratoAceptacion:
             'min_imagenes': self.min_imagenes,
             'min_items': self.min_items,
             'max_errores': self.max_errores,
+            'directorio': self.directorio,
+            'min_archivos': self.min_archivos,
+            'archivos_esperados': list(self.archivos_esperados),
+            'validar_contenedor': self.validar_contenedor,
         }
 
     @classmethod
@@ -155,6 +174,16 @@ class ContratoAceptacion:
             min_imagenes=_a_int_seguro(min_imagenes, 0),
             min_items=_a_int_seguro(data.get('min_items', data.get('items_minimos')), 0),
             max_errores=data.get('max_errores'),
+            directorio=data.get('directorio', data.get('carpeta', '')),
+            min_archivos=_a_int_seguro(
+                data.get('min_archivos', data.get('archivos_minimos')), 0
+            ),
+            archivos_esperados=_lista_str(
+                data.get('archivos_esperados', data.get('contenido_directorio'))
+            ),
+            validar_contenedor=bool(
+                data.get('validar_contenedor', data.get('contenedor_valido', False))
+            ),
         )
         return None if contrato.es_vacio() else contrato
 
