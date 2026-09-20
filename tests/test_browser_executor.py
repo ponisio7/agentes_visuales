@@ -524,7 +524,6 @@ def test_urls_desde_lista_de_strings(fake_browser):
 
 
 def test_urls_desde_lista_de_dicts_con_href(fake_browser):
-    fake_browser
     contexto = {"Buscar": {"resultados": [
         {"title": "A", "href": "https://a.test/1"},
         {"title": "B", "url": "https://b.test/2"},

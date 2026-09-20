@@ -177,6 +177,39 @@ class TestBackupRestore:
     def test_restore_de_archivo_inexistente(self, db, tmp_path):
         assert db.restore_backup(str(tmp_path / "no-existe.db")) is False
 
+    def test_restore_no_reaplica_un_wal_antiguo(self, db, tmp_path):
+        """H3: restaurar no debe dejar vivo un ``-wal`` de la BD anterior.
+
+        Con otra conexión viva, el ``-wal`` no se elimina al cerrar la
+        conexión del ``Database``. El ``restore_backup`` antiguo copiaba el
+        fichero con ``shutil.copy2`` dejando ese ``-wal`` en su sitio, así que
+        SQLite reaplicaba sus frames (el DELETE previo) sobre la BD restaurada
+        y el dato borrado "resucitaba" o la BD quedaba inconsistente.
+        """
+        ejecucion_id = db.guardar_ejecucion([_agente()], 1.0)
+        respaldo = tmp_path / "copia.db"
+        assert db.backup(str(respaldo)) == str(respaldo)
+
+        # Conexión extra con una transacción de LECTURA abierta: impide que el
+        # checkpoint del cierre vuelque el WAL, así que los frames del DELETE
+        # siguen en el -wal cuando el restore sobrescribe el fichero.
+        conexion_extra = sqlite3.connect(db.db_path, timeout=10)
+        try:
+            conexion_extra.execute("BEGIN")
+            conexion_extra.execute("SELECT COUNT(*) FROM ejecuciones").fetchone()
+
+            assert db.eliminar_ejecucion(ejecucion_id) is True
+
+            assert db.restore_backup(str(respaldo)) is True
+
+            assert db.obtener_ejecucion(ejecucion_id) is not None, (
+                "se reaplicó el -wal antiguo sobre la BD restaurada"
+            )
+            integro, mensaje = db.verificar_integridad()
+            assert integro is True, mensaje
+        finally:
+            conexion_extra.close()
+
     def test_restore_de_backup_corrupto(self, db, tmp_path):
         corrupto = tmp_path / "corrupto.db"
         corrupto.write_bytes(b"esto no es una base sqlite")

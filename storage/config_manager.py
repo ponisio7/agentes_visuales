@@ -92,7 +92,7 @@ class ConfigManager:
         try:
             os.makedirs(self.config_dir, mode=0o750, exist_ok=True)
         except OSError as e:
-            raise ConfigError(f"No se pudo crear el directorio de configuraciones: {e}")
+            raise ConfigError(f"No se pudo crear el directorio de configuraciones: {e}") from e
 
         # Caché de configuraciones cargadas (LRU simple)
         self._cache: dict[str, dict] = {}
@@ -203,7 +203,7 @@ class ConfigManager:
             if os.path.normpath(ruta) != os.path.normpath(ruta_segura):
                 raise ConfigSecurityError(f"Intento de escritura fuera del directorio permitido: '{ruta}'")
         except ConfigSecurityError as e:
-            raise ConfigError(f"Ruta de destino no segura: {ruta} - {e}")
+            raise ConfigError(f"Ruta de destino no segura: {ruta} - {e}") from e
 
         # Asegurar que el directorio padre exista
         directorio = os.path.dirname(ruta)
@@ -211,7 +211,7 @@ class ConfigManager:
             try:
                 os.makedirs(directorio, mode=0o750, exist_ok=True)
             except OSError as e:
-                raise ConfigError(f"No se pudo crear directorio: {e}")
+                raise ConfigError(f"No se pudo crear directorio: {e}") from e
 
         # Archivo temporal en el mismo directorio
         ruta_tmp = f"{ruta}.tmp_{os.getpid()}_{int(time.time()*1000)}"
@@ -235,7 +235,7 @@ class ConfigManager:
                     os.unlink(ruta_tmp)
                 except OSError:
                     pass
-            raise ConfigError(f"Error al escribir archivo: {e}")
+            raise ConfigError(f"Error al escribir archivo: {e}") from e
 
     def _validar_archivo_config(self, ruta: str) -> dict:
         """
@@ -264,7 +264,7 @@ class ConfigManager:
             if size == 0:
                 raise ConfigIntegrityError("Archivo vacío")
         except OSError as e:
-            raise ConfigIntegrityError(f"Error al leer tamaño del archivo: {e}")
+            raise ConfigIntegrityError(f"Error al leer tamaño del archivo: {e}") from e
 
         # Leer y validar JSON
         try:
@@ -279,13 +279,13 @@ class ConfigManager:
                 except (json.JSONDecodeError, OSError) as e2:
                     raise ConfigIntegrityError(
                         f"JSON inválido tras recuperar de journal: {e2}"
-                    )
+                    ) from e2
             else:
-                raise ConfigIntegrityError(f"JSON inválido: {e}")
+                raise ConfigIntegrityError(f"JSON inválido: {e}") from e
         except UnicodeDecodeError as e:
-            raise ConfigIntegrityError(f"Encoding inválido: {e}")
+            raise ConfigIntegrityError(f"Encoding inválido: {e}") from e
         except OSError as e:
-            raise ConfigIntegrityError(f"Error al leer archivo: {e}")
+            raise ConfigIntegrityError(f"Error al leer archivo: {e}") from e
 
         # Validar estructura mínima
         if not isinstance(data, dict):
@@ -456,8 +456,11 @@ class ConfigManager:
         with self._cache_lock:
             key = self._get_cache_key(ruta)
 
-            # Si la caché está llena, eliminar el elemento menos recientemente usado
-            if len(self._cache) >= self.max_cache:
+            # Si la caché está llena, eliminar el elemento menos recientemente
+            # usado. Solo se expulsa cuando la clave es NUEVA: si se está
+            # actualizando una entrada existente no hace falta hacer sitio y
+            # expulsar al LRU sería una pérdida gratuita de una entrada viva.
+            if key not in self._cache and len(self._cache) >= self.max_cache:
                 oldest = min(self._cache_accessed, key=self._cache_accessed.get)
                 self._cache.pop(oldest, None)
                 self._cache_accessed.pop(oldest, None)
@@ -587,9 +590,9 @@ class ConfigManager:
             return agentes
 
         except ConfigIntegrityError as e:
-            raise ConfigError(f"Error de integridad en {ruta}: {e}")
+            raise ConfigError(f"Error de integridad en {ruta}: {e}") from e
         except Exception as e:
-            raise ConfigError(f"Error al cargar {ruta}: {e}")
+            raise ConfigError(f"Error al cargar {ruta}: {e}") from e
 
     def cargar_por_nombre(self, nombre: str) -> list[dict] | None:
         """
@@ -833,7 +836,7 @@ class ConfigManager:
             try:
                 os.makedirs(directorio, mode=0o750, exist_ok=True)
             except OSError as e:
-                raise ConfigError(f"No se pudo crear directorio: {e}")
+                raise ConfigError(f"No se pudo crear directorio: {e}") from e
         
         # Escribir (sin journal para exportaciones)
         self._escribir_json_atomico_sin_restriccion(ruta, data, use_journal=False)
@@ -865,7 +868,7 @@ class ConfigManager:
         try:
             data = self._validar_archivo_config(ruta)
         except ConfigIntegrityError as e:
-            raise ConfigError(f"Archivo inválido o corrupto: {e}")
+            raise ConfigError(f"Archivo inválido o corrupto: {e}") from e
         
         agentes = data.get('agentes', [])
         
@@ -892,7 +895,7 @@ class ConfigManager:
             try:
                 os.makedirs(directorio, mode=0o750, exist_ok=True)
             except OSError as e:
-                raise ConfigError(f"No se pudo crear directorio: {e}")
+                raise ConfigError(f"No se pudo crear directorio: {e}") from e
 
         # Archivo temporal en el mismo directorio
         ruta_tmp = f"{ruta}.tmp_{os.getpid()}_{int(time.time()*1000)}"
@@ -921,7 +924,7 @@ class ConfigManager:
                     os.unlink(ruta_tmp)
                 except OSError:
                     pass
-            raise ConfigError(f"Error al escribir archivo: {e}")
+            raise ConfigError(f"Error al escribir archivo: {e}") from e
 
     # ============================================================
     # MÉTODOS PARA LOOP

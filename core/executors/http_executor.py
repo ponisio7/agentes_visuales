@@ -172,8 +172,8 @@ class HTTPExecutor:
             session.mount('http://', adapter)
             session.mount('https://', adapter)
 
-            def cancelar_peticion(token):
-                nonlocal session
+            def _cancelar_peticion(token):
+                # ``session`` solo se lee: no hace falta nonlocal.
                 try:
                     if session:
                         session.close()
@@ -181,6 +181,10 @@ class HTTPExecutor:
                     logger.warning(f"Error cancelando petición HTTP: {e}")
 
             if cancellation_token:
+                # Se guarda en la variable externa (inicializada a None) para
+                # poder desregistrar el callback en el finally incluso si el
+                # fallo ocurre antes de definir esta función.
+                cancelar_peticion = _cancelar_peticion
                 cancellation_token.agregar_callback(cancelar_peticion)
 
             def hacer_peticion():
@@ -289,6 +293,16 @@ class HTTPExecutor:
         finally:
             if cancellation_token and cancelar_peticion:
                 cancellation_token.eliminar_callback(cancelar_peticion)
+            # Cerrar la sesión SIEMPRE. Sin esto, cada ejecución de un agente
+            # HTTP dejaba vivo un pool de conexiones (sockets/fds) hasta que
+            # el GC recogiera el objeto. La respuesta ya viene descargada en
+            # memoria (no se usa stream=True), así que cerrar aquí no
+            # invalida response.content/text de más abajo.
+            if session is not None:
+                try:
+                    session.close()
+                except Exception as e:
+                    logger.debug(f"Error cerrando sesión HTTP: {e}")
 
         cls.actualizar_progreso(agente, 80, f"📥 Procesando respuesta {response.status_code}...")
 

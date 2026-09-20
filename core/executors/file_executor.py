@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 # core/executors/file_executor.py
 """Ejecutor de agentes File."""
 
@@ -39,6 +40,14 @@ EXTENSIONES_TEXTO_PLANO = {
     ".txt", ".csv", ".tsv", ".log", ".yaml", ".yml",
     ".toml", ".ini", ".cfg", ".conf",
 }
+
+# Subconjunto de EXTENSIONES_TEXTO_PLANO de formato libre: cualquier texto
+# es válido. Si no se encuentra contenido útil en un dict/list, se vuelca su
+# representación JSON en lugar de fallar el agente (regresión de 903f94a:
+# la cadena HTTP → Python → File .txt se rompía y se perdía el resultado).
+# En formatos con estructura (html/xml/css/js/yaml/toml/ini/csv) un JSON
+# produciría un archivo inválido, así que ahí se conserva el error explícito.
+EXTENSIONES_FALLBACK_JSON = {".txt", ".log"}
 
 
 def _escapar_xml(texto: str) -> str:
@@ -300,17 +309,29 @@ class FileExecutor:
                     contenido_str = cls._desenvolver_contenido_web(contenido)
                     if contenido_str is None:
                         claves = list(contenido.keys()) if isinstance(contenido, dict) else f'list[{len(contenido)}]'
-                        mensaje_error = (
-                            f"File.escribir: no se pudo extraer texto útil del dict/list "
-                            f"para '{ruta_archivo}'. Claves: {claves}"
-                        )
-                        logger.error(mensaje_error)
-                        cls.actualizar_progreso(agente, 100, "❌ Contrato de contenido roto")
-                        return False, mensaje_error, {
-                            "error": "no_known_text_keys",
-                            "archivo": ruta_archivo,
-                            "claves_presentes": claves,
-                        }
+                        if extension_actual in EXTENSIONES_FALLBACK_JSON:
+                            # Formato de texto libre: mejor volcar el JSON que
+                            # perder el resultado y bloquear a los dependientes.
+                            logger.warning(
+                                f"File.escribir: sin texto útil en el dict/list "
+                                f"para '{ruta_archivo}' (claves: {claves}); "
+                                f"se serializa a JSON como fallback"
+                            )
+                            contenido_str = json.dumps(
+                                contenido, indent=2, default=str, ensure_ascii=False
+                            )
+                        else:
+                            mensaje_error = (
+                                f"File.escribir: no se pudo extraer texto útil del dict/list "
+                                f"para '{ruta_archivo}'. Claves: {claves}"
+                            )
+                            logger.error(mensaje_error)
+                            cls.actualizar_progreso(agente, 100, "❌ Contrato de contenido roto")
+                            return False, mensaje_error, {
+                                "error": "no_known_text_keys",
+                                "archivo": ruta_archivo,
+                                "claves_presentes": claves,
+                            }
 
                 elif isinstance(contenido, (dict, list)):
                     # Para .json u otras extensiones estructuradas: sí serializar a JSON

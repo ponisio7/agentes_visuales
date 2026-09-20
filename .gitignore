@@ -6,6 +6,7 @@
 *.txt
 !README.md
 !CHANGELOG.md
+!HARNESS_REPORT_*.md
 !requirements.txt
 !pyproject.toml
 !setup.cfg
@@ -14,6 +15,7 @@
 # ── Base de datos y logs ──
 agent_history.db
 agent_history.db-*
+agent_history.db.*
 *.db
 *.db-wal
 *.db-shm
@@ -51,35 +53,15 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# ── Backups ──
+# ── Backups (se conservan en disco, pero no se versionan) ──
 *.backup_*
 *.before_restore
-# ── Outputs web/docx generados por agentes ──
-*.html
-*.htm
-*.docx
-*.xlsx
-*.pdf
-*.svg
-*.png
-*.jpg
-*.jpeg
-*.gif
-*.webp
-
-# ── Directorios de trabajo / temporales ──
-tmp/
-temp/
-imagenes/
-images/
-outputs/
-.playwright-browsers/
-.playwright/
-
-# ── Archivos raros / lock ──
-.~lock.*#
-*.lock
-sqlite3
+*.bak
+*.bak[0-9]
+*.bak_manual
+*.py.[0-9]*
+.backups_fix_*/
+.backups_fix_*/*
 
 # ── Outputs web/docx generados por agentes ──
 *.html
@@ -98,7 +80,6 @@ tmp/
 temp/
 imagenes/
 images/
-outputs/
 .playwright-browsers/
 .playwright/
 

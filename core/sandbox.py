@@ -877,7 +877,7 @@ if __name__ == "__main__":
 
             # ── Callback de cancelación ──
             def cancelar_proceso(token):
-                nonlocal proceso
+                # ``proceso`` solo se lee: no hace falta nonlocal.
                 try:
                     if proceso and proceso.poll() is None:
                         proceso.terminate()
@@ -1085,12 +1085,12 @@ if __name__ == "__main__":
             # (SandboxTimeoutError, SandboxSecurityError, etc.);
             # no lo envolvemos, dejamos que el llamador lo distinga.
             raise
-        except subprocess.TimeoutExpired:
-            raise SandboxTimeoutError(f"El código excedió {timeout}s")
+        except subprocess.TimeoutExpired as e:
+            raise SandboxTimeoutError(f"El código excedió {timeout}s") from e
         except subprocess.SubprocessError as e:
-            raise SandboxError(f"Error en subproceso: {e}")
+            raise SandboxError(f"Error en subproceso: {e}") from e
         except Exception as e:
-            raise SandboxError(f"Error inesperado: {e}")
+            raise SandboxError(f"Error inesperado: {e}") from e
         finally:
             # Reap solo si el proceso sigue vivo (en la ruta normal ya se
             # consumió la salida con communicate()). Evita un segundo

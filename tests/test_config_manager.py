@@ -308,6 +308,24 @@ class TestConfigRecuperacion:
             config_manager._validar_archivo_config(ruta)
         assert "json" in str(exc_info.value).lower()
     
+    def test_json_invalido_conserva_la_causa_original(self, config_manager, temp_config_dir):
+        """La excepción de dominio debe encadenar la causa real (``from e``).
+
+        Regresión: los ``raise ConfigIntegrityError(...)`` dentro de
+        ``except ... as e`` no usaban ``from e``, así que al depurar se
+        perdía el traceback original (ruff B904).
+        """
+        ruta = os.path.join(temp_config_dir, "invalid_cause.json")
+        with open(ruta, 'w') as f:
+            f.write("{invalid json")
+
+        with pytest.raises(ConfigIntegrityError) as exc_info:
+            config_manager._validar_archivo_config(ruta)
+
+        causa = exc_info.value.__cause__
+        assert causa is not None, "se perdió la cadena de causalidad"
+        assert isinstance(causa, json.JSONDecodeError)
+    
     def test_validar_archivo_config_vacio(self, config_manager, temp_config_dir):
         """Prueba validación de archivo vacío."""
         ruta = os.path.join(temp_config_dir, "empty.json")
@@ -717,6 +735,43 @@ class TestConfigCache:
         config_manager.limpiar_cache()
         
         assert len(config_manager._cache) == 0
+
+    def test_actualizar_entrada_no_expulsa_al_lru(self, config_manager):
+        """Actualizar una clave existente no debe expulsar a otra entrada.
+
+        Regresión: _put_in_cache() comprobaba ``len(cache) >= max_cache``
+        antes de mirar si la clave ya existía. Con la caché llena, actualizar
+        una entrada expulsaba al LRU sin necesidad; la caché encogía y se
+        perdía una entrada viva.
+        """
+        manager = ConfigManager(config_manager.config_dir, max_cache=2)
+        manager._put_in_cache("a.json", {"v": 1})
+        time.sleep(0.002)
+        manager._put_in_cache("b.json", {"v": 1})
+        time.sleep(0.002)
+        # 'b.json' pasa a ser la entrada más reciente; 'a.json' es el LRU.
+        assert manager._get_from_cache("b.json") == {"v": 1}
+
+        # Actualizar 'b.json' (clave ya presente) con la caché llena.
+        manager._put_in_cache("b.json", {"v": 2})
+
+        assert set(manager._cache) == {"a.json", "b.json"}
+        assert manager._get_from_cache("a.json") == {"v": 1}
+        assert manager._get_from_cache("b.json") == {"v": 2}
+
+    def test_clave_nueva_si_expulsa_al_lru(self, config_manager):
+        """Con la caché llena, una clave nueva sí expulsa al LRU."""
+        manager = ConfigManager(config_manager.config_dir, max_cache=2)
+        manager._put_in_cache("a.json", {"v": 1})
+        time.sleep(0.002)
+        manager._put_in_cache("b.json", {"v": 1})
+        time.sleep(0.002)
+        assert manager._get_from_cache("a.json") == {"v": 1}  # 'b' es el LRU
+
+        manager._put_in_cache("c.json", {"v": 3})
+
+        assert "b.json" not in manager._cache
+        assert set(manager._cache) == {"a.json", "c.json"}
 
 
 # ============================================================

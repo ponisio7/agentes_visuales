@@ -1,4 +1,4 @@
-# Agentes Visuales v3.0
+# Agentes Visuales v3.1
 
 Orquestador de agentes autónomos con backend DeepSeek.
 

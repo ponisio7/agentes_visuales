@@ -13,8 +13,27 @@ import logging
 import os
 import sys
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
-__version__ = "1.1.0"
+
+def _leer_version() -> str:
+    """Lee la versión desde ``pyproject.toml`` (única fuente de verdad).
+
+    Antes había tres versiones distintas conviviendo: ``__version__`` valía
+    "1.1.0", el tag era v3.0.1 y el CHANGELOG hablaba de v3.0. Ahora
+    ``[project].version`` en pyproject.toml manda, y si no se puede leer
+    (p. ej. despliegue sin el fichero) se degrada a un valor explícito.
+    """
+    try:
+        import tomllib
+
+        with open(Path(__file__).resolve().parent / "pyproject.toml", "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    except Exception:
+        return "0.0.0+sin-pyproject"
+
+
+__version__ = _leer_version()
 
 
 def _timeout_positivo(valor: str) -> float:

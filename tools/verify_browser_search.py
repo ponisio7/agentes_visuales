@@ -20,9 +20,9 @@ import textwrap
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.agent import Agente, TipoAgente          # noqa: E402
-from core.executors.browser_executor import BrowserExecutor   # noqa: E402
-from core.executors.search_executor import SearchExecutor     # noqa: E402
+from core.agent import Agente, TipoAgente  # noqa: E402
+from core.executors.browser_executor import BrowserExecutor  # noqa: E402
+from core.executors.search_executor import SearchExecutor  # noqa: E402
 
 
 def _linea(titulo: str = "") -> None:

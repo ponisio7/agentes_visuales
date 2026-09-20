@@ -1,6 +1,31 @@
 #!/usr/bin/env bash
-# tools/pre_tag_check.sh — Verificación pre-tag v3.0.1
+# tools/pre_tag_check.sh — Verificación pre-tag de Agentes Visuales
+#
+# Puerta de calidad previa al tag. Comprueba estado de git, sintaxis, lint
+# acotado al código del proyecto, smoke test de ProblemSolver y (por
+# defecto) la suite completa de tests.
+#
+# Uso:
+#   ./tools/pre_tag_check.sh              # verificación completa (incluye tests)
+#   ./tools/pre_tag_check.sh --no-tests   # omite la suite (solo comprobaciones rápidas)
+#   PRETAG_SKIP_TESTS=1 ./tools/pre_tag_check.sh
 set -uo pipefail
+
+EJECUTAR_TESTS=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-tests) EJECUTAR_TESTS=0 ;;
+        -h|--help)
+            sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+            exit 0
+            ;;
+        *)
+            echo "Opción desconocida: $arg (usa --help)"
+            exit 2
+            ;;
+    esac
+done
+[ "${PRETAG_SKIP_TESTS:-0}" = "1" ] && EJECUTAR_TESTS=0
 
 ROJO='\033[31m'; VERDE='\033[32m'; AMAR='\033[33m'; CYAN='\033[36m'; NC='\033[0m'
 FALLOS=0
@@ -10,8 +35,19 @@ fail() { echo -e "${ROJO}❌ $1${NC}"; FALLOS=$((FALLOS+1)); }
 warn() { echo -e "${AMAR}⚠️  $1${NC}"; }
 info() { echo -e "${CYAN}▸ $1${NC}"; }
 
+# ── Raíz del proyecto e intérprete ────────────────────────────
+RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$RAIZ"
+
+# Preferir el venv del proyecto: python3 del sistema no tiene las deps.
+PY="python3"
+[ -x ".venv/bin/python" ] && PY=".venv/bin/python"
+
+# Única fuente de verdad de la versión (ver pyproject.toml / main.py).
+VERSION="$("$PY" -c 'import tomllib;print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])' 2>/dev/null || echo "desconocida")"
+
 echo "════════════════════════════════════════════════════════════"
-echo "  VERIFICACIÓN PRE-TAG v3.0.1 — Agentes Visuales"
+echo "  VERIFICACIÓN PRE-TAG v${VERSION} — Agentes Visuales"
 echo "════════════════════════════════════════════════════════════"
 
 # ── 1. Git limpio ─────────────────────────────────────────────
@@ -45,7 +81,7 @@ else
     fail "Local ($LOCAL) != remoto ($REMOTO). Haz push/pull primero."
 fi
 
-# ── 4. No hay tags v3.x previos ───────────────────────────────
+# ── 4. Tags v3.x previos ──────────────────────────────────────
 info "4. Tags existentes v3.x"
 TAGS_V3=$(git tag -l "v3.*")
 if [ -n "$TAGS_V3" ]; then
@@ -72,7 +108,7 @@ done
 info "6. Compilación de sintaxis (todos los .py)"
 ERR_SINTAXIS=0
 while IFS= read -r f; do
-    if ! python3 -m py_compile "$f" 2>/dev/null; then
+    if ! "$PY" -m py_compile "$f" 2>/dev/null; then
         fail "SyntaxError en: $f"
         ERR_SINTAXIS=$((ERR_SINTAXIS+1))
     fi
@@ -82,30 +118,48 @@ done < <(find . -name "*.py" \
     -not -path "./.env/*" \
     -not -path "./venv/*" \
     -not -path "./env/*" \
+    -not -path "./tmp/*" \
+    -not -path "./backup/*" \
+    -not -path "./.backups_fix_*/*" \
     -not -path "*/__pycache__/*")
 [ "$ERR_SINTAXIS" -eq 0 ] && ok "Todos los .py compilan"
 
-# ── 7. pyflakes (si está instalado) ───────────────────────────
-info "7. pyflakes (errores reales, no estilo)"
-if command -v pyflakes >/dev/null 2>&1; then
-    PYFLAKES_OUT=$(pyflakes . 2>&1 | grep -v "__pycache__" | grep -v ".venv" || true)
-    if [ -n "$PYFLAKES_OUT" ]; then
-        warn "pyflakes reporta issues (revisar, no bloquean):"
-        echo "$PYFLAKES_OUT" | head -30
+# ── 7. Lint (acotado al código del proyecto) ──────────────────
+# El escaneo debe acotarse SIEMPRE a los directorios del proyecto: un
+# `pyflakes .` recorre .venv/.env y muere con RecursionError sin analizar
+# nada del código propio (bug B4 de v3.0.1).
+info "7. Lint (ruff/pyflakes, solo código del proyecto)"
+OBJETIVOS_LINT=(core learning ui storage export tools tests main.py run_all_tests.py)
+
+RUFF=""
+for cand in ".venv/bin/ruff" "$(command -v ruff 2>/dev/null || true)"; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then RUFF="$cand"; break; fi
+done
+
+if [ -n "$RUFF" ]; then
+    if "$RUFF" check --no-cache "${OBJETIVOS_LINT[@]}"; then
+        ok "ruff limpio"
     else
+        fail "ruff reporta problemas (ver arriba)"
+    fi
+elif "$PY" -m pyflakes --version >/dev/null 2>&1; then
+    if "$PY" -m pyflakes "${OBJETIVOS_LINT[@]}"; then
         ok "pyflakes limpio"
+    else
+        fail "pyflakes reporta problemas (ver arriba)"
     fi
 else
-    warn "pyflakes no instalado (pip install pyflakes)"
+    warn "Ni ruff ni pyflakes instalados (pip install ruff)"
 fi
 
-# ── 8. No hay prints de debug obvios ──────────────────────────
+# ── 8. Prints de debug obvios ─────────────────────────────────
 info "8. Prints de debug olvidados"
 PRINTS=$(grep -rn "print(" --include="*.py" \
     --exclude-dir=.git --exclude-dir=__pycache__ \
     --exclude-dir=.venv --exclude-dir=.env --exclude-dir=venv --exclude-dir=env \
     --exclude-dir=tests --exclude-dir=tools \
-    | grep -v "if __name__" | grep -v "print(f\"\[TERMINADA\]" | grep -v "file=sys.stderr" || true)
+    | grep -v "^run_all_tests.py:" \
+    | grep -v "if __name__" | grep -v "file=sys.stderr" || true)
 if [ -n "$PRINTS" ]; then
     warn "Posibles prints de debug (revisar):"
     echo "$PRINTS" | head -15
@@ -129,22 +183,54 @@ fi
 # ── 10. README y CHANGELOG ────────────────────────────────────
 info "10. Documentación"
 [ -f "README.md" ]   && ok "README.md"   || warn "Falta README.md"
-[ -f "CHANGELOG.md" ] && ok "CHANGELOG.md" || warn "Falta CHANGELOG.md (recomendado para v3.0.1)"
-
-# ── 11. Smoke Test (ProblemSolver) ────────────────────────────
-info "11. Smoke test de ProblemSolver"
-if python3 -c "
-from core.problem_solver import ProblemSolver
-from core.llm_client import obtener_llm_client_compartido
-solver = ProblemSolver(obtener_llm_client_compartido())
-plan = solver.resolver_problema('Genera un archivo saludo.txt con Hola Mundo', max_pasos=3)
-print(f'Plan: {plan.titulo} | Pasos: {len(plan.pasos)} | Agentes: {len(plan.agentes_generados)}')
-for p in plan.pasos:
-    print(f'  {p.orden}. [{p.tipo_agente}] {p.nombre}')
-" 2>/dev/null; then
-    ok "Smoke test completado exitosamente"
+if [ -f "CHANGELOG.md" ]; then
+    if grep -q "v${VERSION}" CHANGELOG.md; then
+        ok "CHANGELOG.md menciona v${VERSION}"
+    else
+        fail "CHANGELOG.md no menciona la versión v${VERSION}"
+    fi
 else
-    warn "El smoke test no pudo ejecutarse correctamente"
+    warn "Falta CHANGELOG.md (recomendado)"
+fi
+
+# ── 11. Smoke test (ProblemSolver) ────────────────────────────
+# Puerta real: si el pipeline ProblemSolver → LLM → plan falla, el tag no
+# debe salir. Antes este paso solo avisaba y ocultaba el stderr.
+info "11. Smoke test de ProblemSolver"
+if "$PY" - <<'PYEOF'
+from core.llm_client import obtener_llm_client_compartido
+from core.problem_solver import ProblemSolver
+
+solver = ProblemSolver(obtener_llm_client_compartido())
+plan = solver.resolver_problema(
+    "Genera un archivo saludo.txt con Hola Mundo", max_pasos=3
+)
+n_pasos = len(plan.pasos)
+print(f"Plan: {plan.titulo} | Pasos: {n_pasos} | Agentes: {len(plan.agentes_generados)}")
+for p in plan.pasos:
+    print(f"  {p.orden}. [{p.tipo_agente}] {p.nombre}")
+assert n_pasos >= 2, f"el plan tiene {n_pasos} pasos; se esperaban >= 2"
+assert plan.agentes_generados, "el plan no generó agentes"
+PYEOF
+then
+    ok "Smoke test completado (plan con >= 2 pasos)"
+else
+    fail "El smoke test falló (¿red o API key?); revisa la salida de arriba"
+fi
+
+# ── 12. Suite de tests ────────────────────────────────────────
+if [ "$EJECUTAR_TESTS" -eq 1 ]; then
+    info "12. Suite de tests completa (run_all_tests.py)"
+    mkdir -p logs
+    LOG_SUITE="logs/pretag_suite.log"
+    if "$PY" run_all_tests.py > "$LOG_SUITE" 2>&1; then
+        ok "Suite de tests: todos los grupos OK"
+    else
+        fail "La suite de tests falló (detalle en $LOG_SUITE):"
+        tail -25 "$LOG_SUITE"
+    fi
+else
+    warn "Suite de tests OMITIDA (--no-tests / PRETAG_SKIP_TESTS=1)"
 fi
 
 echo ""
@@ -153,11 +239,11 @@ if [ "$FALLOS" -eq 0 ]; then
     echo -e "${VERDE}✅ LISTO PARA TAGGEAR (revisa los ⚠️  manualmente)${NC}"
     echo ""
     echo "  Siguiente paso:"
-    echo "    git tag -a v3.0.1 -m 'Release v3.0.1: DeepSeek Harness integration'"
-    echo "    git push origin v3.0.1"
+    echo "    git tag -a v${VERSION} -m 'Release v${VERSION}'"
+    echo "    git push origin v${VERSION}"
 else
     echo -e "${ROJO}❌ $FALLOS fallos bloqueantes. Corrige antes de taggear.${NC}"
 fi
 echo "════════════════════════════════════════════════════════════"
 
-exit $FALLOS
+exit "$FALLOS"

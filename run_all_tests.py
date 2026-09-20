@@ -10,6 +10,7 @@ Uso:
     python run_all_tests.py --watchdog 30      # Avisa si un test tarda > 30s
 """
 import argparse
+import hashlib
 import importlib.util
 import os
 import subprocess
@@ -124,6 +125,7 @@ GRUPOS_TESTS = {
         "tests/test_scheduler.py",
         "tests/test_scheduler_orden.py",
         "tests/test_scheduler_ciclos.py",
+        "tests/test_scheduler_reintentos.py",
         "tests/test_scheduler_resolucion.py",
         "tests/test_scheduler_terminal.py",
         "tests/test_ejecucion_individual.py",
@@ -147,21 +149,30 @@ GRUPOS_TESTS = {
         # Modelos, mocks y validadores sin extensiones nativas pesadas
         "tests/test_agent.py",
         "tests/test_agent_serialization.py",
+        "tests/test_browser_executor.py",
         "tests/test_cancellation.py",
         "tests/test_conexion_a_DeepSeek_manualmente.py",
         "tests/test_contrato_cuento.py",
-        "tests/test_contrato_salida.py",
         "tests/test_database_unit.py",
+        "tests/test_desenvolver_contenido_web.py",
         "tests/test_env_checker.py",
         "tests/test_event_bus.py",
         "tests/test_execution_recorder.py",
         "tests/test_executor_helpers.py",
+        "tests/test_file_executor_escritura.py",
         "tests/test_file_executor_seguridad.py",
+        "tests/test_http_executor_recursos.py",
+        "tests/test_llm_executor.py",
         "tests/test_plan_recovery.py",
         "tests/test_plan_validator.py",
+        "tests/test_prompt_builder.py",
+        "tests/test_search_executor.py",
         "tests/test_security.py",
+        "tests/test_sustitucion_variables.py",
+        "tests/test_urls_plantilla.py",
         "tests/test_utils_json.py",
         "tests/test_validador.py",
+        "tests/test_version.py",
     ],
 }
 
@@ -173,6 +184,17 @@ SENALES_CAIDA_INTERPRETE = {
     3221225477, 3221225474,               # ACCESS_VIOLATION / ILLEGAL_INSTRUCTION (Windows)
     3221225725, 3221225786,               # STACK_OVERFLOW / CTRL_C_EVENT (Windows)
 }
+
+# pytest devuelve 5 cuando no recolecta ningún test. Eso NO es un éxito:
+# casi siempre significa que los paths del grupo están mal escritos o que
+# el grupo quedó vacío. Se trata como fallo explícito (bug B1 de v3.0.1:
+# el grupo F_ligeros llevaba tiempo sin recolectar nada).
+RC_SIN_TESTS = 5
+
+# Base de datos de producción: los tests NUNCA deben modificarla. El
+# runner calcula su hash antes y después de cada grupo y falla en alto si
+# cambia (guardarraíl para el bug B3 de v3.0.1).
+DB_PRODUCCION = Path(__file__).resolve().parent / "agent_history.db"
 
 # Grupos que crean subprocesos (sandbox) y/o hilos concurrentes. Ahí es
 # donde se acumulan hilos/estado entre tests y aparece el SIGSEGV de
@@ -210,6 +232,35 @@ def descubrir_grupos_completos() -> dict[str, list[str]]:
     if faltantes:
         grupos.setdefault("Z_sin_clasificar", []).extend(faltantes)
     return grupos
+
+
+def validar_grupos(grupos: dict[str, list[str]]) -> list[str]:
+    """Devuelve los paths de ``grupos`` que no existen en disco.
+
+    Antes, un path inexistente en ``GRUPOS_TESTS`` hacía que pytest
+    abortara con rc=4 y el grupo entero se quedara sin ejecutar sin que
+    el runner lo distinguiera de un fallo normal (bug B1 de v3.0.1).
+    """
+    raiz = Path(__file__).resolve().parent
+    inexistentes: list[str] = []
+    for paths in grupos.values():
+        for p in paths:
+            if not (raiz / p).is_file():
+                inexistentes.append(p)
+    # Sin duplicados, preservando el orden
+    return list(dict.fromkeys(inexistentes))
+
+
+def _sha256_archivo(ruta: Path) -> str | None:
+    """sha256 de ``ruta`` por bloques, o None si no existe."""
+    if not ruta.is_file():
+        return None
+    h = hashlib.sha256()
+    with open(ruta, "rb") as f:
+        for bloque in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(bloque)
+    return h.hexdigest()
+
 
 
 def ejecutar_comando_pytest(
@@ -335,6 +386,18 @@ def main() -> int:
     else:
         grupos_a_ejecutar = descubrir_grupos_completos()
 
+        # Un path inexistente en GRUPOS_TESTS abortaba la recolección de
+        # pytest (rc=4) dejando el grupo sin ejecutar en silencio. Mejor
+        # fallar aquí, con el nombre exacto del archivo (bug B1).
+        inexistentes = validar_grupos(grupos_a_ejecutar)
+        if inexistentes:
+            print(rojo(negrita("❌ GRUPOS_TESTS referencia archivos que no existen:")))
+            for p in inexistentes:
+                print(rojo(f"     • {p}"))
+            print(rojo("   Corrige run_all_tests.py (o restaura el archivo) "
+                       "antes de ejecutar la suite."))
+            return 2
+
     if not args.include_gui:
         print(azul("ℹ️  Modo rápido: excluyendo pruebas GUI/slow."))
         print(azul("   Usa --include-gui para ejecutarlas."))
@@ -365,6 +428,8 @@ def main() -> int:
     start_time_global = time.time()
     resultados: dict[str, tuple[int, float, int]] = {}   # grupo -> (rc, elapsed, lineas)
     lineas_totales = 0
+    alertas_db: list[str] = []
+    hash_db_inicial = _sha256_archivo(DB_PRODUCCION)
 
     with open(log_file, "w", encoding="utf-8") as f_out:
         for nombre_grupo, paths in grupos_a_ejecutar.items():
@@ -390,6 +455,8 @@ def main() -> int:
             f_out.write("=" * 80 + "\n\n")
             f_out.flush()
 
+            hash_db_antes = _sha256_archivo(DB_PRODUCCION)
+
             rc, elapsed_grupo, lineas_grupo, interrumpido = ejecutar_comando_pytest(
                 cmd, env, f_out, args.watchdog, args.watchdog_alerta
             )
@@ -408,16 +475,35 @@ def main() -> int:
                 ))
                 f_out.write(f"\n[REINTENTO {intento} tras señal {rc}]\n")
                 f_out.flush()
+                hash_db_antes = _sha256_archivo(DB_PRODUCCION)
                 rc, elapsed_grupo, lineas_grupo, interrumpido = ejecutar_comando_pytest(
                     cmd, env, f_out, args.watchdog, args.watchdog_alerta
                 )
                 lineas_totales += lineas_grupo
+
+            # Guardarraíl de datos: la suite jamás debe escribir en la BD
+            # de producción (bug B3 de v3.0.1).
+            hash_db_despues = _sha256_archivo(DB_PRODUCCION)
+            if hash_db_antes != hash_db_despues:
+                msg = (f"Grupo {nombre_grupo} MODIFICÓ {DB_PRODUCCION.name} "
+                       f"({hash_db_antes} → {hash_db_despues})")
+                alertas_db.append(msg)
+                print(rojo(negrita(f"\n   🚨 {msg}")))
+                print(rojo("      Un test está escribiendo en la BD de producción. "
+                           "Aíslalo con tmp_path."))
+                f_out.write(f"\n[ALERTA BD] {msg}\n")
+                f_out.flush()
 
             resultados[nombre_grupo] = (rc, elapsed_grupo, lineas_grupo)
 
             if rc == 0:
                 print(verde(f"\n   ✅ Grupo {nombre_grupo}: OK "
                             f"({elapsed_grupo:.1f}s, {lineas_grupo} líneas)"))
+            elif rc == RC_SIN_TESTS:
+                print(rojo(f"\n   ❌ Grupo {nombre_grupo}: 0 TESTS RECOLECTADOS "
+                           f"(rc=5, {elapsed_grupo:.1f}s, {lineas_grupo} líneas)"))
+                print(rojo("      Revisa los paths del grupo: la cobertura se "
+                           "está perdiendo en silencio."))
             else:
                 print(rojo(f"\n   ❌ Grupo {nombre_grupo}: FALLÓ "
                            f"(returncode={rc}, "
@@ -440,11 +526,31 @@ def main() -> int:
     print(negrita("📋 Resumen por grupo:"))
     todos_ok = True
     for nombre, (rc, elapsed_g, lineas_g) in resultados.items():
-        estado = verde("✅ OK") if rc == 0 else rojo(f"❌ rc={rc}")
+        if rc == 0:
+            estado = verde("✅ OK")
+        elif rc == RC_SIN_TESTS:
+            estado = rojo("❌ 0 tests")
+        else:
+            estado = rojo(f"❌ rc={rc}")
         print(f"   {estado}  {nombre:<20} {elapsed_g:>6.1f}s  {lineas_g:>5} líneas")
         if rc != 0:
             todos_ok = False
     print()
+
+    # ── Guardarraíl de la BD de producción ──
+    hash_db_final = _sha256_archivo(DB_PRODUCCION)
+    if alertas_db or hash_db_final != hash_db_inicial:
+        todos_ok = False
+        print(rojo(negrita("🚨 LA SUITE TOCÓ LA BD DE PRODUCCIÓN")))
+        for msg in alertas_db:
+            print(rojo(f"   • {msg}"))
+        if not alertas_db:
+            print(rojo(f"   • {DB_PRODUCCION.name} cambió entre el inicio y el "
+                       f"final de la suite ({hash_db_inicial} → {hash_db_final})"))
+        print()
+    else:
+        print(verde(f"🔒 BD de producción intacta ({DB_PRODUCCION.name})"))
+        print()
 
     if todos_ok:
         print(verde(negrita("✅ TODAS LAS PRUEBAS PASARON")))

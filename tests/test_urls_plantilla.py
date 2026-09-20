@@ -7,7 +7,6 @@ El planificador referencia a menudo la URL de una dependencia, p. ej.
 estática y debe resolverse en tiempo de ejecución.
 """
 
-import pytest
 
 from core.agent import Agente, AgenteValidator, TipoAgente
 from core.executors import browser_executor

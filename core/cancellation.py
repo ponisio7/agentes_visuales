@@ -94,13 +94,31 @@ class CancellationToken:
     def agregar_callback(self, callback: Callable):
         """
         Agrega un callback que se ejecutará cuando se cancele.
-        
+
+        Si el token YA está cancelado, el callback se ejecuta de inmediato
+        (fuera del lock) en lugar de registrarse para una cancelación que
+        nunca volverá a ocurrir. Sin esto, un callback registrado en la
+        ventana de carrera posterior a ``cancelar()`` no se disparaba nunca
+        y podía dejar procesos o sesiones HTTP sin cerrar (ver
+        ``core/executors/shell_executor.py``, cuyo ``communicate()`` depende
+        por completo del callback).
+
+        Si el token ya está COMPLETED no se registra nada: nunca habrá
+        cancelación y el callback solo retendría recursos.
+
         Args:
             callback: Función a llamar con el token como argumento
         """
         with self._lock:
-            if callback not in self._callbacks:
+            estado = self.estado
+            if estado == CancellationState.ACTIVE and callback not in self._callbacks:
                 self._callbacks.append(callback)
+
+        if estado == CancellationState.CANCELLED:
+            try:
+                callback(self)
+            except Exception as e:
+                logger.warning(f"Error en callback de cancelación: {e}")
     
     def eliminar_callback(self, callback: Callable):
         """Elimina un callback registrado."""

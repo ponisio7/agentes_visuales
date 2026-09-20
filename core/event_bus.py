@@ -237,7 +237,10 @@ class EventBus:
         with self._lock:
             # Guardar historial
             self._historial.append(evento)
-            if len(self._historial) > self._max_historial:
+            # Semántica explícita: _max_historial <= 0 = sin límite. Antes se
+            # recortaba con [-0:], que es la lista entera, así que el valor 0
+            # significaba "ilimitado" por accidente; ahora se ve en el código.
+            if self._max_historial > 0 and len(self._historial) > self._max_historial:
                 self._historial = self._historial[-self._max_historial:]
             
             # Obtener suscriptores específicos
@@ -412,8 +415,14 @@ class EventBus:
     # ============================================================
     
     def obtener_historial(self, limit: int = 100) -> list[Event]:
-        """Obtiene el historial de eventos."""
+        """Obtiene el historial de eventos.
+
+        Con ``limit <= 0`` devuelve una lista vacía: ``self._historial[-0:]``
+        es ``[0:]`` (todo el historial), no una lista vacía.
+        """
         with self._lock:
+            if limit <= 0:
+                return []
             return self._historial[-limit:]
     
     def obtener_estadisticas(self) -> dict:
