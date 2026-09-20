@@ -81,6 +81,8 @@ def test_construir_mensajes_multimodales():
 def test_decision_valida_se_devuelve():
     llm = _LLMFalso(json.dumps({
         "razon": "hay un botón de aceptar",
+        "evidencia": "se ve el banner de cookies",
+        "objetivo": "aceptar cookies",
         "accion": {"tipo": "click", "selector": "#aceptar"},
     }))
     decision = decidir_accion_desde_captura(llm, PNG_1x1, "acepta las cookies")
@@ -88,12 +90,20 @@ def test_decision_valida_se_devuelve():
     assert decision is not None
     assert decision["accion"] == {"tipo": "click", "selector": "#aceptar"}
     assert "botón" in decision["razon"]
+    # V3.8-5: la traza del bucle necesita objetivo y evidencia.
+    assert decision["objetivo"] == "aceptar cookies"
+    assert decision["evidencia"] == "se ve el banner de cookies"
 
 
 def test_decision_null_cuando_ya_esta_resuelto():
     llm = _LLMFalso('{"razon": "ya se ve la información", "accion": null}')
     decision = decidir_accion_desde_captura(llm, PNG_1x1, "lee el precio")
-    assert decision == {"razon": "ya se ve la información", "accion": None}
+    assert decision == {
+        "razon": "ya se ve la información",
+        "evidencia": "",
+        "objetivo": "",
+        "accion": None,
+    }
 
 
 def test_accion_fuera_del_allowlist_se_rechaza():

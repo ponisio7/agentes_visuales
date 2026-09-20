@@ -65,6 +65,12 @@ ACCIONES_VALIDAS = (
     "scroll", "screenshot", "ejecutar_js", "navegar",
 )
 
+# V3.8-5: acciones de BUCLE, opt-in y fuera del vocabulario del VLM. ``vision``
+# activa el ciclo percibir→razonar→actuar→verificar; no se incluye en
+# ``ACCIONES_VALIDAS`` para que el propio modelo no pueda proponerlo (evita
+# recursión) y para que el efecto sea siempre una decisión del plan.
+ACCIONES_BUCLE = ("vision",)
+
 # Tipos de recurso que se pueden bloquear para acelerar la carga.
 RECURSOS_BLOQUEABLES = {"image", "font", "stylesheet", "media"}
 
@@ -607,6 +613,21 @@ class BrowserExecutor:
                 })
                 continue
 
+            # V3.8-5: el bucle de visión es OPT-IN y no forma parte del
+            # vocabulario que el VLM puede proponer (evita recursión).
+            if str(accion.get("tipo", "") or "").strip().lower() in ACCIONES_BUCLE:
+                registros.append(cls._ejecutar_bucle_vision(
+                    page=page,
+                    accion=accion,
+                    agente=agente,
+                    datos_extraidos=datos_extraidos,
+                    screenshots=screenshots,
+                    cancellation_token=cancellation_token,
+                ))
+                if progreso is not None:
+                    progreso(i, len(acciones), accion)
+                continue
+
             registros.append(cls._ejecutar_accion(
                 page=page,
                 accion=accion,
@@ -620,6 +641,79 @@ class BrowserExecutor:
             if progreso is not None:
                 progreso(i, len(acciones), accion)
         return registros, False
+
+    @classmethod
+    def _ejecutar_bucle_vision(
+        cls,
+        page,
+        accion: dict,
+        agente=None,
+        datos_extraidos: dict | None = None,
+        screenshots: list | None = None,
+        cancellation_token: CancellationToken | None = None,
+    ) -> dict:
+        """Ejecuta el bucle Browser + Visión como acción opt-in (V3.8-5).
+
+        Sin ``AGENTES_VISION_HABILITADA`` no se llama al modelo multimodal: se
+        devuelve un registro explicativo. Nunca lanza.
+        """
+        registro: dict = {"tipo": "vision", "ok": False}
+        datos = datos_extraidos if datos_extraidos is not None else {}
+        shots = screenshots if screenshots is not None else []
+        try:
+            from core.browser_vision_loop import (
+                BrowserVisionLoop,
+                crear_driver_playwright,
+            )
+            from core.vision import vision_habilitada
+
+            if not vision_habilitada():
+                registro["detalle"] = (
+                    "visión deshabilitada (activa AGENTES_VISION_HABILITADA=1)"
+                )
+                registro["error"] = registro["detalle"]
+                return registro
+
+            llm = None
+            try:
+                from core.llm_client import obtener_llm_client_compartido
+
+                llm = obtener_llm_client_compartido()
+            except Exception as e:
+                logger.debug(f"Visión: cliente LLM no disponible: {e}")
+
+            driver = crear_driver_playwright(
+                page,
+                agente=agente,
+                datos_extraidos=datos,
+                screenshots=shots,
+            )
+            bucle = BrowserVisionLoop(
+                driver,
+                llm,
+                instruccion=str(
+                    accion.get("instruccion") or accion.get("objetivo") or ""
+                ),
+                max_steps=accion.get("max_steps"),
+                max_segundos=accion.get("max_segundos"),
+                max_capturas=accion.get("max_capturas"),
+                cancellation_token=cancellation_token,
+            )
+            resultado = bucle.ejecutar()
+            datos["vision"] = resultado
+            registro["ok"] = bool(resultado.get("ok"))
+            registro["detalle"] = (
+                f"visión: {resultado.get('motivo')} "
+                f"({resultado.get('pasos')} pasos, "
+                f"{resultado.get('capturas')} capturas)"
+            )
+            registro["vision"] = resultado
+        except Exception as e:
+            logger.warning(f"Visión: el bucle falló: {e}")
+            registro["ok"] = False
+            registro["error"] = str(e)
+            registro["detalle"] = f"error en el bucle de visión: {e}"
+        return registro
 
 
     # ── Helpers ──────────────────────────────────────────────────

@@ -133,6 +133,45 @@ class LLMResultado:
         }
 
 
+# ============================================================
+# OBSERVADORES DE USO (V3.8-2)
+# ============================================================
+# ``completar`` es el punto ÚNICO por el que sale una petición al LLM. Estos
+# observadores permiten contabilizar tokens y coste sin acoplar el cliente al
+# ``BudgetManager`` y sin exigir que el cliente compartido exista de antemano:
+# el observador se registra una vez y contabiliza todas las llamadas.
+_OBSERVADORES: list[Any] = []
+_OBSERVADORES_LOCK = threading.Lock()
+
+
+def agregar_observador_llamada(callback: Any) -> None:
+    """Registra ``callback(resultado)`` para cada llamada al LLM."""
+    if callback is None:
+        return
+    with _OBSERVADORES_LOCK:
+        if callback not in _OBSERVADORES:
+            _OBSERVADORES.append(callback)
+
+
+def quitar_observador_llamada(callback: Any) -> None:
+    """Elimina un observador previamente registrado (idempotente)."""
+    with _OBSERVADORES_LOCK:
+        try:
+            _OBSERVADORES.remove(callback)
+        except ValueError:
+            pass
+
+
+def _notificar_observadores(resultado: "LLMResultado") -> None:
+    with _OBSERVADORES_LOCK:
+        observadores = list(_OBSERVADORES)
+    for callback in observadores:
+        try:
+            callback(resultado)
+        except Exception as e:  # la contabilidad nunca rompe una llamada
+            logger.debug(f"Observador de uso del LLM falló: {e}")
+
+
 class LLMClient:
     """
     Cliente para interactuar con modelos LLM de DeepSeek.
@@ -347,13 +386,16 @@ class LLMClient:
         if (contenido is None or not contenido.strip()) and razonamiento:
             contenido = razonamiento
 
-        return LLMResultado(
+        resultado = LLMResultado(
             contenido=contenido,
             razonamiento=razonamiento,
             finish_reason=getattr(eleccion, "finish_reason", None),
             uso=getattr(response, "usage", None),
             modelo=modelo,
         )
+        # V3.8-2: contabilidad de tokens/coste (best-effort, nunca rompe).
+        _notificar_observadores(resultado)
+        return resultado
 
     def completar_multimodal(
         self,

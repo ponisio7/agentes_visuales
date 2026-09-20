@@ -487,9 +487,14 @@ def _ejecutar_pipeline(
     timeout: float | None = None,
     aprender: bool = True,
     agente: str | None = None,
+    job_id: str | None = None,
     log: logging.Logger | None = None,
 ) -> dict[str, Any]:
     """Genera el plan y lo ejecuta sin GUI.
+
+    ``job_id`` (V3.8-3) enlaza la ejecución con el registro de cancelación:
+    ``POST /api/jobs/<id>/cancel`` deja una solicitud y el latido de este
+    bucle la convierte en ``scheduler.detener()`` dentro del hilo de Qt.
 
     Devuelve un dict serializable con el plan, el estado de cada agente, el
     texto del último resultado correcto y metadatos de la ejecución.
@@ -551,7 +556,21 @@ def _ejecutar_pipeline(
 
     inicio = time.time()
     bucle = QEventLoop()
-    estado = {"terminada": False}
+    estado = {"terminada": False, "cancelada": False}
+
+    # V3.8-3: cancelación real del job. El hilo HTTP (werkzeug) solo deja una
+    # solicitud en este registro; el latido de abajo, que corre en el hilo de
+    # Qt dueño del Scheduler, la convierte en ``scheduler.detener()``.
+    registro = None
+    if job_id:
+        try:
+            from core.job_cancellation import obtener_registro_cancelacion
+
+            registro = obtener_registro_cancelacion()
+            registro.registrar(job_id, lambda razon: scheduler.detener())
+        except Exception as e:
+            log.debug("Registro de cancelación no disponible: %s", e)
+            registro = None
 
     def _al_terminar():
         estado["terminada"] = True
@@ -565,10 +584,20 @@ def _ejecutar_pipeline(
         _al_terminar, Qt.ConnectionType.QueuedConnection
     )
 
-    # Latido: obliga al intérprete a ejecutar código cada 200 ms para que
-    # Ctrl-C (SIGINT) no quede bloqueado dentro del bucle de eventos de Qt.
+    def _latido():
+        # Latido: obliga al intérprete a ejecutar código cada 200 ms para que
+        # Ctrl-C (SIGINT) no quede bloqueado dentro del bucle de eventos de Qt.
+        # Además atiende la cancelación real del job (V3.8-3).
+        if registro is not None and not estado["cancelada"]:
+            razon = registro.consumir(job_id)
+            if razon:
+                estado["cancelada"] = True
+                log.warning("Cancelación del job %s: %s", job_id, razon)
+                scheduler.detener()
+                bucle.quit()
+
     latido = QTimer()
-    latido.timeout.connect(lambda: None)
+    latido.timeout.connect(_latido)
     latido.start(200)
 
     temporizador = None
@@ -578,17 +607,23 @@ def _ejecutar_pipeline(
         temporizador.timeout.connect(bucle.quit)
         temporizador.start(max(1, int(timeout * 1000)))
 
-    log.info("Ejecutando %d agentes (max_concurrent=%d)", len(agentes), MAX_CONCURRENT_DEFAULT)
-    scheduler.iniciar()
+    # Si la cancelación llegó entre el encolado y el arranque, no se ejecuta.
+    if registro is not None and registro.consumir(job_id):
+        estado["cancelada"] = True
+        log.warning("El job %s se canceló antes de arrancar", job_id)
 
-    # Con QueuedConnection, una ejecución que termina durante iniciar() deja
-    # la señal encolada: hay que drenarla antes de decidir si entramos en
-    # bucle.exec(), o el chequeo de abajo vería "no terminada" y "no
-    # ejecutando" a la vez y abortaría una ejecución válida.
-    _asegurar_qt().processEvents()
+    if not estado["cancelada"]:
+        log.info("Ejecutando %d agentes (max_concurrent=%d)", len(agentes), MAX_CONCURRENT_DEFAULT)
+        scheduler.iniciar()
+
+        # Con QueuedConnection, una ejecución que termina durante iniciar() deja
+        # la señal encolada: hay que drenarla antes de decidir si entramos en
+        # bucle.exec(), o el chequeo de abajo vería "no terminada" y "no
+        # ejecutando" a la vez y abortaría una ejecución válida.
+        _asegurar_qt().processEvents()
 
     try:
-        if not estado["terminada"]:
+        if not estado["terminada"] and not estado["cancelada"]:
             if scheduler.esta_ejecutando():
                 bucle.exec()
             else:
@@ -602,8 +637,11 @@ def _ejecutar_pipeline(
         latido.stop()
         if temporizador is not None:
             temporizador.stop()
+        if registro is not None:
+            registro.limpiar(job_id)
 
-    agotado = not estado["terminada"]
+    cancelado = bool(estado["cancelada"])
+    agotado = not estado["terminada"] and not cancelado
     if agotado:
         log.warning("Timeout de %ss agotado: deteniendo la ejecución", timeout)
         scheduler.detener()
@@ -626,6 +664,10 @@ def _ejecutar_pipeline(
     completados = [a for a in salida_agentes if a["ok"]]
     aceptacion = scheduler.obtener_resultado_aceptacion()
     correcto, estado_final = _calcular_estado_final(salida_agentes, aceptacion)
+    if cancelado:
+        # Una ejecución cancelada nunca es un éxito, aunque lo ejecutado
+        # hasta el momento fuera válido.
+        correcto = False
 
     ejecucion_id = None
     if aprender and estado["terminada"]:
@@ -658,6 +700,7 @@ def _ejecutar_pipeline(
         "resultado": _extraer_texto(completados[-1]["resultado"]) if completados else "",
         "duracion": round(duracion, 2),
         "timeout_agotado": agotado,
+        "cancelado": cancelado,
         "ejecucion_id": ejecucion_id,
         "aceptacion": _json_limpio(aceptacion),
         "advertencias": list(getattr(plan, "advertencias", []) or []),

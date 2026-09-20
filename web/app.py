@@ -150,6 +150,9 @@ class ColaTrabajos:
                     timeout=trabajo["timeout"],
                     aprender=trabajo["aprender"],
                     agente=trabajo["agente"],
+                    # V3.8-3: el pipeline registra el job en el registro de
+                    # cancelación para poder detenerlo de verdad.
+                    job_id=trabajo.get("job_id"),
                     log=log,
                 )
             except Exception as e:
@@ -157,9 +160,13 @@ class ColaTrabajos:
                 trabajo["error"] = str(e)
             finally:
                 salida = trabajo.get("resultado") or {}
-                trabajo["estado"] = (
-                    "completed" if salida.get("ok") else "failed"
-                )
+                if trabajo.get("cancelado"):
+                    # V3.8-3: la cancelación es un estado propio, no un fallo.
+                    trabajo["estado"] = "cancelled"
+                else:
+                    trabajo["estado"] = (
+                        "completed" if salida.get("ok") else "failed"
+                    )
                 trabajo["terminado"] = time.time()
                 trabajo["evento"].set()
         return procesados

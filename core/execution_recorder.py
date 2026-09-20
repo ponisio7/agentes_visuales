@@ -90,6 +90,14 @@ def registrar_ejecucion_en_aprendizaje(
     motivos = aceptacion.get("motivos") or []
     motivo_fallo = "" if aceptada_final else "; ".join(str(m) for m in motivos)[:2000]
 
+    # V3.8-2: consumo de presupuesto (llamadas/tokens/coste) de la ejecución.
+    # Best-effort: si el scheduler no lo expone, se guardan ceros.
+    consumo: dict = {}
+    try:
+        consumo = (scheduler.presupuesto.resumen() or {}).get("consumo") or {}
+    except Exception as e:
+        logger.debug(f"No se pudo leer el presupuesto: {e}")
+
     # 1. Guardar en DB - incluir plan original si hubo Plan B, deduplicando por id
     try:
         vistos_db: set = set()
@@ -119,6 +127,9 @@ def registrar_ejecucion_en_aprendizaje(
             resultado=resumen_plan_snap,
             aceptada=1 if aceptada_final else 0,
             motivo_fallo=motivo_fallo,
+            llamadas_llm=int(consumo.get("llamadas", 0) or 0),
+            tokens_total=int(consumo.get("tokens_total", 0) or 0),
+            coste=float(consumo.get("coste", 0.0) or 0.0),
         )
     except Exception as e:
         logger.warning(f"No se pudo guardar la ejecución: {e}")

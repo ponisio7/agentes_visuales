@@ -424,11 +424,23 @@ class LearningEngine:
                 }
                 if not {"problema_embedding", "aceptada"} <= columnas:
                     return []
+                # V3.8-4: preferir el ÉXITO REAL reindexado. Las filas todavía
+                # sin indexar (exito_real NULL y sin motivo) caen al criterio
+                # antiguo (aceptada=1) para no dejar el retrieval vacío; las
+                # ya evaluadas como no exitosas o indeterminadas se excluyen.
+                if "exito_real" in columnas:
+                    filtro_exito = (
+                        "(exito_real = 1 OR (exito_real IS NULL "
+                        "AND COALESCE(exito_real_motivo, '') = '' "
+                        "AND aceptada = 1))"
+                    )
+                else:
+                    filtro_exito = "aceptada = 1"
                 filas = conn.execute(
-                    """SELECT id, problema, plan_json, resultado, fecha,
-                              problema_embedding
+                    f"""SELECT id, problema, plan_json, resultado, fecha,
+                               problema_embedding
                        FROM ejecuciones
-                       WHERE aceptada = 1
+                       WHERE {filtro_exito}
                          AND problema_embedding IS NOT NULL
                          AND problema_embedding_model = ?
                          AND problema IS NOT NULL AND problema != ''

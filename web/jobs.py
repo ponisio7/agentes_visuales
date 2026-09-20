@@ -115,6 +115,10 @@ class GestorTrabajos:
             "ejecucion_id": (salida or {}).get("ejecucion_id"),
             "aceptada": aceptacion.get("aceptada"),
             "motivos": aceptacion.get("motivos") or [],
+            # V3.8: si la ejecución se abortó por una parada dura, el job
+            # expone el código y el motivo (API_KEY_MISSING, etc.).
+            "parada_dura": aceptacion.get("parada_dura"),
+            "presupuesto": aceptacion.get("presupuesto"),
             "resultado": (salida or {}).get("resultado", ""),
             "cancelado": bool(trabajo.get("cancelado")),
         }
@@ -153,12 +157,13 @@ class GestorTrabajos:
     # Cancelación (best-effort)
     # ------------------------------------------------------------
     def cancelar(self, job_id: str) -> tuple[bool, str]:
-        """Marca el trabajo como cancelado.
+        """Cancela un trabajo: encolado o **en ejecución** (V3.8-3).
 
         - Encolado: no llegará a ejecutarse.
-        - En ejecución: no se puede interrumpir el pipeline desde el hilo
-          HTTP (el Scheduler vive en el hilo de Qt); se marca la petición y
-          el trabajo termina cuando la ejecución acabe.
+        - En ejecución: se deja una solicitud en el registro de cancelación;
+          el hilo de Qt la consume en su siguiente latido y llama a
+          ``Scheduler.detener()``, que cancela tokens y workers de verdad.
+          Antes solo se marcaba la petición y la ejecución seguía.
 
         Devuelve ``(encontrado, mensaje)``.
         """
@@ -171,4 +176,17 @@ class GestorTrabajos:
         if trabajo.get("estado") == QUEUED:
             trabajo["estado"] = CANCELLED
             return True, "job cancelado antes de ejecutarse"
+
+        # V3.8-3: cancelación real. El hilo HTTP no toca el Scheduler (vive en
+        # el hilo de Qt); deja la solicitud y el latido del pipeline la atiende.
+        try:
+            from core.job_cancellation import obtener_registro_cancelacion
+
+            en_ejecucion = obtener_registro_cancelacion().solicitar(
+                job_id, "Cancelado por el usuario desde la API"
+            )
+        except Exception:
+            en_ejecucion = False
+        if en_ejecucion:
+            return True, "cancelación solicitada; la ejecución se detendrá en breve"
         return True, "cancelación solicitada; el job terminará su ejecución actual"

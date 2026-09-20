@@ -21,10 +21,15 @@ from typing import Any
 
 from PyQt6.QtCore import QObject, Qt, pyqtSignal, pyqtSlot
 
+from . import dependency_manager
+from .acceptance_manager import calcular_aceptacion
 from .agent import Agente, EstadoAgente, TipoAgente
 from .bridge import SchedulerBridge
+from .budget_manager import BudgetManager
 from .cancellation import CancellationToken, obtener_gestor_cancelacion
 from .event_bus import obtener_bus
+from .execution_log import resumir_error, resumir_resultado
+from .recovery_manager import RecoveryDecision, RecoveryManager
 
 # ============================================================
 # MÁQUINA DE ESTADOS - TRANSICIONES VÁLIDAS
@@ -121,6 +126,7 @@ class Scheduler(QObject):
         *,
         max_intentos_plan_b: int | None = None,
         presupuesto_plan_b_seg: float | None = None,
+        presupuesto: BudgetManager | None = None,
     ):
         super().__init__()
 
@@ -147,6 +153,14 @@ class Scheduler(QObject):
         # H7: anti-repetición y traza de intentos.
         self._firmas_plan_fallidas: set[str] = set()
         self._reparaciones_intentadas: list[dict] = []
+        # V3.8: paradas duras. El manager decide si un fallo merece Plan B;
+        # ``_parada_dura`` guarda la última parada para exponerla en el
+        # resultado de aceptación (API/GUI) y para no gastar intentos.
+        # El presupuesto (tiempo/llamadas/tokens/coste) alimenta al manager:
+        # si se agota, la recuperación es una parada dura BUDGET_EXCEEDED.
+        self.presupuesto = presupuesto or BudgetManager.desde_entorno()
+        self.recovery_manager = RecoveryManager(budget=self.presupuesto)
+        self._parada_dura: dict | None = None
 
         # ── Estado de agentes ──
         self.agentes: dict[str, Agente] = {}
@@ -213,6 +227,13 @@ class Scheduler(QObject):
         self._plan_b_inicio = None
         self._firmas_plan_fallidas = set()
         self._reparaciones_intentadas = []
+        # V3.8: cada ejecución arranca sin paradas duras previas y con el
+        # presupuesto a cero (el reloj empieza en ``iniciar()``).
+        self._parada_dura = None
+        if getattr(self, "recovery_manager", None) is not None:
+            self.recovery_manager.reset()
+        if getattr(self, "presupuesto", None) is not None:
+            self.presupuesto.reset()
         logger.debug("Plan B contexto inyectado en Scheduler")
 
     # ============================================================
@@ -303,124 +324,41 @@ class Scheduler(QObject):
     # DEPENDENCIAS Y VALIDACIÓN
     # ============================================================
     def resolver_dependencias(self):
-        """Resuelve las dependencias por nombre a IDs."""
+        """Resuelve las dependencias por nombre a IDs (V3.8-6: delegado)."""
         with self._lock:
-            nombre_a_id = {a.nombre: a.id for a in self.agentes.values()}
-
-            for agente in self.agentes.values():
-                if agente.dependencias_nombres:
-                    ids_resueltos = []
-                    for nombre in agente.dependencias_nombres:
-                        if nombre in nombre_a_id:
-                            ids_resueltos.append(nombre_a_id[nombre])
-                        else:
-                            self.log_mensaje.emit(
-                                f"⚠️ Dependencia '{nombre}' no encontrada para {agente.nombre}",
-                                "#ffc107"
-                            )
-                    agente.dependencias_ids = ids_resueltos
-                    agente.dependencias_nombres = []
+            no_encontradas = dependency_manager.resolver_dependencias(self.agentes)
+        for agente_nombre, nombre in no_encontradas:
+            self.log_mensaje.emit(
+                f"⚠️ Dependencia '{nombre}' no encontrada para {agente_nombre}",
+                "#ffc107",
+            )
 
     def detectar_ciclos(self) -> tuple[bool, list[list[str]]]:
-        """Detecta ciclos en las dependencias usando DFS."""
+        """Detecta ciclos en las dependencias usando DFS (V3.8-6: delegado)."""
         with self._lock:
-            visitados = set()
-            pila = set()
-            ciclos = []
-            id_a_nombre = {aid: a.nombre for aid, a in self.agentes.items()}
-
-            def dfs(agente_id: str, path: list[str]):
-                if agente_id in pila:
-                    try:
-                        idx = path.index(agente_id)
-                    except ValueError:
-                        return
-                    ciclo_ids = path[idx:] + [agente_id]
-                    ciclo_nombres = [id_a_nombre.get(aid, aid) for aid in ciclo_ids]
-                    if ciclo_nombres not in ciclos:
-                        ciclos.append(ciclo_nombres)
-                    return
-
-                if agente_id in visitados:
-                    return
-
-                visitados.add(agente_id)
-                pila.add(agente_id)
-                path.append(agente_id)
-
-                agente = self.agentes.get(agente_id)
-                if agente:
-                    for dep_id in list(agente.dependencias_ids):
-                        if dep_id in self.agentes:
-                            dfs(dep_id, path)
-
-                path.pop()
-                pila.remove(agente_id)
-
-            for agente_id in list(self.agentes.keys()):
-                if agente_id not in visitados:
-                    dfs(agente_id, [])
-
-            return bool(ciclos), ciclos
+            return dependency_manager.detectar_ciclos(self.agentes)
 
     def _validar_fuentes_loop(self) -> tuple[bool, list[str]]:
-        """Valida que las fuentes de items de los loops sean válidas."""
+        """Valida que las fuentes de items de los loops sean válidas (V3.8-6)."""
         with self._lock:
-            errores = []
-            for agente in self.agentes.values():
-                if agente.tipo != TipoAgente.LOOP:
-                    continue
-
-                nombre_fuente = agente.obtener_nombre_dependencia()
-                if not nombre_fuente:
-                    errores.append(
-                        f"{agente.nombre}: 'fuente_items' debe tener formato 'Dependencia.clave'"
-                    )
-                    continue
-
-                nombres_deps = {
-                    self.agentes[dep_id].nombre
-                    for dep_id in agente.dependencias_ids
-                    if dep_id in self.agentes
-                }
-
-                if nombre_fuente not in nombres_deps:
-                    errores.append(
-                        f"{agente.nombre}: la fuente '{nombre_fuente}' no es una "
-                        f"dependencia declarada (dependencias: {sorted(nombres_deps) or 'ninguna'})"
-                    )
-
-            return not errores, errores
+            return dependency_manager.validar_fuentes_loop(self.agentes)
 
     # ============================================================
     # LÓGICA INTERNA DE EJECUCIÓN
     # ============================================================
     def _obtener_dependencias_pendientes(self, agente: Agente) -> list[str]:
+        """Dependencias que aún no están COMPLETADAS (V3.8-6: delegado).
+
+        Solo COMPLETADO satisface una dependencia. ERROR, TIMEOUT, CANCELADO,
+        SALTADO y BLOQUEADO NO la satisfacen.
         """
-        Retorna las dependencias que aún NO están COMPLETADAS.
-        Solo COMPLETADO satisface una dependencia.
-        ERROR, TIMEOUT, CANCELADO, SALTADO y BLOQUEADO NO la satisfacen.
-        """
-        pendientes = []
-        for dep_id in agente.dependencias_ids:
-            dep = self.agentes.get(dep_id)
-            if dep and dep.estado != EstadoAgente.COMPLETADO:
-                pendientes.append(dep_id)
-        return pendientes
+        return dependency_manager.obtener_dependencias_pendientes(
+            agente, self.agentes
+        )
 
     def _tiene_dependencias_fallidas(self, agente: Agente) -> bool:
-        """Retorna True si alguna dependencia terminó en estado terminal no exitoso."""
-        for dep_id in agente.dependencias_ids:
-            dep = self.agentes.get(dep_id)
-            if dep and dep.estado in (
-                EstadoAgente.ERROR,
-                EstadoAgente.TIMEOUT,
-                EstadoAgente.CANCELADO,
-                EstadoAgente.SALTADO,
-                EstadoAgente.BLOQUEADO,
-            ):
-                return True
-        return False
+        """True si alguna dependencia falló (V3.8-6: delegado)."""
+        return dependency_manager.tiene_dependencias_fallidas(agente, self.agentes)
 
     def _puede_ejecutar_internal(self, agente: Agente) -> bool:
         """Verifica si un agente puede ejecutarse (bajo lock)."""
@@ -961,6 +899,74 @@ class Scheduler(QObject):
             self._plan_b_en_progreso = True
             return True
 
+    def _decidir_recuperacion(
+        self,
+        agente: Agente,
+        razon: str,
+        origen: str = "ejecucion",
+    ) -> RecoveryDecision:
+        """Pregunta al RecoveryManager si el fallo merece un Plan B (V3.8).
+
+        Nunca debe romper la ejecución: si el manager falla, se permite el
+        reintento (como antes de V3.8).
+        """
+        try:
+            return self.recovery_manager.decidir(
+                error=razon,
+                agente=agente,
+                intento=self._plan_b_intentos + 1,
+                origen=origen,
+                presupuesto_agotado=self.presupuesto.agotado(),
+            )
+        except Exception as e:  # nunca romper la recuperación por el manager
+            logger.warning(
+                f"RecoveryManager falló; se permite el reintento por defecto: {e}"
+            )
+            return RecoveryDecision(
+                permitir_reintento=True,
+                motivo=f"RecoveryManager no disponible: {e}",
+            )
+
+    def _registrar_parada_dura(self, decision: RecoveryDecision, agente: Agente) -> None:
+        """Anota y anuncia una parada dura: no se gasta Plan B."""
+        self._parada_dura = decision.to_dict()
+        nombre = getattr(agente, "nombre", "?")
+        self.log_mensaje.emit(
+            f"🛑 Parada dura [{decision.codigo}]: {decision.motivo} "
+            f"(no se intenta Plan B)",
+            "#dc3545",
+        )
+        try:
+            self._bus.publicar_log(
+                f"🛑 Parada dura [{decision.codigo}] en '{nombre}': "
+                f"{decision.motivo}",
+                "#dc3545",
+                origen="scheduler.recovery",
+            )
+        except Exception:
+            pass
+        logger.error(
+            f"Parada dura [{decision.codigo}] en '{nombre}': {decision.motivo}"
+        )
+        # Auditoría best-effort en ``reparaciones_plan`` (nunca rompe el flujo).
+        try:
+            db_path = getattr(self.recovery, "db_path", "")
+            if db_path:
+                from .plan_recovery import registrar_reparacion
+
+                registrar_reparacion(
+                    db_path,
+                    problema=self._problema_original,
+                    intento=self._plan_b_intentos + 1,
+                    agente=nombre,
+                    error=decision.motivo,
+                    estrategia="parada_dura",
+                    resultado=f"parada_dura:{decision.codigo}",
+                    exito=False,
+                )
+        except Exception as e:
+            logger.debug(f"No se pudo auditar la parada dura: {e}")
+
     def _bloquear_dependientes(self, agente_id: str, razon: str) -> bool:
         """
         Bloquea a todos los agentes que dependen directamente del agente que falló.
@@ -978,9 +984,18 @@ class Scheduler(QObject):
         # hace ya sin él.
         with self._lock:
             agente_fallido_pre = self.agentes.get(agente_id)
-        if agente_fallido_pre is not None and self._reclamar_plan_b():
-            if self._intentar_plan_b(agente_fallido_pre, razon):
-                return True  # Plan B lanzado con éxito, no bloquear nada
+        if agente_fallido_pre is not None:
+            # V3.8: antes de gastar un Plan B, el RecoveryManager decide si el
+            # fallo es recuperable. Las paradas duras (API key ausente,
+            # dependencia que falta, problema inválido, bloqueo de seguridad,
+            # contrato imposible, presupuesto agotado, timeout global) abortan
+            # SIN llamar al LLM ni consumir intentos.
+            decision = self._decidir_recuperacion(agente_fallido_pre, razon)
+            if not decision.permitir_reintento:
+                self._registrar_parada_dura(decision, agente_fallido_pre)
+            elif self._reclamar_plan_b():
+                if self._intentar_plan_b(agente_fallido_pre, razon):
+                    return True  # Plan B lanzado con éxito, no bloquear nada
 
         with self._lock:
             dependientes_bloqueados = []
@@ -1262,226 +1277,30 @@ class Scheduler(QObject):
     # HELPERS PARA LOG DE RESULTADOS
     # ============================================================
 
-    # core/scheduler.py - ACTUALIZAR _resumir_resultado_log (sección HTTP)
-
     def _resumir_resultado_log(self, agente: Agente, resultado: Any) -> str:
-        """
-        Genera un resumen legible del resultado para el log.
-        """
-        max_len = self._MAX_RESULTADO_LOG
-        tipo = agente.tipo
-
-        if resultado is None:
-            return "sin resultado"
-
-        try:
-            # ── HTTP (NUEVO FORMATO UNIFICADO) ──
-            if tipo == TipoAgente.HTTP and isinstance(resultado, dict):
-                status = resultado.get('status_code', '?')
-                url = resultado.get('url', '')
-                json_data = resultado.get('json')  # ← SIEMPRE presente, puede ser None
-                body = resultado.get('body', '')
-
-                # Si hay JSON, mostrar resumen del JSON
-                if json_data is not None:
-                    if isinstance(json_data, dict):
-                        # Buscar claves de interés
-                        claves_interes = [k for k in ('data', 'results', 'items', 'message', 'status') if k in json_data]
-                        if claves_interes:
-                            preview = {k: json_data.get(k) for k in claves_interes[:3]}
-                            return f"HTTP {status} | {url[:40]} | JSON: {str(preview)[:max_len]}"
-                        claves = list(json_data.keys())[:3]
-                        return f"HTTP {status} | {url[:40]} | JSON claves: {claves}"
-                    elif isinstance(json_data, list):
-                        return f"HTTP {status} | {url[:40]} | JSON array: {len(json_data)} items"
-                    else:
-                        return f"HTTP {status} | {url[:40]} | JSON: {str(json_data)[:max_len]}"
-
-                # Si no hay JSON pero hay body
-                if body:
-                    body_preview = body[:max_len].replace('\n', ' ').strip()
-                    if body_preview:
-                        return f"HTTP {status} | {url[:40]} | body: {body_preview}"
-
-                # Si hay error
-                if resultado.get('error'):
-                    return f"HTTP {status} | {url[:40]} | error: {resultado['error'][:max_len]}"
-
-                return f"HTTP {status} | {url[:50]}"
-
-            # ── LLM ──
-            elif tipo == TipoAgente.LLM and isinstance(resultado, dict):
-                respuesta = resultado.get('respuesta', '')
-                tokens = resultado.get('tokens_uso', {})
-                token_info = f" ({tokens.get('total', '?')} tokens)" if tokens else ""
-
-                if len(respuesta) > max_len:
-                    return f"{respuesta[:max_len]}...{token_info}"
-                return f"{respuesta}{token_info}" if respuesta else "sin respuesta"
-
-            # ── Shell ──
-            elif tipo == TipoAgente.SHELL and isinstance(resultado, dict):
-                stdout = resultado.get('stdout', '')
-                stderr = resultado.get('stderr', '')
-                codigo = resultado.get('codigo', '?')
-
-                if stdout:
-                    preview = stdout[:max_len] + "..." if len(stdout) > max_len else stdout
-                    preview = preview.replace('\n', ' ').strip()
-                    return f"exit={codigo} | {preview}"
-                elif stderr:
-                    preview = stderr[:max_len] + "..." if len(stderr) > max_len else stderr
-                    preview = preview.replace('\n', ' ').strip()
-                    return f"exit={codigo} | stderr: {preview}"
-                else:
-                    return f"exit={codigo} | sin salida"
-
-            # ── File ──
-            elif tipo == TipoAgente.FILE and isinstance(resultado, dict):
-                archivo = resultado.get('archivo', '')
-                tamaño = resultado.get('tamaño', resultado.get('caracteres_escritos', 0))
-                operacion = getattr(agente, 'operacion_file', '')
-                if operacion:
-                    return f"{operacion} | {archivo} | {tamaño} bytes"
-                return f"{archivo} | {tamaño} bytes"
-
-            # ── Loop ──
-            elif tipo == TipoAgente.LOOP and isinstance(resultado, dict):
-                total = resultado.get('total_items', 0)
-                exitos = resultado.get('exitos', 0)
-                errores = resultado.get('errores', 0)
-                duracion = resultado.get('duracion_total', 0)
-                return f"{total} items | ✅{exitos} ❌{errores} | {duracion:.1f}s"
-
-            # ── Browser ──
-            elif tipo == TipoAgente.BROWSER and isinstance(resultado, dict):
-                # Modo multi-URL ('urls_desde')
-                if 'urls_navegadas' in resultado:
-                    navegadas = resultado.get('urls_navegadas', 0)
-                    errores = resultado.get('errores') or []
-                    urls = [
-                        (r.get('url') or '')[:40]
-                        for r in (resultado.get('resultados_por_url') or [])[:2]
-                        if isinstance(r, dict)
-                    ]
-                    preview = f"{navegadas} URLs | {urls} | errores: {len(errores)}"
-                    if resultado.get('error'):
-                        preview += f" | error: {str(resultado['error'])[:max_len]}"
-                    return preview
-
-                titulo = (resultado.get('titulo') or '')[:40]
-                url = (resultado.get('url_final') or '')[:40]
-                datos = resultado.get('datos_extraidos') or {}
-                acciones = resultado.get('acciones_ejecutadas') or []
-                ok_acciones = sum(1 for a in acciones if isinstance(a, dict) and a.get('ok'))
-                preview = f"{titulo} | {url}"
-                if datos:
-                    preview += f" | extraído: {list(datos)[:3]}"
-                if acciones:
-                    preview += f" | acciones {ok_acciones}/{len(acciones)}"
-                if resultado.get('error'):
-                    preview += f" | error: {str(resultado['error'])[:max_len]}"
-                return preview
-
-            # ── Search ──
-            elif tipo == TipoAgente.SEARCH and isinstance(resultado, dict):
-                query = (resultado.get('query') or '')[:40]
-                if resultado.get('error'):
-                    return f"'{query}' | error: {str(resultado['error'])[:max_len]}"
-                total = resultado.get('total', 0)
-                urls = [
-                    (r.get('href') or '')[:40]
-                    for r in (resultado.get('resultados') or [])[:2]
-                    if isinstance(r, dict)
-                ]
-                return f"'{query}' | {total} resultados | {urls}"
-
-            # ── Python ──
-            elif tipo == TipoAgente.PYTHON:
-                if isinstance(resultado, dict):
-                    claves_interes = [k for k in ('status', 'mensaje', 'data', 'resultado', 'output', 'result')
-                                    if k in resultado]
-                    if claves_interes:
-                        partes = []
-                        for k in claves_interes[:3]:
-                            v = resultado[k]
-                            if isinstance(v, (dict, list)):
-                                v_str = f"<{type(v).__name__} len={len(v)}>"
-                            else:
-                                v_str = str(v)
-                                if len(v_str) > 60:
-                                    v_str = v_str[:57] + "..."
-                            partes.append(f"{k}={v_str}")
-                        return " | ".join(partes)
-
-                    claves = list(resultado.keys())[:4]
-                    preview = {k: resultado[k] for k in claves}
-                    texto = str(preview)
-                    return texto[:max_len] + "..." if len(texto) > max_len else texto
-
-                texto = str(resultado)
-                return texto[:max_len] + "..." if len(texto) > max_len else texto
-
-            # ── Fallback ──
-            if isinstance(resultado, dict):
-                claves = list(resultado.keys())[:4]
-                preview = {k: resultado[k] for k in claves}
-                texto = str(preview)
-                return texto[:max_len] + "..." if len(texto) > max_len else texto
-
-            texto = str(resultado)
-            return texto[:max_len] + "..." if len(texto) > max_len else texto
-
-        except Exception as e:
-            logger.debug(f"Error formateando resultado: {e}")
-            return f"(error al formatear: {str(e)[:50]})"
+        """Resumen legible del resultado (V3.8-6: lógica en execution_log)."""
+        return resumir_resultado(
+            agente, resultado, max_len=self._MAX_RESULTADO_LOG
+        )
 
     def _resumir_error_log(self, agente: Agente, mensaje: str, resultado: Any) -> str:
-        """
-        Genera un resumen del error para el log.
-
-        Args:
-            agente: El agente que produjo el error
-            mensaje: Mensaje de error
-            resultado: Resultado parcial (si existe)
-
-        Returns:
-            str: Resumen del error
-        """
-        max_len = self._MAX_RESULTADO_LOG
-
-        # Usar el mensaje de error
-        resumen = str(mensaje) if mensaje else "Error desconocido"
-        resumen = resumen.replace('\n', ' ').strip()
-
-        # Extraer información adicional del resultado
-        if resultado and isinstance(resultado, dict):
-            extras = []
-
-            # Buscar información de error en el resultado
-            if 'stderr' in resultado and resultado['stderr']:
-                stderr = str(resultado['stderr'])[:100].replace('\n', ' ').strip()
-                extras.append(f"stderr: {stderr}")
-
-            if 'error' in resultado and resultado['error']:
-                error_detail = str(resultado['error'])[:100].replace('\n', ' ').strip()
-                extras.append(f"error: {error_detail}")
-
-            if 'stdout' in resultado and resultado['stdout']:
-                stdout = str(resultado['stdout'])[:80].replace('\n', ' ').strip()
-                extras.append(f"stdout: {stdout}")
-
-            if 'status_code' in resultado:
-                extras.append(f"HTTP {resultado['status_code']}")
-
-            if extras:
-                resumen = f"{resumen[:100]} | " + " | ".join(extras)
-
-        # Truncar si es necesario
-        return resumen[:max_len] + "..." if len(resumen) > max_len else resumen
+        """Resumen del error para el log (V3.8-6: lógica en execution_log)."""
+        return resumir_error(
+            agente, mensaje, resultado, max_len=self._MAX_RESULTADO_LOG
+        )
 
     def _manejar_error_importacion(self, agente: Agente, error: Exception):
         """Maneja errores de importación del executor."""
+        # V3.8: que el executor no se pueda importar es falta de dependencia
+        # del entorno: parada dura, no se intenta Plan B ni se gasta dinero.
+        try:
+            decision = self.recovery_manager.decidir(
+                error=str(error), agente=agente, origen="importacion"
+            )
+            self._registrar_parada_dura(decision, agente)
+        except Exception as e:  # el registro de la parada nunca rompe el flujo
+            logger.debug(f"No se pudo registrar la parada dura de importación: {e}")
+
         with self._lock:
             agente.estado = EstadoAgente.ERROR
             agente.progreso = 100
@@ -1613,6 +1432,19 @@ class Scheduler(QObject):
                     agente.resetear_estado()
                     agente.mensaje = "Reiniciado"
 
+        # V3.8: presupuesto de la ejecución. NO se reinicia aquí: ``iniciar()``
+        # también relanza un Plan B dentro de la MISMA ejecución, y el
+        # presupuesto es del conjunto (tiempo/llamadas/tokens/coste). El reloj
+        # arranca la primera vez y la contabilidad se suscribe solo si hay
+        # algún límite configurado (opt-in; sin límites nada cambia).
+        try:
+            if not self.presupuesto.iniciado:
+                self.presupuesto.iniciar()
+            if self.presupuesto.hay_limites():
+                self.presupuesto.conectar()
+        except Exception as e:
+            logger.debug(f"No se pudo arrancar el presupuesto: {e}")
+
         # ✅ Log de inicio
         self.log_mensaje.emit(
             f"▶️ Ejecución iniciada ({len(self.agentes)} agentes)",
@@ -1713,6 +1545,13 @@ class Scheduler(QObject):
         with self._lock:
             self._verificar_terminado_internal()
 
+        # V3.8: dejar de contabilizar gasto cuando ya no hay ejecución (se
+        # vuelve a suscribir en ``iniciar()`` si el presupuesto tiene límites).
+        try:
+            self.presupuesto.desconectar()
+        except Exception as e:
+            logger.debug(f"No se pudo cerrar el presupuesto: {e}")
+
     def limpiar(self):
         """
         Limpia todo el estado Y elimina los agentes.
@@ -1795,78 +1634,17 @@ class Scheduler(QObject):
     # ACEPTACIÓN DE LA SALIDA (H6)
     # ============================================================
     def _calcular_aceptacion_internal(self) -> dict:
-        """Veredicto de aceptación de la ejecución (debe llamarse bajo lock).
+        """Veredicto de aceptación de la ejecución (V3.8-6: delegado).
 
-        Una ejecución solo se acepta si **todos** los agentes terminaron bien
-        y **todos** los pasos con contrato o críticos pasaron la verificación.
-        Un paso marcado como «no verificable» tampoco se da por bueno.
+        Debe llamarse bajo lock; el cálculo puro vive en
+        ``core/acceptance_manager.py``.
         """
-        fallos: list[str] = []
-        pasos: list[dict] = []
-        verificados = 0
-        no_verificables = 0
-
-        for agente in self.agentes.values():
-            verificacion = self._verificaciones.get(agente.id)
-            if verificacion is not None:
-                verificados += 1
-                if not verificacion.get("aceptado", True):
-                    fallos.append(
-                        f"'{agente.nombre}': "
-                        f"{'; '.join(verificacion.get('motivos') or []) or 'no cumple el contrato'}"
-                    )
-                for comprobacion in verificacion.get("comprobaciones") or []:
-                    if comprobacion.get("no_verificable"):
-                        no_verificables += 1
-                        break
-                pasos.append({
-                    "agente_id": agente.id,
-                    "nombre": agente.nombre,
-                    "verificado": True,
-                    "aceptado": bool(verificacion.get("aceptado")),
-                    "motivos": list(verificacion.get("motivos") or []),
-                    "advertencias": list(verificacion.get("advertencias") or []),
-                    "evidencias": list(verificacion.get("evidencias") or []),
-                    "criterios_comprobados": list(
-                        verificacion.get("criterios_comprobados") or []
-                    ),
-                    "criterios_fallidos": list(
-                        verificacion.get("criterios_fallidos") or []
-                    ),
-                })
-                continue
-
-            if agente.estado in (
-                EstadoAgente.ERROR,
-                EstadoAgente.TIMEOUT,
-                EstadoAgente.CANCELADO,
-                EstadoAgente.BLOQUEADO,
-                EstadoAgente.SALTADO,
-            ):
-                fallos.append(
-                    f"'{agente.nombre}': {agente.mensaje or agente.error or agente.estado.value}"
-                )
-            # Los pasos críticos o con contrato deben haberse verificado. Si
-            # no hay verificación registrada es porque el paso no llegó a
-            # ejecutarse: se considera fallo, no «no verificable».
-            elif agente.estado == EstadoAgente.COMPLETADO and (
-                getattr(agente, "es_critico", False)
-                or getattr(agente, "contrato_aceptacion", None)
-            ):
-                fallos.append(
-                    f"'{agente.nombre}': terminó sin verificación de aceptación"
-                )
-
-        aceptada = not fallos
-        resumen = "aceptada" if aceptada else "rechazada: " + "; ".join(fallos)
-        resultado = {
-            "aceptada": aceptada,
-            "verificada": verificados > 0,
-            "no_verificables": no_verificables,
-            "motivos": fallos,
-            "resumen": resumen,
-            "pasos": pasos,
-        }
+        resultado = calcular_aceptacion(
+            self.agentes,
+            self._verificaciones,
+            parada_dura=self._parada_dura,
+            presupuesto=self.presupuesto,
+        )
         self._ultima_aceptacion = resultado
         return resultado
 

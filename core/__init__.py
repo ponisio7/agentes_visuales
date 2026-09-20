@@ -7,6 +7,7 @@ Contiene los modelos, ejecutores y lógica principal de los agentes.
 from .agent import Agente, EstadoAgente, TipoAgente
 from .ai_assistant import AIAssistant
 from .bridge import SchedulerBridge
+from .budget_manager import BudgetManager
 from .cancellation import (
     CancellationManager,
     CancellationState,
@@ -15,7 +16,17 @@ from .cancellation import (
 )
 from .event_bus import Event, EventBus, EventType, obtener_bus
 from .executors import AgentExecutor
+from .job_cancellation import (
+    JobCancellationRegistry,
+    obtener_registro_cancelacion,
+)
 from .llm_client import LLMClient
+from .recovery_manager import (
+    PARADAS_DURAS,
+    RecoveryDecision,
+    RecoveryManager,
+    clasificar_fallo,
+)
 from .sandbox import PythonSandbox
 from .scheduler import Scheduler
 from .text_parser import AgentTextParser, ParseResult
@@ -41,5 +52,12 @@ __all__ = [
     'CancellationToken',
     'CancellationManager',
     'obtener_gestor_cancelacion',
+    'RecoveryManager',
+    'RecoveryDecision',
+    'PARADAS_DURAS',
+    'clasificar_fallo',
+    'BudgetManager',
+    'JobCancellationRegistry',
+    'obtener_registro_cancelacion',
     'extraer_json_de_llm',  # ✅ NUEVO
 ]

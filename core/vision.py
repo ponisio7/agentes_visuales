@@ -96,10 +96,10 @@ ACCIONES PERMITIDAS (usa EXACTAMENTE uno de estos 'tipo'):
 {acciones}
 
 Responde ÚNICAMENTE con un JSON con esta forma:
-{{"razon": "por qué esta acción", "accion": {{"tipo": "click", "selector": "#boton"}}}}
+{{"razon": "por qué esta acción", "evidencia": "qué se ve en la captura que lo justifica", "objetivo": "qué elemento o estado se busca", "accion": {{"tipo": "click", "selector": "#boton"}}}}
 
 Reglas:
-- Si la página ya muestra lo pedido, responde {{"razon": "...", "accion": null}}.
+- Si la página ya muestra lo pedido, responde {{"razon": "...", "evidencia": "...", "objetivo": "...", "accion": null}}.
 - Usa selectores CSS estables (id, name, aria-label) y evita coordenadas.
 - NO propongas acciones fuera de la lista permitida.
 """
@@ -161,9 +161,17 @@ def decidir_accion_desde_captura(
         return None
 
     razon = str(datos.get("razon", ""))[:500]
+    # V3.8-5: la traza del bucle necesita objetivo y evidencia por acción.
+    evidencia = str(datos.get("evidencia", ""))[:500]
+    objetivo = str(datos.get("objetivo", ""))[:300]
     accion = datos.get("accion")
     if accion is None:
-        return {"razon": razon, "accion": None}
+        return {
+            "razon": razon,
+            "evidencia": evidencia,
+            "objetivo": objetivo,
+            "accion": None,
+        }
     if not isinstance(accion, dict):
         logger.warning("Visión: 'accion' no es un objeto")
         return None
@@ -175,7 +183,12 @@ def decidir_accion_desde_captura(
         )
         return None
     accion["tipo"] = tipo
-    return {"razon": razon, "accion": accion}
+    return {
+        "razon": razon,
+        "evidencia": evidencia,
+        "objetivo": objetivo,
+        "accion": accion,
+    }
 
 
 __all__ = [

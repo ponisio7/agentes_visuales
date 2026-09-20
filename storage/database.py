@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # CONSTANTES GLOBALES
 # ============================================================
 DEFAULT_DB_PATH = "agent_history.db"
-DB_VERSION = 12  # ✅ H7: traza de reparaciones del Plan B
+DB_VERSION = 13  # ✅ V3.8-4: éxito real reindexado (aceptación + errores + feedback)
 MAX_RETRIES = 3
 RETRY_DELAY = 0.1  # segundos
 CONNECTION_TIMEOUT = 10.0  # segundos
@@ -80,6 +80,18 @@ SCHEMA_DEFINITION = {
         # ✅ H8: embedding del problema (solo se calcula best-effort).
         "problema_embedding": "BLOB",
         "problema_embedding_model": "TEXT DEFAULT ''",
+        # ✅ V3.8-4: ÉXITO REAL, compuesto (aceptación + ausencia de errores +
+        # feedback del usuario). NULL = todavía no evaluado. El retrieval usa
+        # ``COALESCE(exito_real, aceptada)``: las filas antiguas, que se
+        # marcaron ``aceptada=1`` por defecto, dejan de colarse como éxitos.
+        "exito_real": "INTEGER DEFAULT NULL",
+        "exito_real_motivo": "TEXT DEFAULT ''",
+        "indexado_fecha": "TEXT DEFAULT ''",
+        # ✅ V3.8-2: presupuesto consumido por la ejecución (llamadas, tokens
+        # y coste estimado). Antes solo se medía el tiempo.
+        "llamadas_llm": "INTEGER DEFAULT 0",
+        "tokens_total": "INTEGER DEFAULT 0",
+        "coste": "REAL DEFAULT 0",
     },
     "agentes_ejecucion": {
         "ejecucion_id": "INTEGER NOT NULL",
@@ -1078,6 +1090,39 @@ class Database:
                         logger.warning(f"Error en migración 11→12: {e}")
                         fallos.append(f"11→12: {e}")
 
+                # ✅ Migración 12 → 13: éxito REAL y fecha de indexado
+                #    (V3.8-4). La columna ``aceptada`` de H5 se añadió con
+                #    DEFAULT 1, así que TODAS las ejecuciones antiguas quedaron
+                #    como «aceptadas» aunque tuvieran errores. ``exito_real``
+                #    guarda el veredicto compuesto (aceptación + errores +
+                #    feedback) y el retrieval lo prefiere. NULL = sin evaluar.
+                if current_version < 13:
+                    try:
+                        columnas = self._obtener_columnas(conn, 'ejecuciones')
+                        nuevas = {
+                            'exito_real': "INTEGER DEFAULT NULL",
+                            'exito_real_motivo': "TEXT DEFAULT ''",
+                            'indexado_fecha': "TEXT DEFAULT ''",
+                            'llamadas_llm': "INTEGER DEFAULT 0",
+                            'tokens_total': "INTEGER DEFAULT 0",
+                            'coste': "REAL DEFAULT 0",
+                        }
+                        anadidas = []
+                        for columna, tipo in nuevas.items():
+                            if columna not in columnas:
+                                cursor.execute(
+                                    f"ALTER TABLE ejecuciones ADD COLUMN {columna} {tipo}"
+                                )
+                                anadidas.append(columna)
+                        if anadidas:
+                            logger.info(
+                                f"✅ Migración 12→13: columnas añadidas a "
+                                f"'ejecuciones': {', '.join(anadidas)}"
+                            )
+                    except sqlite3.OperationalError as e:
+                        logger.warning(f"Error en migración 12→13: {e}")
+                        fallos.append(f"12→13: {e}")
+
                 if fallos:
                     raise sqlite3.OperationalError(
                         "Migraciones fallidas, no se actualiza la versión: "
@@ -1351,6 +1396,9 @@ class Database:
         motivo_fallo: str = "",
         problema_embedding: bytes | None = None,
         problema_embedding_model: str = "",
+        llamadas_llm: int = 0,
+        tokens_total: int = 0,
+        coste: float = 0.0,
     ) -> int:
         """
         Guarda una ejecución completa con todos sus agentes.
@@ -1405,8 +1453,9 @@ class Database:
                         completados, errores, cancelados,
                         estado, ejecutor, tags, notas,
                         problema, plan_json, resultado, aceptada, motivo_fallo,
-                        problema_embedding, problema_embedding_model
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        problema_embedding, problema_embedding_model,
+                        llamadas_llm, tokens_total, coste
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     datetime.now().isoformat(),
                     float(duracion_total),
@@ -1425,6 +1474,9 @@ class Database:
                     motivo_fallo or "",
                     problema_embedding,
                     problema_embedding_model or "",
+                    int(llamadas_llm or 0),
+                    int(tokens_total or 0),
+                    float(coste or 0.0),
                 ))
 
                 ejecucion_id = cursor.lastrowid
