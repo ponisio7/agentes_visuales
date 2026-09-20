@@ -147,6 +147,11 @@ class Scheduler(QObject):
         self._loops_activos: set[str] = set()
         self._loop_items_procesados: dict[str, int] = {}
 
+        # ── Aceptación de la salida (H6) ──
+        # agente_id -> ResultadoVerificacion (dict serializable)
+        self._verificaciones: dict[str, dict] = {}
+        self._ultima_aceptacion: dict | None = None
+
         # ── Cache de estadísticas ──
         self._stats_cache: dict | None = None
         self._stats_cache_time: float = 0.0
@@ -586,6 +591,41 @@ class Scheduler(QObject):
                 exito, mensaje, resultado = False, f"Error crítico: {e}", {}
                 logger.exception(f"Error ejecutando agente {agente.nombre}")
 
+            # ── FASE 4b: VERIFICACIÓN DE ACEPTACIÓN (H6) ──
+            # Se comprueba el ARTEFACTO real (disco/bytes), no lo que el
+            # ejecutor dice haber producido. Se hace fuera del lock porque
+            # toca disco. Un paso crítico con resultado sospechoso (Nivel 1)
+            # o un contrato incumplido (Nivel 2) convierten el éxito en fallo
+            # con motivo, y ese motivo alimenta al Plan B.
+            fallo_verificacion = False
+            verificacion = None
+            if exito:
+                try:
+                    from .verification import verificar_agente
+
+                    verificacion = verificar_agente(agente, resultado)
+                except Exception as e:
+                    # Un verificador roto NUNCA debe tumbar la ejecución, pero
+                    # tampoco puede dar por bueno lo que no comprobó.
+                    logger.warning(
+                        f"Verificación de '{agente.nombre}' falló: {e}"
+                    )
+                    verificacion = None
+                if verificacion is not None:
+                    with self._lock:
+                        self._verificaciones[agente.id] = verificacion.to_dict()
+                    if not verificacion.aceptado:
+                        fallo_verificacion = True
+                        exito = False
+                        mensaje = (
+                            f"Aceptación fallida: {verificacion.motivo()}"
+                        )
+                        self.log_mensaje.emit(
+                            f"🔎 [{agente.nombre}] Aceptación fallida → "
+                            f"{verificacion.motivo()}",
+                            "#dc3545"
+                        )
+
             # ── FASE 5: FINALIZACIÓN ──
             tiempo_fin = time.time()
             duracion = tiempo_fin - tiempo_inicio
@@ -694,6 +734,30 @@ class Scheduler(QObject):
                             "#dc3545"
                         )
                         bloquear_razon = f"Timeout: {mensaje[:100]}"
+
+                    # ── Fallo de aceptación: error final SIN reintentos ──
+                    # El artefacto no cumple el contrato y el contrato es
+                    # determinista: reintentar el mismo paso daría el mismo
+                    # resultado. Se falla ya y el motivo va al Plan B.
+                    elif fallo_verificacion:
+                        try:
+                            agente.transicionar_a(
+                                EstadoAgente.ERROR,
+                                f"❌ {mensaje[:150]}"
+                            )
+                        except ValueError:
+                            agente.estado = EstadoAgente.ERROR
+                            agente.mensaje = f"❌ {mensaje[:150]}"
+                        agente.progreso = 100
+                        agente.error = mensaje
+                        self.log_mensaje.emit(
+                            f"❌ [{agente.nombre}] Rechazado por aceptación "
+                            f"tras {duracion:.2f}s → {mensaje[:200]}",
+                            "#dc3545"
+                        )
+                        # ``mensaje`` ya empieza por "Aceptación fallida:"; ese
+                        # motivo es el que recibe el Plan B.
+                        bloquear_razon = mensaje
 
                     # ── Verificar reintentos ──
                     elif agente.reintentos < agente.max_reintentos:
@@ -1022,6 +1086,8 @@ class Scheduler(QObject):
                 self._loop_items_procesados.clear()
                 self._terminado_notificado = False
                 self._tiempo_inicio_ejecucion = None
+                self._verificaciones.clear()
+                self._ultima_aceptacion = None
                 self._invalidar_stats_cache()
 
             # 4. Cargar los nuevos agentes
@@ -1348,6 +1414,19 @@ class Scheduler(QObject):
                 self.ejecutando = False
                 self.pausado = False
                 self._terminado_notificado = True
+                # Veredicto de aceptación (H6): «terminado» no es «aceptado».
+                aceptacion = self._calcular_aceptacion_internal()
+                if aceptacion["aceptada"]:
+                    self.log_mensaje.emit(
+                        f"🔎 Aceptación de la salida: OK "
+                        f"({len(aceptacion['pasos'])} paso(s) verificado(s))",
+                        "#28a745"
+                    )
+                else:
+                    self.log_mensaje.emit(
+                        f"🔎 Aceptación de la salida: {aceptacion['resumen']}",
+                        "#dc3545"
+                    )
                 self.ejecucion_terminada.emit()
                 self.estado_cambiado.emit(False)
             # logger temporal logger.info(f"TERMINADO: intentos_plan_b={self._plan_b_intentos}")
@@ -1386,6 +1465,8 @@ class Scheduler(QObject):
             self.pausado = False
             self._terminado_notificado = False
             self._tiempo_inicio_ejecucion = time.time()
+            self._verificaciones.clear()
+            self._ultima_aceptacion = None
 
             # Resetear agentes en cualquier estado terminal (incluye TIMEOUT,
             # SALTADO y BLOQUEADO, no solo COMPLETADO/ERROR/CANCELADO).
@@ -1521,6 +1602,8 @@ class Scheduler(QObject):
             self._tiempo_inicio_ejecucion = None
             self._plan_b_intentos = 0
             self._plan_b_en_progreso = False
+            self._verificaciones.clear()
+            self._ultima_aceptacion = None
             self._invalidar_stats_cache()
 
         self.ejecutando = False
@@ -1566,6 +1649,82 @@ class Scheduler(QObject):
             self._stats_cache = self._calcular_estadisticas_internal()
             self._stats_cache_time = now
             return self._stats_cache
+
+    # ============================================================
+    # ACEPTACIÓN DE LA SALIDA (H6)
+    # ============================================================
+    def _calcular_aceptacion_internal(self) -> dict:
+        """Veredicto de aceptación de la ejecución (debe llamarse bajo lock).
+
+        Una ejecución solo se acepta si **todos** los agentes terminaron bien
+        y **todos** los pasos con contrato o críticos pasaron la verificación.
+        Un paso marcado como «no verificable» tampoco se da por bueno.
+        """
+        fallos: list[str] = []
+        pasos: list[dict] = []
+        verificados = 0
+        no_verificables = 0
+
+        for agente in self.agentes.values():
+            verificacion = self._verificaciones.get(agente.id)
+            if verificacion is not None:
+                verificados += 1
+                if not verificacion.get("aceptado", True):
+                    fallos.append(
+                        f"'{agente.nombre}': "
+                        f"{'; '.join(verificacion.get('motivos') or []) or 'no cumple el contrato'}"
+                    )
+                for comprobacion in verificacion.get("comprobaciones") or []:
+                    if comprobacion.get("no_verificable"):
+                        no_verificables += 1
+                        break
+                pasos.append({
+                    "agente_id": agente.id,
+                    "nombre": agente.nombre,
+                    "verificado": True,
+                    "aceptado": bool(verificacion.get("aceptado")),
+                    "motivos": list(verificacion.get("motivos") or []),
+                })
+                continue
+
+            if agente.estado in (
+                EstadoAgente.ERROR,
+                EstadoAgente.TIMEOUT,
+                EstadoAgente.CANCELADO,
+                EstadoAgente.BLOQUEADO,
+                EstadoAgente.SALTADO,
+            ):
+                fallos.append(
+                    f"'{agente.nombre}': {agente.mensaje or agente.error or agente.estado.value}"
+                )
+            # Los pasos críticos o con contrato deben haberse verificado. Si
+            # no hay verificación registrada es porque el paso no llegó a
+            # ejecutarse: se considera fallo, no «no verificable».
+            elif agente.estado == EstadoAgente.COMPLETADO and (
+                getattr(agente, "es_critico", False)
+                or getattr(agente, "contrato_aceptacion", None)
+            ):
+                fallos.append(
+                    f"'{agente.nombre}': terminó sin verificación de aceptación"
+                )
+
+        aceptada = not fallos
+        resumen = "aceptada" if aceptada else "rechazada: " + "; ".join(fallos)
+        resultado = {
+            "aceptada": aceptada,
+            "verificada": verificados > 0,
+            "no_verificables": no_verificables,
+            "motivos": fallos,
+            "resumen": resumen,
+            "pasos": pasos,
+        }
+        self._ultima_aceptacion = resultado
+        return resultado
+
+    def obtener_resultado_aceptacion(self) -> dict:
+        """Resultado de aceptación de la última ejecución (API pública)."""
+        with self._lock:
+            return self._calcular_aceptacion_internal()
 
     # ============================================================
     # EJECUCIÓN INDIVIDUAL
