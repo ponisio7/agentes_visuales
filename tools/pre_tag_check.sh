@@ -154,7 +154,7 @@ if [ "$FALLOS" -eq 0 ]; then
     echo ""
     echo "  Siguiente paso:"
     echo "    git tag -a v3.0.1 -m 'Release v3.0.1: DeepSeek Harness integration'"
-    echo "    git push origin v3.0"
+    echo "    git push origin v3.0.1"
 else
     echo -e "${ROJO}❌ $FALLOS fallos bloqueantes. Corrige antes de taggear.${NC}"
 fi
