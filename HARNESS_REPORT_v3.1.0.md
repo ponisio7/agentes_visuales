@@ -299,9 +299,20 @@ agent_history.db: La suma coincide        # d6b7d586… == d6b7d586…
 
 ```
 ✅ API key encontrada: sk-54c46…b6dc
-✅ Respuesta 200 en 5485 ms
+✅ Respuesta 200 en 811 ms
 RESULTADO: ✅ Todo OK
 ```
+
+**Nota de honestidad (red intermitente):** durante el cierre de la sesión el
+resolutor DNS del entorno falló de forma intermitente y `--check-env` devolvió
+exit 2 ("Error de red") en varias ejecuciones, mientras `getent hosts` y `curl`
+sí resolvían y `requests` directo también (HTTP 401 sin auth). El código no
+cambió entre las ejecuciones buenas y las malas: es ruido de red del entorno, y
+el check hace lo correcto al reportarlo. Con reintentos acotados, el intento 2
+devolvió `200` en 811 ms y exit 0 (capturado en `tmp/harness_v3.1/check_env_2.log`);
+la ejecución temprana de la sesión también fue exit 0 (200 en 5485 ms). El smoke
+test de la sección 11 de `pre_tag_check.sh`, que también usa la API real, pasó en
+todas las ejecuciones de la puerta.
 
 ### 4.5 Smoke test E2E (`ProblemSolver`)
 
