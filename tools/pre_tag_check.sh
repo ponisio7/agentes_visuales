@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tools/pre_tag_check.sh — Verificación pre-tag v3.0
+# tools/pre_tag_check.sh — Verificación pre-tag v3.0.1
 set -uo pipefail
 
 ROJO='\033[31m'; VERDE='\033[32m'; AMAR='\033[33m'; CYAN='\033[36m'; NC='\033[0m'
@@ -79,6 +79,7 @@ while IFS= read -r f; do
 done < <(find . -name "*.py" \
     -not -path "./.git/*" \
     -not -path "./.venv/*" \
+    -not -path "./.env/*" \
     -not -path "./venv/*" \
     -not -path "./env/*" \
     -not -path "*/__pycache__/*")
@@ -102,7 +103,7 @@ fi
 info "8. Prints de debug olvidados"
 PRINTS=$(grep -rn "print(" --include="*.py" \
     --exclude-dir=.git --exclude-dir=__pycache__ \
-    --exclude-dir=.venv --exclude-dir=venv --exclude-dir=env \
+    --exclude-dir=.venv --exclude-dir=.env --exclude-dir=venv --exclude-dir=env \
     --exclude-dir=tests --exclude-dir=tools \
     | grep -v "if __name__" | grep -v "print(f\"\[TERMINADA\]" | grep -v "file=sys.stderr" || true)
 if [ -n "$PRINTS" ]; then
@@ -116,7 +117,7 @@ fi
 info "9. Mensajes de debug sospechosos"
 SOSPECHOSOS=$(grep -rn "🥶\|FIXME\|XXX\|HACK\|DEBUG:" --include="*.py" \
     --exclude-dir=.git --exclude-dir=__pycache__ \
-    --exclude-dir=.venv --exclude-dir=venv --exclude-dir=env \
+    --exclude-dir=.venv --exclude-dir=.env --exclude-dir=venv --exclude-dir=env \
     --exclude-dir=tests || true)
 if [ -n "$SOSPECHOSOS" ]; then
     warn "Encontrados marcadores de debug:"
@@ -128,7 +129,7 @@ fi
 # ── 10. README y CHANGELOG ────────────────────────────────────
 info "10. Documentación"
 [ -f "README.md" ]   && ok "README.md"   || warn "Falta README.md"
-[ -f "CHANGELOG.md" ] && ok "CHANGELOG.md" || warn "Falta CHANGELOG.md (recomendado para v3.0)"
+[ -f "CHANGELOG.md" ] && ok "CHANGELOG.md" || warn "Falta CHANGELOG.md (recomendado para v3.0.1)"
 
 # ── 11. Smoke Test (ProblemSolver) ────────────────────────────
 info "11. Smoke test de ProblemSolver"
@@ -152,7 +153,7 @@ if [ "$FALLOS" -eq 0 ]; then
     echo -e "${VERDE}✅ LISTO PARA TAGGEAR (revisa los ⚠️  manualmente)${NC}"
     echo ""
     echo "  Siguiente paso:"
-    echo "    git tag -a v3.0 -m 'Release v3.0.1: DeepSeek Harness integration'"
+    echo "    git tag -a v3.0.1 -m 'Release v3.0.1: DeepSeek Harness integration'"
     echo "    git push origin v3.0"
 else
     echo -e "${ROJO}❌ $FALLOS fallos bloqueantes. Corrige antes de taggear.${NC}"
