@@ -19,7 +19,6 @@ También se puede ejecutar como script::
 
     python tests/test_ab_sintetico.py
 """
-import os
 import sys
 import tempfile
 from pathlib import Path

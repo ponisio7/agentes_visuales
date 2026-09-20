@@ -172,8 +172,8 @@ class HTTPExecutor:
             session.mount('http://', adapter)
             session.mount('https://', adapter)
 
-            def cancelar_peticion(token):
-                nonlocal session
+            def _cancelar_peticion(token):
+                # ``session`` solo se lee: no hace falta nonlocal.
                 try:
                     if session:
                         session.close()
@@ -181,6 +181,10 @@ class HTTPExecutor:
                     logger.warning(f"Error cancelando petición HTTP: {e}")
 
             if cancellation_token:
+                # Se guarda en la variable externa (inicializada a None) para
+                # poder desregistrar el callback en el finally incluso si el
+                # fallo ocurre antes de definir esta función.
+                cancelar_peticion = _cancelar_peticion
                 cancellation_token.agregar_callback(cancelar_peticion)
 
             def hacer_peticion():

@@ -11,7 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from core.agent import Agente, TipoAgente
-from core.executors import llm_executor
 from core.executors.llm_executor import LLMExecutor, fusionar_json, json_util
 
 
@@ -49,6 +48,7 @@ class _OpenAI:
 def api_falsa(monkeypatch):
     estado = {"respuestas": [""], "finish_reason": "stop"}
     import openai
+
     from core import llm_client as modulo_cliente
 
     monkeypatch.setattr(openai, "OpenAI", lambda **kw: _OpenAI(estado))

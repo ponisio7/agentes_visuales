@@ -22,7 +22,6 @@ import pytest
 
 from export.exporters import (
     ExportConfig,
-    ExportResult,  # noqa: F401  (reexportado para uso externo)
     ResultExporter,
     exportar_resultados,
 )

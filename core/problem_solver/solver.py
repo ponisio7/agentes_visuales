@@ -404,7 +404,6 @@ class ProblemSolver:
         """Crea un plan de fallback con código Python CORRECTO."""
         self.logger.warning(f"Creando plan de fallback para: {problema[:50]}...")
 
-        import re
         nombre = f"Resolver_{re.sub(r'[^a-zA-Z0-9_]', '_', problema[:20])}"
 
         return {

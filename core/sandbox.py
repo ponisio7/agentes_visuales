@@ -877,7 +877,7 @@ if __name__ == "__main__":
 
             # ── Callback de cancelación ──
             def cancelar_proceso(token):
-                nonlocal proceso
+                # ``proceso`` solo se lee: no hace falta nonlocal.
                 try:
                     if proceso and proceso.poll() is None:
                         proceso.terminate()

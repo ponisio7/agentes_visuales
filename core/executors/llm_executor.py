@@ -7,8 +7,8 @@ import threading
 import time
 
 from core.agent import Agente
-from core.utils import es_valor_placeholder
 from core.cancellation import CancellationToken
+from core.utils import es_valor_placeholder
 
 from .cache import RateLimiter
 from .content_extractor import sustituir_variables, variables_disponibles
