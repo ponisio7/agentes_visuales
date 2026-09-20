@@ -461,12 +461,14 @@ class SimpleMainWindow(QMainWindow):
         self._cursor_on = True
         self._status_base = "listo"
         self._ultima_ejecucion_id: int = 0
+        self._dedupe_logs: dict[str, float] = {}
 
         # UI
         self._init_ui()
         self._log_desde_worker.connect(self._log, Qt.ConnectionType.QueuedConnection)
         self._conectar_scheduler()
         self._iniciar_cursor_parpadeante()
+        self._iniciar_puente_logs()
         self._iniciar_boot_sequence()
 
     # ── Learning ────────────────────────────────────────────────
@@ -723,6 +725,16 @@ class SimpleMainWindow(QMainWindow):
         )
 
     def _log(self, mensaje: str, color: str = GREEN):
+        # H4: dedupe. Un mismo mensaje puede llegar por la señal del scheduler
+        # y por el bus de logs; no se muestra dos veces seguidas.
+        ahora = time.time()
+        anterior = self._dedupe_logs.get(mensaje)
+        if anterior is not None and (ahora - anterior) < 1.5:
+            return
+        if len(self._dedupe_logs) > 500:
+            self._dedupe_logs.clear()
+        self._dedupe_logs[mensaje] = ahora
+
         ts = datetime.now().strftime("%H:%M:%S")
         # El mensaje puede contener salida de agentes o excepciones con
         # '<'/'&': escapar para no corromper el HTML del QTextEdit.
@@ -733,6 +745,44 @@ class SimpleMainWindow(QMainWindow):
         cursor = self.log.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.log.setTextCursor(cursor)
+
+    # ── Puente del bus de logs (H4) ─────────────────────────────
+    def _iniciar_puente_logs(self):
+        """Conecta la GUI al bus de logs compartido (terminal/web/fichero)."""
+        try:
+            from core.log_bus import obtener_bus_logs
+
+            bus = obtener_bus_logs()
+            # Empezar por el final: no se reproduce el historial de arranque.
+            self._log_cursor = bus.cursor_actual
+        except Exception as e:
+            logger.debug(f"Bus de logs no disponible en la GUI: {e}")
+            self._log_cursor = 0
+
+        self._log_timer = QTimer(self)
+        self._log_timer.timeout.connect(self._volcar_logs_bus)
+        self._log_timer.start(400)
+
+    def _volcar_logs_bus(self):
+        try:
+            from core.log_bus import obtener_bus_logs
+
+            entradas, cursor = obtener_bus_logs().desde(self._log_cursor, limite=100)
+        except Exception:
+            return
+        if not entradas:
+            self._log_cursor = cursor
+            return
+        colores = {
+            "DEBUG": TXT_MUTED,
+            "INFO": GREEN_DIM,
+            "WARNING": AMBER_WARN,
+            "ERROR": RED_ERR,
+            "CRITICAL": RED_ERR,
+        }
+        for entrada in entradas:
+            self._log(entrada.mensaje, colores.get(entrada.nivel, GREEN))
+        self._log_cursor = cursor
 
     def _set_status(self, texto: str, color: str = GREEN_DIM):
         self._status_base = texto
@@ -1008,7 +1058,7 @@ class SimpleMainWindow(QMainWindow):
         except Exception as e:
             logger.warning(f"[TERMINADA] error persistiendo: {e}", exc_info=True)
             ejecucion_id = None
-        print(f"[TERMINADA] registrar_ejecucion devolvió {ejecucion_id}", flush=True)
+        logger.info(f"[TERMINADA] registrar_ejecucion devolvió {ejecucion_id}")
         # ✅ FIX: si el aprendizaje falló, obtener el último ejecucion_id
         # de la BD directamente. Sin esto, el feedback nunca se dispara
         # cuando el aprendizaje falla silenciosamente.
@@ -1018,7 +1068,7 @@ class SimpleMainWindow(QMainWindow):
         if ejecucion_id:
             self._log(f"💾 ejecución guardada (ID: {ejecucion_id})", TXT_MUTED)
             self._log("🧠 aprendizaje lanzado en background", TXT_MUTED)
-        print(f"[TERMINADA] persistido, ejecucion_id={ejecucion_id}", flush=True)
+        logger.info(f"[TERMINADA] persistido, ejecucion_id={ejecucion_id}")
         logger.info(f"[TERMINADA] persistido, ejecucion_id={ejecucion_id}")
         return ejecucion_id
 
@@ -1035,11 +1085,11 @@ class SimpleMainWindow(QMainWindow):
                 row = conn.execute("SELECT MAX(id) AS ultimo FROM ejecuciones").fetchone()
                 if row and row["ultimo"]:
                     ultimo_id = int(row["ultimo"])
-                    print(f"[TERMINADA] fallback: usando último id {ultimo_id}", flush=True)
+                    logger.info(f"[TERMINADA] fallback: usando último id {ultimo_id}")
                     logger.info(f"[TERMINADA] fallback: usando último id {ultimo_id}")
                     return ultimo_id
         except Exception as e:
-            print(f"[TERMINADA] fallback falló: {e}", flush=True)
+            logger.warning(f"[TERMINADA] fallback falló: {e}")
             logger.warning(f"[TERMINADA] fallback falló: {e}")
         return None
 

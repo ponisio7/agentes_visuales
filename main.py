@@ -284,6 +284,15 @@ def _configurar_logging(quiet: bool = False):
                     "httpx", "httpx2", "httpcore", "charset_normalizer"):
         logging.getLogger(ruidoso).setLevel(logging.WARNING)
 
+    # H4: bus de logs (GUI/web además de terminal y fichero). No bloquea al
+    # scheduler: solo copia cada registro a un buffer acotado.
+    try:
+        from core.log_bus import instalar_handler
+
+        instalar_handler(nivel=logging.INFO)
+    except Exception as e:
+        print(f"⚠️  No se pudo instalar el bus de logs: {e}", file=sys.stderr)
+
 
 # ---------------------------------------------------------------------------
 # --check-env
@@ -825,10 +834,30 @@ def _ejecutar_serve(args) -> int:
             self.wfile.write(cuerpo)
 
         def do_GET(self):  # noqa: N802 (nombre impuesto por http.server)
-            if self.path.rstrip("/") in ("", "/health"):
+            from urllib.parse import parse_qs, urlparse
+
+            ruta = urlparse(self.path).path.rstrip("/")
+            if ruta in ("", "/health"):
                 self._responder(200, {"ok": True, "version": __version__})
-            else:
-                self._responder(404, {"ok": False, "error": "ruta no encontrada; usa POST /run"})
+                return
+            if ruta == "/logs":
+                # H4: logs en vivo del bus unificado.
+                try:
+                    from core.log_bus import obtener_bus_logs
+
+                    query = parse_qs(urlparse(self.path).query)
+                    cursor = int((query.get("cursor") or ["0"])[0])
+                    limite = int((query.get("limit") or ["200"])[0])
+                except (TypeError, ValueError):
+                    cursor, limite = 0, 200
+                entradas, nuevo_cursor = obtener_bus_logs().desde(cursor, limite)
+                self._responder(200, {
+                    "ok": True,
+                    "entradas": [e.to_dict() for e in entradas],
+                    "cursor": nuevo_cursor,
+                })
+                return
+            self._responder(404, {"ok": False, "error": "ruta no encontrada; usa POST /run"})
 
         def do_POST(self):  # noqa: N802 (nombre impuesto por http.server)
             if self.path.rstrip("/") != "/run":

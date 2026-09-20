@@ -10,6 +10,7 @@ Expone el mismo pipeline que la CLI/GUI por HTTP:
 | POST   | ``/api/run``  | Ejecuta el pipeline y devuelve el JSON     |
 | GET    | ``/api/health`` | ``{ok, version}``                        |
 | GET    | ``/api/agents`` | Catálogo (mismo formato que la CLI)      |
+| GET    | ``/api/logs``   | Logs en vivo del bus unificado (H4)      |
 
 Integración Qt-safe: Flask corre en un hilo secundario y solo **encola**
 trabajos en :class:`ColaTrabajos`; el hilo principal de Qt los ejecuta desde
@@ -176,6 +177,35 @@ def create_app(
                 "error": f"No se pudo cargar el catálogo de agentes: {e}",
             }), 500
         return jsonify({"ok": True, "agentes": catalogo})
+
+    @api.get("/logs")
+    def logs():
+        """Logs en vivo del bus unificado (H4).
+
+        Query: ``?cursor=N&limit=M``. Devuelve las entradas nuevas y el
+        cursor para la siguiente consulta. No bloquea al scheduler: solo lee
+        un buffer acotado en memoria.
+        """
+        try:
+            from core.log_bus import obtener_bus_logs
+
+            try:
+                cursor = int(request.args.get("cursor", 0))
+            except (TypeError, ValueError):
+                cursor = 0
+            try:
+                limite = int(request.args.get("limit", 200))
+            except (TypeError, ValueError):
+                limite = 200
+
+            entradas, nuevo_cursor = obtener_bus_logs().desde(cursor, limite)
+            return jsonify({
+                "ok": True,
+                "entradas": [e.to_dict() for e in entradas],
+                "cursor": nuevo_cursor,
+            })
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
 
     @api.post("/run")
     def run():
