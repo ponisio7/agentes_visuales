@@ -30,6 +30,7 @@ el comportamiento (incluye el nombre del logger que queda en los logs).
 """
 import ast
 import builtins
+import json
 import logging
 import os
 import re
@@ -350,6 +351,9 @@ class PlanValidator:
         # ── NUEVO: contratos de los pasos File ──
         errores.extend(self._validar_pasos_file(plan))
 
+        # ── NUEVO: rechazo estático de contratos de aceptación imposibles ──
+        errores.extend(self._validar_contratos_aceptacion(plan))
+
         return len(errores) == 0, errores
 
     @staticmethod
@@ -391,6 +395,96 @@ class PlanValidator:
                     f"dependencia; sin ella no hay fuente de contenido."
                 )
         return errores
+
+    @staticmethod
+    def _validar_contratos_aceptacion(plan: ExecutionPlan) -> list[str]:
+        """Rechaza de forma estática los contratos de aceptación imposibles.
+
+        Solo se comprueba lo comprobable sin ejecutar:
+
+        - un archivo exigido por el contrato que ningún paso del plan produce;
+        - un contrato que exige imágenes incrustadas cuando ni el paso ni sus
+          dependencias pueden producir una imagen raster.
+
+        Es preferible fallar al validar (y regenerar el plan con el motivo)
+        que arrastrar una ejecución condenada a fallar la aceptación.
+        """
+        errores: list[str] = []
+        pasos_por_nombre = {p.nombre: p for p in plan.pasos}
+        texto_plan = PlanValidator._texto_plan(plan)
+
+        for paso in plan.pasos:
+            contrato = getattr(paso, "aceptacion", None)
+            if contrato is None or getattr(contrato, "es_vacio", lambda: True)():
+                continue
+
+            # ── 1. El artefacto declarado debe producirlo algún paso ──
+            for ruta in list(getattr(contrato, "archivos", []) or []) + list(
+                getattr(contrato, "imagenes", []) or []
+            ):
+                base = os.path.basename(str(ruta)).lower().strip()
+                if base and base not in texto_plan:
+                    errores.append(
+                        f"BLOQUEANTE: '{paso.nombre}': el contrato de aceptación "
+                        f"exige '{ruta}', pero ningún paso del plan produce ese "
+                        f"archivo (ninguno lo menciona)."
+                    )
+
+            # ── 2. Imágenes exigidas: debe existir una fuente raster ──
+            min_imagenes = int(getattr(contrato, "min_imagenes", 0) or 0)
+            if getattr(contrato, "requiere_imagen", False) and min_imagenes <= 0:
+                min_imagenes = 1
+            if min_imagenes > 0:
+                fuentes = [paso]
+                fuentes.extend(
+                    pasos_por_nombre[nombre]
+                    for nombre in (paso.dependencia_ids or [])
+                    if nombre in pasos_por_nombre
+                )
+                if not any(
+                    PlanValidator._menciona_imagen(fuente) for fuente in fuentes
+                ):
+                    errores.append(
+                        f"BLOQUEANTE: '{paso.nombre}': el contrato exige "
+                        f"{min_imagenes} imagen(es) raster incrustada(s), pero ni "
+                        f"el paso ni sus dependencias producen ninguna imagen "
+                        f"(usa 'preparar_imagen' con bytes raster reales o quita "
+                        f"el invariante)."
+                    )
+
+        return errores
+
+    @staticmethod
+    def _texto_plan(plan: ExecutionPlan) -> str:
+        """Todo el texto comprobable del plan, en minúsculas."""
+        partes: list[str] = []
+        for paso in plan.pasos:
+            partes.append(str(paso.nombre))
+            partes.append(str(paso.descripcion or ""))
+            try:
+                partes.append(json.dumps(paso.configuracion or {}, default=str))
+            except (TypeError, ValueError):
+                partes.append(str(paso.configuracion or {}))
+        return "\n".join(partes).lower()
+
+    @staticmethod
+    def _menciona_imagen(paso: StepPlan) -> bool:
+        """Heurística estática: ¿este paso puede producir una imagen raster?"""
+        tokens = (
+            "imagen", "imágenes", "image", "ilustracion", "ilustración",
+            "foto", "dibujo", "grafico", "gráfico", "preparar_imagen",
+            "png", "jpg", "jpeg", "webp", "tiff", "bmp",
+            "pil", "pillow", "bytesio", "matplotlib", "plot",
+        )
+        try:
+            texto = json.dumps(paso.configuracion or {}, default=str).lower()
+        except (TypeError, ValueError):
+            texto = str(paso.configuracion or {}).lower()
+        texto += "\n" + str(paso.descripcion or "").lower()
+        contrato = getattr(paso, "aceptacion", None)
+        if contrato is not None and getattr(contrato, "imagenes", None):
+            texto += "\n" + " ".join(contrato.imagenes).lower()
+        return any(token in texto for token in tokens)
 
     @staticmethod
     def _nombres_ligados(arbol: ast.AST) -> set:

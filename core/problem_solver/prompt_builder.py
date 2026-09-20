@@ -417,6 +417,17 @@ class PromptBuilder:
         "específicas), asegúrate de que el plan incluye pasos para cumplirlos. "
         "Antes de responder, repasa el enunciado y comprueba que cada requisito "
         "tiene al menos un paso que lo produce.",
+        "**DECLARA CÓMO SE COMPRUEBA LA SALIDA (aceptación)**: cada paso que "
+        "produzca un artefacto concreto (archivo, JSON, documento con imágenes) "
+        "DEBE declarar 'aceptacion' con los invariantes comprobables en disco. "
+        "Un paso sin 'aceptacion' no se puede verificar: el sistema no dará por "
+        "buen un resultado que no pueda comprobar. Los invariantes son la "
+        "verdad del artefacto, no lo que tu descripción diga que se generó.",
+        "**MARCA LOS PASOS CRÍTICOS (es_critico)**: pon 'es_critico': true en "
+        "los pasos cuyo fallo invalida toda la tarea (el paso final que escribe "
+        "el archivo pedido, el paso que genera el contenido esencial). Un paso "
+        "crítico cuyo resultado sea vacío o cuyo artefacto no cumpla el "
+        "contrato hará fallar la ejecución completa: eso es intencionado.",
         "**CÓMO ELEGIR ENTRE HTTP Y BROWSER**:\n"
         "  - HTTP solo sirve para URLs que devuelven JSON (APIs REST).\n"
         "  - Si la URL devuelve HTML (una página web), usa Browser.\n"
@@ -514,6 +525,40 @@ Cuando dos agentes producen listas paralelas que deben unirse:
 - NUNCA dejes un `None` silencioso: si no hay match, usa el dato original como fallback.
 """
 
+        # ── 6. Contrato de aceptación de la salida (H6) ──
+        contrato_aceptacion = """
+## ⚠️ CONTRATO DE ACEPTACIÓN DE LA SALIDA ⚠️
+
+El sistema comprueba el ARTEFACTO REAL (disco/bytes), no lo que digas que
+has generado. Si un paso que produce un archivo no declara su contrato,
+se derivan invariantes mínimos (el archivo existe y no está vacío); si los
+declaras tú, se comprueban todos. Campos disponibles en `aceptacion`:
+
+- `archivos`: lista de rutas relativas que deben existir y no estar vacías.
+- `imagenes`: rutas que deben ser imágenes RASTER reales (se comprueba el
+  formato por bytes, no la extensión).
+- `formato_imagen`: formato real exigido a `imagenes` ("PNG", "JPEG"...).
+- `min_bytes`: tamaño mínimo en bytes de cada archivo de `archivos`.
+- `min_caracteres`: longitud mínima del texto producido.
+- `json_parseable`: true si el archivo .json (o la clave `json`) debe parsear.
+- `claves_requeridas`: claves que deben estar presentes en el resultado o en
+  el JSON del archivo.
+- `requiere_imagen`: true si un documento (.docx, .pdf, .odt, .pptx...) debe
+  contener al menos una imagen raster incrustada.
+- `min_imagenes`: número mínimo de imágenes incrustadas en el documento.
+- `min_items`: número mínimo de items (resultados de Loop / listas).
+- `max_errores`: número máximo de errores tolerados en el resultado.
+
+Ejemplos:
+- Un paso `File` que escribe `cuento.docx` con una imagen obligatoria:
+  `"aceptacion": {"archivos": ["cuento.docx"], "requiere_imagen": true, "min_imagenes": 1}`
+- Un paso que produce `datos.json`: `"aceptacion": {"archivos": ["datos.json"], "json_parseable": true}`
+- Un paso que produce una imagen: `"aceptacion": {"imagenes": ["grafico.png"], "formato_imagen": "PNG"}`
+
+NO declares invariantes que el plan no pueda cumplir: si exiges una imagen,
+algún paso debe producir una imagen raster real (usa `preparar_imagen`).
+"""
+
         # ── 6. Ensamblar el prompt final ──
         return f"""Eres un arquitecto experto en sistemas de agentes automatizados.
 
@@ -570,6 +615,8 @@ Ejemplos de errores comunes a EVITAR:
 
 {contrato_cruce_datos}
 
+{contrato_aceptacion}
+
 ## ⚠️ INSTRUCCIÓN CRÍTICA DE FORMATO ⚠️
 
 Debes responder **ÚNICAMENTE** con un objeto JSON válido.
@@ -596,7 +643,11 @@ Debes responder **ÚNICAMENTE** con un objeto JSON válido.
       "configuracion": {{
         // SOLO campos listados arriba para este tipo
       }},
-      "justificacion": "Por qué este paso es necesario"
+      "justificacion": "Por qué este paso es necesario",
+      "es_critico": true,
+      "aceptacion": {{
+        // invariantes comprobables en disco (ver CONTRATO DE ACEPTACIÓN)
+      }}
     }}
   ]
 }}
@@ -632,6 +683,11 @@ NIVEL DE DETALLE: {nivel_detalle}
             2. ¿El paso final de File (si aplica) recibe un dict con las claves correctas?
             3. ¿Las dependencias forman un DAG válido (sin ciclos, sin nombres inexistentes)?
             4. ¿El JSON es válido y no tiene comas finales ni texto adicional?
+            5. ¿Cada paso que produce un artefacto declara su 'aceptacion' con
+               invariantes que el plan PUEDE cumplir (p. ej. si exijo una imagen,
+               hay un paso que produce una imagen raster real)?
+            6. ¿He marcado 'es_critico': true el paso que produce el resultado
+               esencial que el usuario ha pedido?
 
             Genera el plan de ejecución en formato JSON. Responde ÚNICAMENTE con el JSON, sin texto adicional.
             """

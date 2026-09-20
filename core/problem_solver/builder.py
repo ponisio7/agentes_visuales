@@ -25,12 +25,26 @@ ya recibe el `plan` que está construyendo, así que se lo pasa directamente
 ese punto del flujo (ver `resolver_problema`: `self._plan_actual = plan`
 se asigna justo antes de llamar a `_generar_agentes(plan)`).
 """
+import os
 from datetime import datetime
 from typing import Any
 
 from core.agent import Agente, TipoAgente
+from core.executors.security import validar_ruta_archivo
 
-from .models import ExecutionPlan, StepPlan
+from .models import ContratoAceptacion, ExecutionPlan, StepPlan
+
+# Palabras del enunciado que implican que un documento debe llevar imagen.
+_PALABRAS_IMAGEN = (
+    "imagen", "imagenes", "imágenes", "ilustracion", "ilustración",
+    "ilustraciones", "foto", "fotos", "dibujo", "dibujos", "grafico",
+    "gráfico", "graficos", "gráficos", "portada", "infografia",
+    "infografía", "logo", "logotipo",
+)
+
+# Extensiones que el contrato puede comprobar como documento con medios.
+_EXT_DOCUMENTO = (".docx", ".docm", ".pptx", ".xlsx", ".odt", ".ods", ".odp", ".pdf")
+_EXT_IMAGEN = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".webp")
 
 
 def _a_float(valor: Any, default: float = 0.0) -> float:
@@ -51,6 +65,11 @@ def _a_int(valor: Any, default: int) -> int:
         return int(float(valor))
     except (TypeError, ValueError):
         return default
+
+
+def _extension(ruta: str) -> str:
+    """Extensión en minúsculas de una ruta ('' si no tiene)."""
+    return os.path.splitext(str(ruta))[1].lower()
 
 
 def _normalizar_dependencias(valor: Any) -> list[str]:
@@ -124,7 +143,10 @@ class PlanBuilder:
                 dependencia_ids=_normalizar_dependencias(paso_raw.get('dependencias')),
                 configuracion=paso_raw.get('configuracion') or {},
                 justificacion=paso_raw.get('justificacion', ''),
-                es_critico=paso_raw.get('es_critico', False),
+                es_critico=bool(paso_raw.get('es_critico', False)),
+                aceptacion=ContratoAceptacion.from_dict(
+                    paso_raw.get('aceptacion') or paso_raw.get('invariantes')
+                ),
             )
 
             try:
@@ -254,13 +276,82 @@ class PlanBuilder:
 
         # ── 5. Crear el agente ──
         try:
-            return Agente(**kwargs)
+            agente = Agente(**kwargs)
         except TypeError as e:
             self.logger.error(
                 f"Error construyendo Agente '{paso.nombre}': {e}. "
                 f"kwargs recibidos: {sorted(kwargs.keys())}"
             )
             raise
+
+        # ── 6. Contrato de aceptación (H6) ──
+        # El LLM puede declararlo; si no, se derivan invariantes
+        # deterministas de la propia configuración (el artefacto que el paso
+        # dice producir debe existir y no estar vacío).
+        agente.es_critico = bool(getattr(paso, "es_critico", False))
+        contrato = getattr(paso, "aceptacion", None)
+        if contrato is None:
+            contrato = self._contrato_automatico(paso, tipo, plan_actual)
+        if contrato is not None and not contrato.es_vacio():
+            agente.contrato_aceptacion = contrato.to_dict()
+            self.logger.debug(
+                f"🔎 '{paso.nombre}': contrato de aceptación "
+                f"{agente.contrato_aceptacion}"
+            )
+
+        return agente
+
+    def _contrato_automatico(
+        self,
+        paso: StepPlan,
+        tipo: TipoAgente,
+        plan_actual: ExecutionPlan | None,
+    ) -> ContratoAceptacion | None:
+        """Deriva invariantes comprobables de un paso que produce artefactos.
+
+        Sin esto, el LLM tendría que declarar el contrato para que hubiera
+        verificación; con esto, cualquier paso File que escribe un archivo se
+        comprueba en disco aunque el plan no declare nada. Además, si el
+        enunciado pide una imagen y el destino es un documento, se exige que
+        el documento contenga al menos una imagen raster (el fallo del .docx
+        sin imagen de esta sesión).
+        """
+        if tipo != TipoAgente.FILE:
+            return None
+
+        config = paso.configuracion or {}
+        operacion = str(config.get("operacion") or "").lower()
+        if operacion not in ("escribir", "copiar", "mover"):
+            return None
+
+        destino = str(config.get("archivo_destino") or "").strip()
+        if not destino or not validar_ruta_archivo(destino):
+            return None
+        # Un destino con plantilla no se resuelve hasta la ejecución: no se
+        # puede declarar un invariante sobre el nombre literal.
+        if "{" in destino or "}" in destino:
+            return None
+
+        contrato = ContratoAceptacion(archivos=[destino])
+        extension = _extension(destino)
+
+        if extension in _EXT_IMAGEN:
+            # La extensión no garantiza el formato: se exige raster real.
+            contrato.imagenes = [destino]
+
+        if extension in _EXT_DOCUMENTO:
+            problema = ""
+            if plan_actual is not None:
+                problema = (getattr(plan_actual, "problema_original", "") or "").lower()
+            if any(palabra in problema for palabra in _PALABRAS_IMAGEN):
+                contrato.requiere_imagen = True
+                contrato.min_imagenes = 1
+                self.logger.info(
+                    f"🔎 '{paso.nombre}': el enunciado pide imagen y '{destino}' "
+                    f"es un documento → se exigirá ≥1 imagen raster incrustada"
+                )
+
+        return None if contrato.es_vacio() else contrato
 
     def _kwargs_python(
         self,

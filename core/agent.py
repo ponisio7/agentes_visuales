@@ -317,6 +317,15 @@ class Agente:
     duracion: float = 5.0
     reintentos: int = 0
     max_reintentos: int = 3
+
+    # ── Aceptación de la salida (H6) ──
+    # ``es_critico`` (Nivel 1): un fallo o un resultado sospechoso en este
+    # paso tumba la ejecución. ``contrato_aceptacion`` (Nivel 2) es el
+    # contrato declarativo que el verificador determinista comprueba en
+    # disco/bytes (dict serializable, para no acoplar core.agent a
+    # core.problem_solver).
+    es_critico: bool = False
+    contrato_aceptacion: dict[str, Any] | None = None
     
     # ============================================================
     # ESTADO DE EJECUCIÓN (NO se persiste al guardar configuración)
@@ -1029,6 +1038,13 @@ class Agente:
             "error": self.error[:500] if self.error else "",
             "tiempo_ejecucion": (self.tiempo_fin - self.tiempo_inicio) if (self.tiempo_inicio and self.tiempo_fin) else 0
         }
+
+        # H6: el contrato de aceptación viaja con el agente para que el
+        # historial permita auditar por qué una ejecución se marcó fallida.
+        if self.es_critico:
+            data["es_critico"] = True
+        if self.contrato_aceptacion:
+            data["contrato_aceptacion"] = self.contrato_aceptacion
 
         # ✅ FASE 1: persistir el prompt del agente LLM.
         # Truncado a 4000 chars para no inflar la BD si el LLM generó un
