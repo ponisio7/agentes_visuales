@@ -489,29 +489,37 @@ class TestDeepSeekIntegracion:
         assert ok is False
         assert "modelo" in msg.lower()
     
-    @patch('openai.OpenAI')
-    def test_ejecucion_agente_llm_mock(self, mock_openai_class):
+    @patch('core.llm_client.obtener_llm_client_compartido')
+    def test_ejecucion_agente_llm_mock(self, mock_compartido):
         """
         Prueba la ejecución de un agente LLM con mock.
-        CORREGIDO: El patch correcto es 'openai.OpenAI' ya que openai
-        se importa dentro de _ejecutar_llm.
+
+        B1 (v3.3.0): el ejecutor ya NO hace ``openai.OpenAI(...)`` por
+        llamada; pide el cliente COMPARTIDO y llama a
+        ``LLMClient.completar()`` pasando reasoning_effort/thinking_enabled
+        del agente. El mock se engancha a ese seam.
         """
+        from types import SimpleNamespace
+
         from core.agent import Agente, TipoAgente
         from core.executors import AgentExecutor
-        
-        # Configurar mock response
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_response.choices[0].message.content = "Respuesta mockeada del LLM"
-        mock_response.usage = MagicMock()
-        mock_response.usage.prompt_tokens = 10
-        mock_response.usage.completion_tokens = 20
-        mock_response.usage.total_tokens = 30
-        
+        from core.llm_client import LLMResultado
+
+        # Configurar mock response (mismo formato que LLMClient.completar)
+        mock_response = LLMResultado(
+            contenido="Respuesta mockeada del LLM",
+            finish_reason="stop",
+            uso=SimpleNamespace(
+                prompt_tokens=10, completion_tokens=20, total_tokens=30
+            ),
+            modelo=DEFAULT_MODEL_DEFAULT,
+        )
+
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = mock_response
-        mock_openai_class.return_value = mock_client
-        
+        mock_client.api_key = "test-key-fake"
+        mock_client.completar.return_value = mock_response
+        mock_compartido.return_value = mock_client
+
         # Crear agente LLM
         agente = Agente(
             nombre="LLMTest",
@@ -521,23 +529,34 @@ class TestDeepSeekIntegracion:
             temperatura_llm=0.7,
             max_tokens_llm=50
         )
-        
+
         # Ejecutar con contexto
         contexto = {"contexto": "Dime algo interesante sobre Python"}
-        
-        # CORRECCIÓN: Patchear la variable de entorno Y el import de openai
+
         with patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'test-key-fake'}):
             exito, mensaje, resultado = AgentExecutor.ejecutar(agente, contexto)
-        
+
         # Verificar
         assert exito is True, f"Ejecución falló: {mensaje}"
         assert resultado is not None
         assert 'respuesta' in resultado
         assert "Respuesta mockeada" in resultado['respuesta']
         assert resultado['modelo'] == DEFAULT_MODEL_DEFAULT
-    
-    def test_agente_llm_sin_api_key(self):
-        """Prueba que un agente LLM falle sin API key."""
+
+        # B1: la petición lleva la configuración del AGENTE, no la del cliente
+        _, kwargs = mock_client.completar.call_args
+        assert kwargs["reasoning_effort"] == agente.reasoning_effort_llm
+        assert kwargs["thinking_enabled"] == agente.thinking_enabled_llm
+        assert kwargs["model"] == DEFAULT_MODEL_DEFAULT
+
+    def test_agente_llm_sin_api_key(self, monkeypatch):
+        """Prueba que un agente LLM falle sin API key.
+
+        El cliente es un singleton cacheado, así que para simular "no hay
+        clave" hay que reiniciarlo y vaciar el entorno: la creación del
+        cliente compartido es la que falla con ``LLMConfigurationError``.
+        """
+        from core import llm_client as modulo_cliente
         from core.agent import Agente, TipoAgente
         from core.executors import AgentExecutor
 
@@ -548,10 +567,13 @@ class TestDeepSeekIntegracion:
             modelo_llm=DEFAULT_MODEL_DEFAULT,
         )
 
-        # ✅ Parchear TANTO la variable de entorno COMO la carga desde archivos
-        with patch.dict(os.environ, {}, clear=True), \
-            patch('core.llm_client.cargar_entorno_desde_archivos', return_value={}):
-            exito, mensaje, resultado = AgentExecutor.ejecutar(agente, {})
+        monkeypatch.setattr(modulo_cliente, "_shared_client", None)
+        monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+        monkeypatch.setattr(
+            modulo_cliente, "cargar_entorno_desde_archivos", lambda: {}
+        )
+
+        exito, mensaje, resultado = AgentExecutor.ejecutar(agente, {})
 
         assert exito is False
         assert "DEEPSEEK_API_KEY" in mensaje or "API key" in mensaje.lower()
