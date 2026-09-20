@@ -36,6 +36,7 @@ import os
 import re
 
 from core.agent import TipoAgente
+from core.ia_config import modelo_por_defecto
 from core.sandbox_contract import NOMBRES_INYECTADOS
 
 from .constants import CAMPOS_VALIDOS_POR_TIPO
@@ -167,7 +168,9 @@ class PlanValidator:
             if 'prompt' not in config or not config['prompt']:
                 config['prompt'] = "Analiza el siguiente contexto:\n{contexto}"
             if 'modelo' not in config:
-                config['modelo'] = 'deepseek-v4-pro'
+                # H1: respeta el modelo configurado por el usuario
+                # (DEEPSEEK_MODEL / archivo de configuración).
+                config['modelo'] = modelo_por_defecto()
             if 'temperatura' not in config:
                 config['temperatura'] = 0.7
 

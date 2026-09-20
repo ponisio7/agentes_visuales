@@ -52,6 +52,7 @@ from core.llm_client import obtener_llm_client_compartido
 from core.problem_solver import ExecutionPlan, ProblemSolver
 from core.scheduler import Scheduler
 from storage.database import Database
+from ui.config_dialog import ConfiguracionDialog
 
 logger = logging.getLogger(__name__)
 
@@ -569,6 +570,12 @@ class SimpleMainWindow(QMainWindow):
         self.btn_admin.clicked.connect(self._on_admin)
         fila.addWidget(self.btn_admin, stretch=1)
 
+        # H1: configuración de API key / modelo / red
+        self.btn_config = QPushButton("[ ⚙ CONFIG ]")
+        self.btn_config.setFont(_mono_font(11, bold=True))
+        self.btn_config.clicked.connect(self._on_config)
+        fila.addWidget(self.btn_config, stretch=1)
+
         layout.addLayout(fila)
 
         self.progress = AsciiProgressBar()
@@ -602,10 +609,13 @@ class SimpleMainWindow(QMainWindow):
         layout.addWidget(self.lbl_disp)
 
         if self.solver:
-            self.lbl_disp.setText("● IA DISPONIBLE")
+            modelo = getattr(obtener_llm_client_compartido(), "modelo_actual", "")
+            self.lbl_disp.setText(
+                f"● IA DISPONIBLE — {modelo}" if modelo else "● IA DISPONIBLE"
+            )
             self.lbl_disp.setStyleSheet(f"color: {GREEN};")
         else:
-            self.lbl_disp.setText("● IA NO DISPONIBLE — falta DEEPSEEK_API_KEY")
+            self.lbl_disp.setText("● IA NO DISPONIBLE — configura la API key (⚙ CONFIG)")
             self.lbl_disp.setStyleSheet(f"color: {RED_ERR};")
             self.btn_ejecutar.setEnabled(False)
 
@@ -651,6 +661,43 @@ class SimpleMainWindow(QMainWindow):
                 self, "Error",
                 f"No se pudo abrir el panel de administración:\n{e}"
             )
+
+    # ── Configuración de IA (H1) ────────────────────────────────
+    def _on_config(self):
+        """Abre ⚙ Configuración. Prohibido mientras hay una tarea en curso."""
+        if self._ejecutando:
+            QMessageBox.warning(
+                self,
+                "Tarea en ejecución",
+                "No se puede cambiar la configuración mientras hay una tarea "
+                "ejecutándose. Aborta o espera a que termine.",
+            )
+            return
+
+        dialogo = ConfiguracionDialog(self)
+        dialogo.configuracion_guardada.connect(self._aplicar_configuracion)
+        dialogo.exec()
+
+    def _aplicar_configuracion(self, config: dict):
+        """Reconstruye el solver con el cliente LLM ya reiniciado."""
+        try:
+            llm = obtener_llm_client_compartido()
+        except Exception as e:
+            llm = None
+            logger.warning(f"No se pudo crear el cliente LLM tras configurar: {e}")
+
+        if llm is not None and getattr(llm, "disponible", False):
+            self.solver = ProblemSolver(llm)
+            self.lbl_disp.setText(f"● IA DISPONIBLE — {llm.modelo_actual}")
+            self.lbl_disp.setStyleSheet(f"color: {GREEN};")
+            self.btn_ejecutar.setEnabled(True)
+            self._log(f"⚙ configuración aplicada — modelo {llm.modelo_actual}", CYAN_INFO)
+        else:
+            self.solver = None
+            self.lbl_disp.setText("● IA NO DISPONIBLE — configura la API key")
+            self.lbl_disp.setStyleSheet(f"color: {RED_ERR};")
+            self.btn_ejecutar.setEnabled(False)
+            self._log("⚙ configuración guardada, pero la IA no está disponible", AMBER_WARN)
 
     def _boot_step(self):
         if self._boot_index < len(BOOT_LINES):
@@ -749,6 +796,8 @@ class SimpleMainWindow(QMainWindow):
 
         self.btn_ejecutar.setEnabled(False)
         self.btn_detener.setEnabled(True)
+        if hasattr(self, "btn_config"):
+            self.btn_config.setEnabled(False)
         self.progress.setValue(0)
         self.log.clear()
 
@@ -898,6 +947,8 @@ class SimpleMainWindow(QMainWindow):
         self._ejecutando = False
         self.btn_ejecutar.setEnabled(True)
         self.btn_detener.setEnabled(False)
+        if hasattr(self, "btn_config"):
+            self.btn_config.setEnabled(True)
         self.progress.setValue(100)
 
         self._actualizar_status_final()
@@ -1139,6 +1190,8 @@ class SimpleMainWindow(QMainWindow):
         self._tiempo_inicio_ejecucion = None
         self.btn_ejecutar.setEnabled(bool(self.solver))
         self.btn_detener.setEnabled(False)
+        if hasattr(self, "btn_config"):
+            self.btn_config.setEnabled(True)
         self.progress.setValue(0)
         self._set_status("listo", GREEN_DIM)
 

@@ -19,10 +19,8 @@ CARACTERÍSTICAS:
 import json
 import logging
 import os
-import stat
 import threading
 import time
-from pathlib import Path
 from typing import Any, Optional
 
 # Intentar importar OpenAI
@@ -37,124 +35,29 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # ✅ CARGA DE ENTORNO DESDE ARCHIVOS DE CONFIGURACIÓN
 # ============================================================
+# La lectura/escritura del archivo de secretos vive en ``core.ia_config``
+# (responsabilidad única, permisos 700/600, escritura atómica). Aquí se
+# re-exportan los nombres históricos como atributos de módulo para no romper
+# imports existentes (``core.env_checker`` y los tests usan
+# ``_FALLBACK_ENV_PATHS`` y ``_parsear_linea_env`` desde este módulo).
+from core import ia_config as _ia_config
 
-# Rutas de búsqueda en orden de prioridad (el primer archivo con
-# al menos una variable soportada gana).
-_FALLBACK_ENV_PATHS = [
-    Path.home() / ".config" / "agentes_visuales" / "env",
-    Path.home() / ".config" / "deepseek.env",
-    Path.home() / ".deepseek_key",
-]
-
-# Variables reconocidas en el archivo
-_VARIABLES_SOPORTADAS = frozenset({
-    "DEEPSEEK_API_KEY",
-    "DEEPSEEK_BASE_URL",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-})
-
-
-def _parsear_linea_env(linea: str) -> tuple[str, str] | None:
-    """
-    Parsea una línea tipo 'export VAR="valor"' o 'VAR=valor'.
-    Devuelve (clave, valor) o None si no es una asignación válida.
-    """
-    linea = linea.strip()
-    if not linea or linea.startswith("#"):
-        return None
-
-    # Quitar 'export ' si está
-    if linea.startswith("export "):
-        linea = linea[7:].strip()
-
-    if "=" not in linea:
-        return None
-
-    clave, _, valor = linea.partition("=")
-    clave = clave.strip()
-    valor = valor.strip()
-
-    # Quitar comentarios al final del valor (solo si van precedidos de espacio)
-    if " #" in valor and not valor.startswith("#"):
-        valor = valor.split(" #", 1)[0].strip()
-
-    # Quitar comillas envolventes
-    if len(valor) >= 2:
-        if (valor[0] == '"' and valor[-1] == '"') or \
-           (valor[0] == "'" and valor[-1] == "'"):
-            valor = valor[1:-1]
-
-    return clave, valor
-
-
-def _verificar_permisos_archivo(path: Path) -> None:
-    """Advierte si un archivo de secretos tiene permisos demasiado abiertos."""
-    try:
-        mode = path.stat().st_mode
-        if mode & (stat.S_IRWXG | stat.S_IRWXO):
-            permisos = oct(mode & 0o777)
-            logger.warning(
-                f"⚠️ {path} tiene permisos demasiado abiertos ({permisos}). "
-                f"Recomendado: chmod 600 {path}"
-            )
-    except OSError as e:
-        logger.debug(f"No se pudieron verificar permisos de {path}: {e}")
-
-
-def cargar_entorno_desde_archivos() -> dict[str, str]:
-    """
-    Carga variables de entorno desde archivos de configuración de fallback.
-
-    Busca en rutas comunes (~/.config/agentes_visuales/env, etc.) y devuelve
-    un dict con las variables encontradas. Solo considera variables declaradas
-    en _VARIABLES_SOPORTADAS.
-
-    La búsqueda para en el primer archivo que contenga al menos una variable
-    soportada, para evitar que un archivo antiguo sobrescriba a uno nuevo.
-
-    Returns:
-        Dict[str, str]: Variables encontradas (puede estar vacío).
-    """
-    for path in _FALLBACK_ENV_PATHS:
-        if not path.exists() or not path.is_file():
-            continue
-
-        _verificar_permisos_archivo(path)
-
-        encontradas: dict[str, str] = {}
-        try:
-            with open(path, encoding="utf-8") as f:
-                for num_linea, linea in enumerate(f, 1):
-                    resultado = _parsear_linea_env(linea)
-                    if resultado is None:
-                        continue
-                    clave, valor = resultado
-                    if clave in _VARIABLES_SOPORTADAS and valor:
-                        encontradas[clave] = valor
-                    elif clave in _VARIABLES_SOPORTADAS and not valor:
-                        logger.warning(
-                            f"⚠️ {path}:{num_linea} — '{clave}' está vacía"
-                        )
-        except OSError as e:
-            logger.warning(f"No se pudo leer {path}: {e}")
-            continue
-
-        if encontradas:
-            logger.debug(
-                f"✅ Variables cargadas desde {path}: {sorted(encontradas.keys())}"
-            )
-            return encontradas
-
-    return {}
-
+DEFAULT_MODEL = _ia_config.DEFAULT_MODEL
+RUTA_ENV_PRINCIPAL = _ia_config.RUTA_ENV_PRINCIPAL
+_VARIABLES_SOPORTADAS = _ia_config.VARIABLES_SOPORTADAS
+_FALLBACK_ENV_PATHS = _ia_config._FALLBACK_ENV_PATHS
+_verificar_permisos_archivo = _ia_config._verificar_permisos_archivo
+cargar_entorno_desde_archivos = _ia_config.cargar_entorno_desde_archivos
+enmascarar_key = _ia_config.enmascarar_key
+modelo_por_defecto = _ia_config.modelo_por_defecto
+normalizar_modelo = _ia_config.normalizar_modelo
+_parsear_linea_env = _ia_config.parsear_linea_env
+resolver_api_key = _ia_config.resolver_api_key
 
 # ============================================================
 # CONSTANTES
 # ============================================================
 
-DEFAULT_MODEL = "deepseek-v4-pro"
 FALLBACK_MODELS = ["deepseek-v4-flash"]
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_TIMEOUT = 30
@@ -247,8 +150,8 @@ class LLMClient:
     def __init__(
         self,
         api_key: str | None = None,
-        base_url: str = DEFAULT_BASE_URL,
-        default_model: str = DEFAULT_MODEL,
+        base_url: str | None = None,
+        default_model: str | None = None,
         timeout: float = DEFAULT_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
@@ -260,8 +163,9 @@ class LLMClient:
         Args:
             api_key: API key de DeepSeek (si no se proporciona, usa DEEPSEEK_API_KEY
                      o el archivo de fallback)
-            base_url: URL base de la API
-            default_model: Modelo por defecto
+            base_url: URL base de la API (si no, DEEPSEEK_BASE_URL o el default)
+            default_model: Modelo por defecto. ``None`` = DEEPSEEK_MODEL
+                (variable de entorno o archivo) y, si no hay, ``DEFAULT_MODEL``.
             timeout: Timeout en segundos
             max_retries: Número máximo de reintentos
             reasoning_effort: Nivel de razonamiento ("low", "medium", "high")
@@ -280,18 +184,7 @@ class LLMClient:
         env_file = cargar_entorno_desde_archivos()
 
         # ── 2. Resolver API key: arg > env var > archivo ──
-        origen_key = "argumento"
-        self.api_key = api_key
-
-        if not self.api_key:
-            self.api_key = os.environ.get("DEEPSEEK_API_KEY")
-            if self.api_key:
-                origen_key = "variable de entorno"
-
-        if not self.api_key:
-            self.api_key = env_file.get("DEEPSEEK_API_KEY")
-            if self.api_key:
-                origen_key = "archivo de configuración"
+        self.api_key, origen_key = resolver_api_key(api_key)
 
         if not self.api_key:
             raise LLMConfigurationError(
@@ -300,8 +193,10 @@ class LLMClient:
                 "       export DEEPSEEK_API_KEY='tu-api-key'\n"
                 "  2. Crear ~/.config/agentes_visuales/env con:\n"
                 "       export DEEPSEEK_API_KEY=\"tu-api-key\"\n"
-                "     y darle permisos: chmod 600 ~/.config/agentes_visuales/env"
+                "     y darle permisos: chmod 600 ~/.config/agentes_visuales/env\n"
+                "  3. Usar el botón ⚙ Configuración de la GUI."
             )
+        origen_key = origen_key or "desconocido"
 
         # ── 3. Resolver base_url: arg > env var > archivo > default ──
         self.base_url = (
@@ -321,7 +216,9 @@ class LLMClient:
                 logger.debug(f"Proxy aplicado desde archivo: {var}")
 
         # ── 5. Resto de la configuración ──
-        self.default_model = default_model
+        #    El modelo lo decide (en orden): argumento explícito > DEEPSEEK_MODEL
+        #    (entorno o archivo) > DEFAULT_MODEL.
+        self.default_model = normalizar_modelo(default_model or modelo_por_defecto())
         self.timeout = timeout
         self.max_retries = max_retries
 
@@ -772,6 +669,32 @@ def obtener_llm_client_compartido(
             if _shared_client is None:  # doble check tras adquirir el lock
                 _shared_client = LLMClient(api_key=api_key, **kwargs)
     return _shared_client
+
+
+def reset_llm_client_compartido() -> None:
+    """Descarta el cliente compartido para que se recree con la config nueva.
+
+    Lo usa la GUI al guardar la configuración (H1): cambiar API key, modelo,
+    base URL o proxies no debe exigir reiniciar la aplicación. El siguiente
+    ``obtener_llm_client_compartido()`` construye un cliente con los valores
+    actuales del entorno/archivo.
+
+    Cierra el cliente anterior si expone ``close()`` (libera el pool httpx).
+    """
+    global _shared_client
+    with _shared_client_lock:
+        anterior = _shared_client
+        _shared_client = None
+    if anterior is not None:
+        for metodo in ("close", "cerrar"):
+            cerrar = getattr(anterior, metodo, None)
+            if callable(cerrar):
+                try:
+                    cerrar()
+                except Exception as e:  # nunca debe romper el guardado
+                    logger.debug(f"No se pudo cerrar el cliente LLM anterior: {e}")
+                break
+    logger.info("🔁 Cliente LLM compartido reiniciado")
 
 
 # ============================================================

@@ -366,6 +366,18 @@ def ejecutar_check_env(timeout: float = 5.0) -> int:
     if not key.startswith("sk-"):
         print(_warn(c, "La key no empieza por 'sk-'. ¿Es correcta?"))
 
+    # ── 2b. Modelo configurado (H1) ──
+    print(_seccion(c, "Modelo"))
+    try:
+        from core.ia_config import ETIQUETAS_MODELO, modelo_por_defecto
+
+        modelo = modelo_por_defecto()
+        etiqueta = ETIQUETAS_MODELO.get(modelo, "")
+        print(_ok(c, f"Modelo: {modelo}" + (f" ({etiqueta})" if etiqueta else "")))
+        print(_info(c, "Se cambia con DEEPSEEK_MODEL o con ⚙ Configuración en la GUI"))
+    except Exception as e:
+        print(_warn(c, f"No se pudo resolver el modelo: {e}"))
+
     # ── 3. Proxies ──
     print(_seccion(c, "Configuración de red"))
     proxies = _verificar_proxies(c)

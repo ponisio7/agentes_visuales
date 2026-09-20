@@ -31,6 +31,7 @@ from typing import Any
 
 from core.agent import Agente, TipoAgente
 from core.executors.security import validar_ruta_archivo
+from core.ia_config import modelo_por_defecto, normalizar_modelo
 
 from .models import ContratoAceptacion, ExecutionPlan, StepPlan
 
@@ -447,7 +448,10 @@ class PlanBuilder:
 
         # ── 1. Leer configuración ──
         prompt_original = config.get('prompt', '')
-        kwargs['modelo_llm'] = config.get('modelo', 'deepseek-v4-pro')
+        # H1: el modelo elegido por el usuario (Pro/Flash) manda cuando el plan
+        # no fija uno explícito. ``DEEPSEEK_MODEL``/archivo de config lo definen.
+        modelo = config.get('modelo') or modelo_por_defecto()
+        kwargs['modelo_llm'] = normalizar_modelo(modelo)
         kwargs['temperatura_llm'] = _a_float(config.get('temperatura'), 0.7)
 
         # Blindaje: thinking mode consume tokens
