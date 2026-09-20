@@ -65,6 +65,41 @@ class TestCancellationToken:
         token.agregar_callback(cb)
         assert len(token._callbacks) == 1
 
+    def test_callback_sobre_token_ya_cancelado_se_ejecuta(self):
+        # Regresión: agregar_callback() solo registraba el callback, así que
+        # si el token se cancelaba antes de registrarlo el callback no se
+        # disparaba nunca (ventana de carrera real en shell_executor, cuyo
+        # communicate() depende del callback para matar el proceso).
+        token = CancellationToken()
+        token.cancelar("antes de registrar")
+        vistos = []
+
+        token.agregar_callback(lambda t: vistos.append(t.id))
+
+        assert vistos == [token.id]
+        # No queda registrado: no habrá otra cancelación.
+        assert token._callbacks == []
+
+    def test_callback_sobre_token_completado_no_hace_nada(self):
+        token = CancellationToken()
+        token.completar()
+        vistos = []
+
+        token.agregar_callback(lambda t: vistos.append(t.id))
+
+        assert vistos == []
+        assert token._callbacks == []
+
+    def test_callback_que_falla_en_token_cancelado_no_propaga(self):
+        token = CancellationToken()
+        token.cancelar("test")
+
+        def malo(_):
+            raise RuntimeError("boom")
+
+        # No debe propagar la excepción al llamador.
+        token.agregar_callback(malo)
+
     def test_eliminar_callback(self):
         token = CancellationToken()
 
@@ -196,3 +231,54 @@ class TestCancellationManager:
 class TestSingleton:
     def test_obtener_gestor_es_singleton(self):
         assert obtener_gestor_cancelacion() is obtener_gestor_cancelacion()
+
+
+class TestCancelacionEfectivaEnEjecutores:
+    """Verifica que la cancelación llega a matar el proceso de verdad.
+
+    ``ShellExecutor`` no sondea el token: depende por completo del callback
+    registrado con ``agregar_callback`` para interrumpir su
+    ``communicate()``. Si el token ya estaba cancelado al registrar (ventana
+    de carrera), antes el callback no se disparaba y el comando seguía
+    corriendo hasta agotar el timeout.
+    """
+
+    def test_token_cancelado_tras_popen_mata_el_comando(self, monkeypatch):
+        import subprocess
+        import time
+
+        from core.agent import Agente, TipoAgente
+        from core.executors import shell_executor as se_mod
+        from core.executors.shell_executor import ShellExecutor
+
+        token = CancellationToken()
+        popen_real = subprocess.Popen
+
+        def popen_que_cancela(*args, **kwargs):
+            proceso = popen_real(*args, **kwargs)
+            # Simula la carrera exacta: la cancelación llega después de
+            # crear el proceso pero antes de agregar_callback().
+            token.cancelar("carrera")
+            return proceso
+
+        monkeypatch.setattr(se_mod.subprocess, "Popen", popen_que_cancela)
+
+        agente = Agente(
+            nombre="ShellCancelado",
+            tipo=TipoAgente.SHELL,
+            comando_shell="sleep 30",
+            timeout_shell=30,
+        )
+
+        inicio = time.time()
+        exito, mensaje, _ = ShellExecutor.ejecutar(
+            agente, {}, cancellation_token=token
+        )
+        transcurrido = time.time() - inicio
+
+        assert exito is False
+        assert "cancelad" in mensaje.lower(), mensaje
+        # Con el bug, communicate() esperaba los 30s del timeout.
+        assert transcurrido < 5, (
+            f"tardó {transcurrido:.1f}s en cancelar: el callback no mató el proceso"
+        )
