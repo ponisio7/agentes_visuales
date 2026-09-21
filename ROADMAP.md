@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1180 passed, 1 skipped` (110 s) con `tools/run_tests.sh` (eran 1166 antes de las correcciones de §0.1).
+- **Estado del código en esta fecha**: `1176 passed, 1 skipped` (73 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. Equivale a los `1180 passed, 1 skipped` de referencia, antes de las correcciones de §0.1.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -76,6 +76,51 @@ Efecto en la suite: **1166 → 1180 passed, 1 skipped**, sin regresiones.
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
 estos dos puntos ya están cerrados.
+
+---
+
+## 0.2 Hallazgo de la reconstrucción del modo `resolve` (2026-09-21)
+
+El cableado de `resolve` en `main.py` (V4.0) estaba **sin commitear**. Al
+versionar el ROADMAP se perdió y hubo que **reconstruirlo** a partir de su
+especificación, que sí sobrevivía:
+
+- `tests/test_main_resolve.py` (12 casos) — el contrato exacto del subcomando.
+- `core/goal_resolver.py` (497 líneas, intacto) — el bucle, con su API real.
+- `HARNESS_REPORT_v4.0.0-resolver.md` y el diff de `docs/MANUAL_CLI.md` — el
+  diseño y las banderas documentadas.
+
+Reconstruido y verificado: **12/12** en `test_main_resolve.py`, **43/43** en
+`test_main_cli.py` (el contrato de `run` no cambia) y **21/21** en
+`test_goal_resolver.py`.
+
+### 🔴 Defecto descubierto al reconstruir: el presupuesto compartido no se comparte
+
+El informe promete que «un único presupuesto cubre la planificación y **todos**
+los intentos». En el cableado real **no ocurre**:
+
+- `core/scheduler.py:232-233` — `set_contexto_plan_b()` llama a
+  `self.presupuesto.reset()`.
+- `core/budget_manager.py:162-164` — `reset()` es un **alias de `iniciar()`**:
+  hace `self.consumo = Consumo()` y reinicia el reloj (`self._inicio = momento`).
+- `_ejecutar_plan` llama a `set_contexto_plan_b()` en **cada** intento (cuando
+  `aprender=True`), y `GoalResolver` comprueba `motivo_agotado()` **antes** de
+  planificar cada intento leyendo ese mismo reloj.
+
+Efecto: el tiempo, las llamadas y los tokens se **ponen a cero en cada
+intento**, así que el límite no acota el total de la resolución. La intención
+del diseño está escrita y es correcta (`core/scheduler.py:1489-1496`: «el
+presupuesto es del conjunto» y `iniciar()` **no** lo reinicia); el reinicio
+entra por `set_contexto_plan_b`.
+
+Por qué no se detectó: los tests del bucle (`test_goal_resolver.py`) inyectan un
+ejecutor falso que registra gasto directamente en el `BudgetManager`, sin pasar
+por el `Scheduler`. La interacción solo existe en el cableado real.
+
+**Acción propuesta** (no aplicada: toca `core/scheduler.py`, que tiene trabajo
+en curso): añadir `reiniciar_presupuesto: bool = True` a `set_contexto_plan_b` y
+que `_ejecutar_plan` pase `False` cuando recibe un presupuesto compartido. Con
+test de regresión que verifique que dos intentos suman consumo.
 
 ---
 
@@ -190,6 +235,15 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 
 - **Archivo**: `core/env_checker.py:239, 283-284`
 - **Acción**: endpoint más ligero o `signal.alarm` global. Impacto bajo.
+
+### 3.12 · 🔴 `[bug]` El presupuesto compartido de `resolve` se reinicia en cada intento
+
+- **Archivos**: `core/scheduler.py:232-233`, `core/budget_manager.py:162-164`, `main.py` (`_ejecutar_plan`)
+- **Síntoma**: el límite de tiempo/llamadas/tokens de `resolve` no acota el total; cada intento arranca el presupuesto de cero.
+- **Causa**: `set_contexto_plan_b()` (llamado una vez por intento) ejecuta `presupuesto.reset()`, que es alias de `iniciar()` y reinicia el reloj y el consumo.
+- **Acción**: `reiniciar_presupuesto: bool = True` en `set_contexto_plan_b`; `_ejecutar_plan` pasa `False` con presupuesto compartido.
+- **Criterio de cierre**: test que ejecuta dos intentos y verifica que el consumo se **suma**.
+- **Detalle y evidencia**: ver §0.2.
 
 ---
 

@@ -11,6 +11,7 @@ Uso desde otras apps (headless, sin GUI):
     agentes_visuales run --prompt "resume esto"
     agentes_visuales run --file tarea.json
     cat tarea.json | agentes_visuales run --stdin
+    agentes_visuales resolve "informe en DOCX con 3 imágenes"
     agentes_visuales list-agents
     agentes_visuales serve --port 8765       # servidor HTTP (POST /run)
     agentes_visuales web --port 5000         # entorno web Flask (GET /, /api/*)
@@ -19,6 +20,13 @@ Contrato del modo ``run``:
     - stdout: SOLO el resultado (texto, o JSON con ``--json``)
     - stderr: logs, avisos y errores
     - exit code: ver las constantes EXIT_* de abajo
+
+Contrato del modo ``resolve`` (V4.0 «Resolver tarea»):
+    - Persigue un objetivo de alto nivel: planifica, exige que el plan sea
+      verificable, ejecuta, verifica y, si la aceptación falla, re-planifica
+      con el motivo concreto, dentro de un tope de intentos y del presupuesto.
+    - Mismo contrato de salida que ``run``; exit 0 solo si el artefacto supera
+      la aceptación.
 """
 from __future__ import annotations
 
@@ -39,6 +47,11 @@ DB_PATH_POR_DEFECTO = "agent_history.db"
 MAX_CONCURRENT_DEFAULT = 4
 MAX_PASOS_DEFAULT = 6
 TIMEOUT_CHECK_ENV_DEFAULT = 5.0
+# Espejo de ``core.goal_resolver.MAX_INTENTOS_DEFAULT``. No se importa arriba a
+# propósito: importar `core` arrastra PyQt6 y `--version`/`--check-env` deben
+# seguir funcionando sin Qt (y arrancar rápido). Hay un test que verifica que
+# ambos valores no divergen.
+MAX_INTENTOS_DEFAULT = 2
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +138,7 @@ def _construir_parser() -> argparse.ArgumentParser:
             "  agentes_visuales run --prompt 'hola'      # Ejecución headless\n"
             "  agentes_visuales run --file tarea.json    # Desde fichero\n"
             "  cat tarea.json | agentes_visuales run --stdin\n"
+            "  agentes_visuales resolve 'informe en DOCX con 3 imágenes'\n"
             "  agentes_visuales list-agents\n"
             "  agentes_visuales serve --port 8765        # HTTP (POST /run)\n"
             "  agentes_visuales web --port 5000          # web Flask\n"
@@ -148,7 +162,7 @@ def _construir_parser() -> argparse.ArgumentParser:
         help=(
             "Timeout por defecto en segundos. "
             f"check-env: {TIMEOUT_CHECK_ENV_DEFAULT} si no se indica. "
-            "run, serve y web: sin límite si no se indica."
+            "run, resolve, serve y web: sin límite si no se indica."
         ),
     )
     parser.add_argument(
@@ -193,6 +207,44 @@ def _construir_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--timeout", type=_timeout_positivo, default=argparse.SUPPRESS,
                        help="Timeout de la ejecución en segundos "
                             "(por defecto: sin límite).")
+
+    # --- resolve -------------------------------------------------------------
+    # V4.0 «Resolver tarea»: persigue un objetivo (plan → verificar → re-plan).
+    # Reutiliza el mismo pipeline que ``run`` a través de ``_ejecutar_plan``.
+    p_resolve = sub.add_parser(
+        "resolve",
+        help="Resuelve un objetivo de alto nivel (plan → verificar → re-plan).",
+        description=(
+            "Persigue un objetivo: planifica, exige que el plan sea verificable, "
+            "ejecuta, verifica y, si la aceptación falla, vuelve a planificar con "
+            "el motivo concreto del fallo."
+        ),
+    )
+    p_resolve.add_argument("objetivo", nargs="+",
+                           help="Objetivo de alto nivel, en lenguaje natural.")
+    p_resolve.add_argument("--max-intentos", type=_entero_positivo,
+                           default=MAX_INTENTOS_DEFAULT, metavar="N",
+                           help="Máximo de planificaciones (una por intento). "
+                                f"Por defecto: {MAX_INTENTOS_DEFAULT}.")
+    p_resolve.add_argument("--max-pasos", type=_entero_positivo,
+                           default=MAX_PASOS_DEFAULT, metavar="N",
+                           help=f"Máximo de pasos por plan (por defecto: {MAX_PASOS_DEFAULT}).")
+    p_resolve.add_argument("--sin-exigir-verificacion", action="store_true",
+                           help="Ejecuta también planes que no declaran contrato "
+                                "de aceptación (desactiva el gate).")
+    p_resolve.add_argument("--output", "-o", type=Path, default=None,
+                           help="Guarda la resolución completa (JSON) en este fichero.")
+    p_resolve.add_argument("--json", action="store_true",
+                           help="Salida en JSON (recomendado para integración).")
+    p_resolve.add_argument("--quiet", "-q", action="store_true",
+                           help="Silencia logs en stderr (solo errores).")
+    p_resolve.add_argument("--no-aprender", action="store_true",
+                           help="No guarda la ejecución en aprendizaje ni activa el "
+                                "Plan B (no toca agent_history.db).")
+    # Mismo motivo que en ``run``: default=SUPPRESS para no pisar el global.
+    p_resolve.add_argument("--timeout", type=_timeout_positivo, default=argparse.SUPPRESS,
+                           help="Timeout de CADA intento en segundos "
+                                "(por defecto: sin límite).")
 
     # --- list-agents ---------------------------------------------------------
     p_list = sub.add_parser("list-agents", help="Lista los tipos de agente disponibles.")
@@ -502,12 +554,8 @@ def _ejecutar_pipeline(
     Devuelve un dict serializable con el plan, el estado de cada agente, el
     texto del último resultado correcto y metadatos de la ejecución.
     """
-    from PyQt6.QtCore import QEventLoop, Qt, QTimer
-
-    from core.agent import EstadoAgente
     from core.llm_client import obtener_llm_client_compartido
     from core.problem_solver import ProblemSolver
-    from core.scheduler import Scheduler
 
     log = log or logger
     _asegurar_qt()
@@ -528,6 +576,55 @@ def _ejecutar_pipeline(
     log.info("Generando plan para: %s", problema[:100])
     plan = solver.resolver_problema(problema, max_pasos=max_pasos)
 
+    # Un plan, una ejecución. El modo ``resolve`` reutiliza ``_ejecutar_plan``
+    # directamente, una vez por intento y con un presupuesto compartido.
+    return _ejecutar_plan(
+        plan,
+        problema=problema,
+        timeout=timeout,
+        aprender=aprender,
+        agente=agente,
+        job_id=job_id,
+        solver=solver,
+        llm=llm,
+        log=log,
+    )
+
+
+def _ejecutar_plan(
+    plan,
+    *,
+    problema: str,
+    timeout: float | None = None,
+    aprender: bool = True,
+    agente: str | None = None,
+    job_id: str | None = None,
+    presupuesto: Any = None,
+    solver: Any = None,
+    llm: Any = None,
+    log: logging.Logger | None = None,
+) -> dict[str, Any]:
+    """Ejecuta un plan **ya construido**: mismo Scheduler, Plan B y gate que ``run``.
+
+    Extraído de ``_ejecutar_pipeline`` (V4.0) para que el modo ``resolve`` pueda
+    ejecutar un plan nuevo en cada intento sin duplicar el pipeline. ``run``,
+    ``serve`` y ``web`` no cambian de contrato: siguen entrando por
+    ``_ejecutar_pipeline``.
+
+    ``presupuesto`` es un ``BudgetManager`` opcional. ``resolve`` pasa el MISMO
+    objeto en todos los intentos para que el coste total esté acotado; en ``run``
+    se deja a ``None`` y el Scheduler lo toma del entorno.
+
+    Devuelve un dict serializable con el plan, el estado de cada agente, el
+    texto del último resultado correcto y metadatos de la ejecución.
+    """
+    from PyQt6.QtCore import QEventLoop, Qt, QTimer
+
+    from core.agent import EstadoAgente
+    from core.scheduler import Scheduler
+
+    log = log or logger
+
     agentes = list(plan.agentes_generados)
     if agente:
         agentes = [a for a in agentes if getattr(a, "nombre", None) == agente]
@@ -536,11 +633,13 @@ def _ejecutar_pipeline(
     if not agentes:
         raise RuntimeError("el plan no generó agentes")
 
-    scheduler = Scheduler(max_concurrent=MAX_CONCURRENT_DEFAULT)
+    scheduler = Scheduler(
+        max_concurrent=MAX_CONCURRENT_DEFAULT, presupuesto=presupuesto
+    )
     scheduler.agregar_agentes(agentes)
     scheduler.resolver_dependencias()
 
-    if aprender:
+    if aprender and solver is not None and llm is not None:
         # Plan B (recuperación de fallos críticos), igual que en la GUI.
         try:
             from core.plan_recovery import PlanRecovery
@@ -708,6 +807,139 @@ def _ejecutar_pipeline(
         "aceptacion": _json_limpio(aceptacion),
         "advertencias": list(getattr(plan, "advertencias", []) or []),
     }
+
+
+# ---------------------------------------------------------------------------
+# Modo headless: resolve (V4.0 «Resolver tarea»)
+# ---------------------------------------------------------------------------
+def _resolver_objetivo(
+    objetivo: str,
+    *,
+    max_intentos: int = MAX_INTENTOS_DEFAULT,
+    max_pasos: int = MAX_PASOS_DEFAULT,
+    timeout: float | None = None,
+    aprender: bool = True,
+    exigir_verificacion: bool = True,
+    log: logging.Logger | None = None,
+):
+    """Cablea el ``GoalResolver`` real: planificador + ejecutor + presupuesto.
+
+    El bucle vive en ``core/goal_resolver.py`` y es **puro**: aquí solo se le
+    inyectan el planificador (``ProblemSolver.resolver_problema``, con la
+    evidencia del fallo anterior como ``_instruccion_extra``) y el ejecutor
+    (``_ejecutar_plan``, el MISMO pipeline que ``run``, sin duplicarlo).
+
+    Se usa un único ``BudgetManager`` para la planificación y todos los
+    intentos, de modo que el coste total quede acotado.
+    """
+    import core.llm_client as llm_mod
+    import core.problem_solver as ps_mod
+    from core.budget_manager import BudgetManager
+    from core.goal_resolver import GoalResolver, resultado_desde_salida
+
+    log = log or logger
+    _asegurar_qt()
+
+    llm = llm_mod.obtener_llm_client_compartido()
+    if llm is None or not getattr(llm, "disponible", False):
+        raise RuntimeError(
+            "LLM no disponible: configura DEEPSEEK_API_KEY (usa --check-env para diagnosticar)"
+        )
+    solver = ps_mod.ProblemSolver(llm)
+
+    presupuesto = BudgetManager.desde_entorno()
+    presupuesto.iniciar()
+
+    def planificador(objetivo_: str, evidencia: str):
+        return solver.resolver_problema(
+            objetivo_, max_pasos=max_pasos, _instruccion_extra=evidencia
+        )
+
+    def ejecutor(plan, objetivo_):
+        salida = _ejecutar_plan(
+            plan,
+            problema=objetivo_,
+            timeout=timeout,
+            aprender=aprender,
+            presupuesto=presupuesto,
+            solver=solver,
+            llm=llm,
+            log=log,
+        )
+        return resultado_desde_salida(salida)
+
+    resolver = GoalResolver(
+        planificador,
+        ejecutor,
+        presupuesto=presupuesto,
+        max_intentos=max_intentos,
+        exigir_verificacion=exigir_verificacion,
+        logger_=log,
+    )
+    return resolver.resolver(objetivo)
+
+
+def _ejecutar_resolve(args) -> int:
+    """Handler del subcomando ``resolve``.
+
+    Contrato de salida: exit ``0`` solo si el artefacto supera la aceptación;
+    ``4`` (``EXIT_RUN_ERROR``) si no se resolvió o hubo error; ``2`` si el
+    objetivo está vacío; ``130`` con Ctrl-C.
+    """
+    log = logging.getLogger("resolve")
+
+    objetivo = (
+        " ".join(args.objetivo).strip()
+        if getattr(args, "objetivo", None)
+        else ""
+    )
+    if not objetivo:
+        print("❌ falta el objetivo a resolver", file=sys.stderr)
+        return EXIT_BAD_ARGS
+
+    try:
+        resultado = _resolver_objetivo(
+            objetivo,
+            max_intentos=args.max_intentos,
+            max_pasos=args.max_pasos,
+            timeout=args.timeout,
+            aprender=not args.no_aprender,
+            exigir_verificacion=not args.sin_exigir_verificacion,
+            log=log,
+        )
+    except KeyboardInterrupt:
+        print("\n⏹  Resolución interrumpida por el usuario.", file=sys.stderr)
+        return EXIT_USER_ABORT
+    except Exception as e:
+        log.exception("Error resolviendo el objetivo")
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+        else:
+            print(f"❌ {e}", file=sys.stderr)
+        return EXIT_RUN_ERROR
+
+    salida = resultado.to_dict()
+
+    if args.output:
+        try:
+            with open(args.output, "w", encoding="utf-8") as f:
+                json.dump(salida, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            print(f"⚠️  No se pudo escribir {args.output}: {e}", file=sys.stderr)
+
+    if args.json:
+        print(json.dumps(salida, ensure_ascii=False))
+    else:
+        for intento in resultado.intentos:
+            detalle = intento.motivo or intento.error or "sin motivo"
+            print(f"· intento {intento.numero}: {detalle}", file=sys.stderr)
+        texto = (resultado.salida_final or {}).get("resultado")
+        if texto:
+            print(texto)
+        if not resultado.resuelto:
+            print(f"❌ No resuelto: {resultado.motivo}", file=sys.stderr)
+
+    return EXIT_OK if resultado.resuelto else EXIT_RUN_ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -1165,6 +1397,8 @@ def main() -> int:
     # Subcomandos
     if args.comando == "run":
         return _ejecutar_run(args)
+    if args.comando == "resolve":
+        return _ejecutar_resolve(args)
     if args.comando == "list-agents":
         return _ejecutar_list_agents(args)
     if args.comando == "serve":

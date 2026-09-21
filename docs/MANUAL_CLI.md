@@ -61,6 +61,7 @@ python main.py [OPCIONES GLOBALES] [COMANDO] [OPCIONES DEL COMANDO]
 |---|---|
 | *(ninguno)* | Arranca la GUI |
 | `run` | Ejecuta una tarea de principio a fin, sin GUI |
+| `resolve` | **Resuelve un objetivo** de alto nivel (V4.0): plan → verificar → re-plan |
 | `list-agents` | Lista los tipos de agente disponibles |
 | `serve` | Servidor HTTP con `POST /run` para otras apps |
 | `web` | Entorno web Flask (`/`, `/api/run`, `/api/health`, `/api/agents`) |
@@ -262,6 +263,92 @@ Salida `--json` (ejemplo real, recortado):
   `logs/` y los ficheros que generen los agentes se crean en el `cwd`.
   Ejecuta desde la raíz del proyecto salvo que quieras aislar la ejecución.
 - Ctrl-C detiene la ejecución y sale con `130`.
+
+---
+
+## 5.bis. `resolve` — modo «Resolver tarea» (V4.0)
+
+`run` es de **un solo tiro**: genera un plan, lo ejecuta y reporta el veredicto
+de aceptación. `resolve` **persigue el objetivo**: si el artefacto no cumple su
+contrato, vuelve a planificar con el motivo concreto del fallo.
+
+```
+python main.py resolve OBJETIVO [opciones]
+```
+
+### Opciones
+
+| Opción | Por defecto | Descripción |
+|---|---|---|
+| `OBJETIVO` | — | Objetivo de alto nivel, en lenguaje natural (obligatorio) |
+| `--max-intentos N` | `2` | Máximo de planificaciones (una por intento) |
+| `--max-pasos N` | `6` | Máximo de pasos por plan |
+| `--sin-exigir-verificacion` | — | Ejecuta también planes que no declaran contrato de aceptación |
+| `--output`, `-o FICHERO` | — | Guarda la resolución completa en JSON |
+| `--json` | — | Salida JSON por stdout |
+| `--quiet`, `-q` | — | Solo errores en stderr |
+| `--no-aprender` | — | No guarda en aprendizaje ni activa el Plan B |
+| `--timeout SEGUNDOS` | *(sin límite)* | Timeout de **cada intento** |
+
+### El bucle
+
+```
+planificar → ¿el plan es verificable? ──no──► re-planificar con el motivo
+     │                                              (sin gastar ejecución)
+    sí
+     ▼
+ ejecutar (Scheduler + Plan B) → verificar (gate de aceptación)
+     │                                    │
+     │◄────────── no aceptado ────────────┘
+     │            (re-planificar con la evidencia)
+     ▼ aceptado
+  RESUELTO
+```
+
+- **El sistema decide la verificación.** Antes de ejecutar, `resolve` exige que
+  el paso final o crítico declare `aceptacion` con invariantes comprobables en
+  disco. Un plan que no se puede comprobar no se ejecuta: se devuelve al
+  planificador con el motivo (`--sin-exigir-verificacion` lo desactiva).
+- **No repite a ciegas.** La re-planificación recibe el motivo concreto
+  (`motivos` de la aceptación y errores de los agentes), no el plan anterior.
+- **Un único presupuesto** cubre la planificación y todos los intentos
+  (tiempo/llamadas/tokens/coste, ver `core/budget_manager.py`).
+- **Parar es un resultado.** `resolve` siempre dice si se resolvió, cuántos
+  intentos se gastaron, por qué se paró (`verificado`, `intentos_agotados`,
+  `presupuesto_agotado`) y cuánto costó.
+
+### Códigos de salida
+
+`0` si el artefacto supera la aceptación; `4` (`EXIT_RUN_ERROR`) si no se
+resolvió o hubo un error; `2` si el objetivo está vacío; `130` con Ctrl-C.
+
+### Ejemplos
+
+```bash
+# Objetivo de alto nivel; el sistema decide agentes, dependencias y contratos
+python main.py resolve "informe en DOCX sobre el bitcoin con 3 gráficos"
+
+# Tres intentos y salida JSON para integrar
+python main.py resolve --max-intentos 3 --json "calculadora HTML con historial"
+
+# Sin tocar la BD ni el Plan B
+python main.py resolve --no-aprender "resume este CSV en un informe PDF"
+```
+
+### Campos principales de la salida JSON
+
+| Campo | Significado |
+|---|---|
+| `resuelto` | `true` solo si el artefacto pasó la aceptación |
+| `parada` | `verificado` \| `intentos_agotados` \| `presupuesto_agotado` |
+| `motivo` | Por qué se paró, en texto |
+| `n_intentos` / `ejecuciones` | Planificaciones totales / intentos que llegaron a ejecutarse |
+| `intentos[]` | Traza por intento: `verificable`, `ejecutado`, `exito`, `motivo`, `aceptacion` |
+| `presupuesto` | Consumo agregado de todos los intentos |
+
+> `resolve` reutiliza el mismo pipeline que `run` (mismo Scheduler, mismo Plan B,
+> mismo gate de aceptación). La única diferencia es el bucle y el gate de
+> verificabilidad previo.
 
 ---
 
