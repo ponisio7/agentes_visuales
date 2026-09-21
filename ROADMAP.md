@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1176 passed, 1 skipped` (73 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. Equivale a los `1180 passed, 1 skipped` de referencia, antes de las correcciones de §0.1.
+- **Estado del código en esta fecha**: `1193 passed, 1 skipped` (77 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -71,11 +71,13 @@ parciales. El plan corregido está en la §13.
 |---|---|---|
 | **3.2 (1.14)** | `EvaluadorLLM` resuelve el cliente compartido de forma perezosa (`_cliente()`), expone `set_llm_client()` y, si no hay cliente, emite un **ERROR accionable** en vez de degradar el aprendizaje en silencio con el críptico `'NoneType' object has no attribute 'chat'`. `LearningEngine.__init__` resuelve el cliente cuando recibe `None`. | `tests/test_regression_001_evaluador_sin_cliente.py` (10 casos) |
 | **3.6 (1.16)** | `"weasyprint"` añadido a los loggers silenciados de `main._configurar_logging`. | `tests/test_regression_002_weasyprint_silenciado.py` (4 casos) |
+| **3.5 (1.18)** | `BrokenPipeError` neutralizado en tres puntos: `_StreamHandlerTolerante` (el handler de consola ya no propaga el EPIPE), `_manejar_broken_pipe()` (redirige stdout/stderr a `os.devnull`) y `main()`, que devuelve `EXIT_OK` en vez de un código de error engañoso. | `tests/test_regression_003_broken_pipe.py` (7 casos, incluido uno end-to-end con proceso real y pipe cerrado) |
+| **3.11 (1.17)** | `--check-env --timeout N` ahora acota el comando de verdad. El `timeout` de `requests` solo limita operaciones de socket y **la resolución DNS queda fuera** (se midió: 17-22 s con `--timeout 2`). Un `signal.setitimer` **tampoco** lo resuelve (medido: 17 s), porque el handler de Python no corre mientras `getaddrinfo` está bloqueado en C. Solución: el ping se ejecuta en un hilo del que se desiste al agotar el presupuesto. Medición tras el fix: el ping tarda **exactamente 2,00 s** con `--timeout 2` (el total del comando, ~4 s, incluye ~2 s de arranque e imports). | `tests/test_regression_004_check_env_timeout.py` (10 casos) |
 
-Efecto en la suite: **1166 → 1180 passed, 1 skipped**, sin regresiones.
+Efecto en la suite: **1166 → 1193 passed, 1 skipped**, sin regresiones (31 tests de regresión nuevos: 10 + 4 + 7 + 10).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
-estos dos puntos ya están cerrados.
+estos cuatro puntos ya están cerrados.
 
 ---
 
@@ -144,8 +146,8 @@ test de regresión que verifique que dos intentos suman consumo.
 | 1.14 | `Evaluador no disponible: 'NoneType' object has no attribute 'chat'` | 🔴 CONFIRMADO | `learning/reward_llm.py:63` hace `self.llm_client.chat(...)`; el `except` de `:75` produce **literalmente** ese mensaje. `EvaluadorLLM` se construye con el valor recibido (`learning/engine.py:125`) y `obtener_learning_engine()` tiene `llm_client=None` por defecto (`learning/__init__.py:22`) — **pero 3 llamadas no pasan cliente**: `core/problem_solver/solver.py:125`, `:137`, `core/scheduler.py:832`. Solo `core/execution_recorder.py:150` lo pasa bien. Al ser singleton perezoso, se salva o se rompe **según el orden de arranque**. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.15 | Colisión `--stdin` vs agentes que leen stdin | ✅ YA RESUELTO | `core/sandbox.py:879` pasa `stdin=subprocess.DEVNULL` a todo subproceso del sandbox. `main.py:448-455` consume stdin en el proceso padre; el hijo ya no lo hereda. |
 | 1.16 | `weasyprint` contamina logs | 🔴 CONFIRMADO | `main.py:343-345` silencia `urllib3, openai, matplotlib, PIL, httpx, httpx2, httpcore, charset_normalizer`. **`weasyprint` no está en la lista**, y `core/executors/file_executor.py:18` lo importa. → ✅ **arreglado el 2026-09-21** (§0.1). |
-| 1.17 | `--check-env` con latencia alta (10949 ms con `--timeout 5`) | 🟠 PARCIAL | Cierto que el `timeout` no acota el comando: se pasa a `requests` (`core/env_checker.py:239`), que es por operación (connect + read), no total. No hay `signal.alarm`. Ya existe la pista de subirlo (`:433`). Impacto bajo. |
-| 1.18 | `BrokenPipeError` en `run --json \| jq` | 🔴 CONFIRMADO | `grep -rn BrokenPipeError` no devuelve **ninguna** coincidencia en el código del proyecto (solo en `.venv`). No hay manejo ni en `_configurar_logging` ni en el `print` final. |
+| 1.17 | `--check-env` con latencia alta (10949 ms con `--timeout 5`) | 🟠 PARCIAL → ✅ **arreglado el 2026-09-21** (§0.1) | Cierto que el `timeout` no acotaba el comando: se pasa a `requests` (`core/env_checker.py:239`), que es por operación. **La causa real resultó ser la resolución DNS**, que `requests` no acota y que tampoco se puede interrumpir con `signal.setitimer`. |
+| 1.18 | `BrokenPipeError` en `run --json \| jq` | 🔴 CONFIRMADO → ✅ **arreglado el 2026-09-21** (§0.1) | `grep -rn BrokenPipeError` no devolvía **ninguna** coincidencia en el código del proyecto (solo en `.venv`). |
 
 ---
 
@@ -196,11 +198,12 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Acción**: decidir entre asumir la mitigación como definitiva (documentándolo) o aplicar el ciclo de vida explícito de temporales.
 - **Criterio de cierre**: `python -m pytest -q` sin `--forked` completa en verde, o decisión escrita de no perseguirlo.
 
-### 3.5 · 🔴 `[bug]` `BrokenPipeError` al cerrar el pipe (`run --json | jq`) (1.18)
+### 3.5 · ✅ CERRADO (2026-09-21) · `[bug]` `BrokenPipeError` al cerrar el pipe (`run --json | jq`) (1.18)
 
 - **Archivos**: `main.py` (`_configurar_logging`, `print` final)
 - **Acción**: capturar `BrokenPipeError`, redirigir stdout a `os.devnull` y salir con `EXIT_OK`.
 - **Coste**: minutos. **Criterio de cierre**: `python main.py run --json ... | head -1` no imprime traceback.
+- **Resuelto**: `_StreamHandlerTolerante` (el handler de consola no propaga el EPIPE), `_manejar_broken_pipe()` (dup2 a `os.devnull`, que evita además el traceback del volcado final del intérprete) y captura en `main()` — ahora delega en `_despachar`. `tests/test_regression_003_broken_pipe.py` (7 casos, incluido uno end-to-end con proceso real y pipe cerrado a propósito).
 
 ### 3.6 · ✅ CERRADO (2026-09-21) · `[bug]` `weasyprint` no está silenciado (1.16)
 
@@ -231,10 +234,13 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Archivos**: `core/problem_solver/validator.py:665-680`, `core/problem_solver/code_corrector.py:82`
 - **Acción**: medir cuántos planes de `logs/` con nombres de agente como variable global detecta, en vez de fiarse del caso probado a mano.
 
-### 3.11 · 🟠 `--timeout` no acota el comando completo (1.17)
+### 3.11 · ✅ CERRADO (2026-09-21) · `--timeout` no acota el comando completo (1.17)
 
-- **Archivo**: `core/env_checker.py:239, 283-284`
-- **Acción**: endpoint más ligero o `signal.alarm` global. Impacto bajo.
+- **Archivo**: `core/env_checker.py`
+- **Acción original propuesta**: endpoint más ligero o `signal.alarm` global. **La propuesta era insuficiente**: ver abajo.
+- **Resuelto**: el ping corre en un hilo del que se desiste al agotar el presupuesto (`_ping_http_deepseek` envuelve a `_ping_http_deepseek_interno`). Además se dejó de seguir redirecciones (cada salto es otra petición) y cada petición recibe solo el tiempo restante.
+- **Dos hipótesis descartadas con medición**: (a) el `timeout` de `requests` no basta porque la **resolución DNS** queda fuera — `--timeout 2` tardaba 17-22 s; (b) `signal.setitimer` tampoco lo resuelve porque el handler de Python no corre mientras `getaddrinfo` bloquea en C — medido: 17 s. Tras el arreglo, el ping tarda **exactamente 2,00 s** con `--timeout 2`.
+- **Test**: `tests/test_regression_004_check_env_timeout.py` (10 casos).
 
 ### 3.12 · 🔴 `[bug]` El presupuesto compartido de `resolve` se reinicia en cada intento
 

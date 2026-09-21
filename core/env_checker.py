@@ -17,6 +17,7 @@ import os
 import platform
 import stat
 import sys
+import threading
 import time
 from typing import Any
 
@@ -193,6 +194,65 @@ def _ping_http_deepseek(
     api_key: str,
     timeout: float = 5.0
 ) -> tuple[bool, str, dict[str, Any]]:
+    """Ping con presupuesto GLOBAL de reloj real (ver 3.11).
+
+    El ``timeout`` que se pasa a ``requests`` solo acota las operaciones de
+    socket (connect + read). La **resolución DNS** queda fuera y puede bloquear
+    ~20 s con el resolver del sistema, así que ``--timeout 2`` tardaba >20 s.
+
+    Un ``signal.setitimer`` tampoco lo resuelve: el handler de Python no corre
+    mientras ``getaddrinfo`` está bloqueado en C (se midió: 17 s). Por eso el
+    ping se ejecuta en un **hilo del que se puede desistir**: se espera como
+    mucho ``timeout`` segundos y, si no ha terminado, se informa del timeout y
+    se sigue. El hilo es daemon: el proceso de diagnóstico termina igualmente.
+    """
+    try:
+        limite = float(timeout)
+    except (TypeError, ValueError):
+        limite = 0.0
+
+    if limite <= 0:
+        # Se deja pasar el valor tal cual a requests para que lance su
+        # ValueError; hay un test de regresión que depende de ese camino.
+        return _ping_http_deepseek_interno(c, api_key, timeout=timeout)
+
+    resultado: list[tuple[bool, str, dict[str, Any]]] = []
+    fallo: list[BaseException] = []
+
+    def _trabajo():
+        try:
+            resultado.append(
+                _ping_http_deepseek_interno(c, api_key, timeout=limite)
+            )
+        except BaseException as e:  # se re-lanza en el hilo principal
+            fallo.append(e)
+
+    hilo = threading.Thread(target=_trabajo, name="check-env-ping", daemon=True)
+    hilo.start()
+    hilo.join(limite)
+
+    if hilo.is_alive():
+        return (
+            False,
+            f"Presupuesto de {limite:.0f}s agotado: el diagnóstico no puede "
+            f"exceder ese tiempo (¿red o DNS lentos?)",
+            {"error_tipo": "timeout"},
+        )
+
+    if fallo:
+        raise fallo[0]
+
+    if not resultado:
+        return False, "El ping no devolvió resultado", {"error_tipo": "desconocido"}
+
+    return resultado[0]
+
+
+def _ping_http_deepseek_interno(
+    c: _Colores,
+    api_key: str,
+    timeout: float = 5.0
+) -> tuple[bool, str, dict[str, Any]]:
     """
     Hace un ping HTTP real a la API de DeepSeek.
 
@@ -228,16 +288,46 @@ def _ping_http_deepseek(
 
     ultimo_error = None
 
+    # 3.11: ``timeout`` de requests es POR OPERACIÓN (connect + read), no acota
+    # el comando. Con dos endpoints y redirecciones, ``--timeout 5`` podía
+    # tardar >10 s (se midió 10949 ms con el endpoint en 200). Aquí se impone un
+    # presupuesto GLOBAL: cada petición recibe solo el tiempo que queda y, si se
+    # agota, no se prueba el siguiente endpoint.
+    try:
+        presupuesto = float(timeout)
+    except (TypeError, ValueError):
+        presupuesto = 0.0
+    # Con ``timeout <= 0`` se deja pasar el valor a requests para que lance su
+    # ValueError; hay un test de regresión que depende de ese camino.
+    deadline = time.monotonic() + presupuesto if presupuesto > 0 else None
+
     for url, requiere_auth in endpoints:
         detalles["endpoint"] = url
+
+        if deadline is None:
+            restante = timeout
+        else:
+            restante = deadline - time.monotonic()
+            if restante <= 0:
+                detalles["error_tipo"] = "timeout"
+                return (
+                    False,
+                    f"Presupuesto de {presupuesto:.0f}s agotado antes de {url}",
+                    detalles,
+                )
+
         inicio = time.time()
 
         try:
+            # ``allow_redirects=False``: seguir una cadena de redirecciones
+            # multiplicaría el gasto del presupuesto (cada salto es otra
+            # petición). Una redirección ya demuestra que la red funciona, así
+            # que se trata como éxito más abajo.
             resp = requests.get(
                 url,
                 headers=headers if requiere_auth else {},
-                timeout=timeout,
-                allow_redirects=True,
+                timeout=restante,
+                allow_redirects=False,
             )
             latencia_ms = (time.time() - inicio) * 1000
             detalles["status_code"] = resp.status_code
@@ -246,6 +336,15 @@ def _ping_http_deepseek(
             # ── 2xx: todo OK ──
             if 200 <= resp.status_code < 300:
                 return True, f"Respuesta {resp.status_code} en {latencia_ms:.0f} ms", detalles
+
+            # ── 3xx: la red funciona (no se siguen redirecciones para no salir
+            #         del presupuesto global; ver 3.11) ──
+            if 300 <= resp.status_code < 400:
+                return (
+                    True,
+                    f"Respuesta {resp.status_code} en {latencia_ms:.0f} ms (redirección)",
+                    detalles,
+                )
 
             # ── 401/403: la red funciona pero la key es inválida ──
             if resp.status_code in (401, 403):

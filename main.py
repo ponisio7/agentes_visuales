@@ -298,6 +298,54 @@ def _construir_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+class _StreamHandlerTolerante(logging.StreamHandler):
+    """``StreamHandler`` que ignora el EPIPE en vez de ensuciar la salida.
+
+    Síntoma evitado (3.5): en ``run --json | jq``, si ``jq`` termina antes que
+    Python escriba, el handler de consola revienta con ``BrokenPipeError``. El
+    ``RotatingFileHandler`` no lo necesita: escribe a fichero.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except BrokenPipeError:
+            pass
+        except ValueError:
+            # Stream cerrado durante el apagado del intérprete.
+            pass
+
+
+def _manejar_broken_pipe() -> None:
+    """Neutraliza el pipe roto redirigiendo stdout/stderr a ``os.devnull``.
+
+    No basta con capturar la excepción: Python vuelve a fallar al vaciar
+    ``stdout`` durante el apagado y deja un traceback. Es el patrón estándar
+    para CLIs que se usan en tubería.
+    """
+    try:
+        sys.stdout.flush()
+    except (BrokenPipeError, ValueError):
+        pass
+
+    try:
+        devnull = os.open(os.devnull, os.O_WRONLY)
+    except OSError:
+        return
+    try:
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                os.dup2(devnull, stream.fileno())
+            except (OSError, ValueError, AttributeError):
+                # Stream sustituido (p. ej. por pytest) o sin fileno real.
+                pass
+    finally:
+        try:
+            os.close(devnull)
+        except OSError:
+            pass
+
+
 def _configurar_logging(quiet: bool = False):
     """Configura el logging raíz (consola + fichero rotativo).
 
@@ -317,6 +365,22 @@ def _configurar_logging(quiet: bool = False):
         datefmt="%H:%M:%S",
         force=True,
     )
+
+    # 3.5: el handler de consola que crea basicConfig no tolera EPIPE. Se
+    # sustituye por uno tolerante conservando nivel y formato. Se hace antes de
+    # añadir el RotatingFileHandler para no tocar el de fichero.
+    _raiz = logging.getLogger()
+    for _handler in list(_raiz.handlers):
+        if isinstance(_handler, logging.StreamHandler) and not isinstance(
+            _handler, (logging.FileHandler, _StreamHandlerTolerante)
+        ):
+            _raiz.removeHandler(_handler)
+            _tolerante = _StreamHandlerTolerante(_handler.stream)
+            _tolerante.setLevel(_handler.level)
+            if _handler.formatter is not None:
+                _tolerante.setFormatter(_handler.formatter)
+            _raiz.addHandler(_tolerante)
+
     try:
         fh = RotatingFileHandler(
             "logs/agentes_visuales.log",
@@ -1382,14 +1446,8 @@ def _ejecutar_web(args) -> int:
 # ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
-def main() -> int:
-    parser = _construir_parser()
-    args = parser.parse_args()
-
-    # Logging: silencioso si --quiet (disponible en run, list-agents, serve y web)
-    quiet = bool(getattr(args, "quiet", False))
-    _configurar_logging(quiet=quiet)
-
+def _despachar(args) -> int:
+    """Enruta a ``--check-env``, al subcomando pedido o a la GUI."""
     # Retrocompatibilidad: --check-env sin subcomando
     if args.check_env:
         return _ejecutar_check_env(timeout=args.timeout)
@@ -1408,6 +1466,24 @@ def main() -> int:
 
     # Sin subcomando: GUI (comportamiento original)
     return _arrancar_gui()
+
+
+def main() -> int:
+    parser = _construir_parser()
+    args = parser.parse_args()
+
+    # Logging: silencioso si --quiet (disponible en run, list-agents, serve y web)
+    quiet = bool(getattr(args, "quiet", False))
+    _configurar_logging(quiet=quiet)
+
+    try:
+        return _despachar(args)
+    except BrokenPipeError:
+        # 3.5: `run --json | jq` con jq muerto antes de tiempo NO es un error de
+        # la ejecución. Se neutraliza el pipe y se sale con éxito, en vez de
+        # imprimir un traceback y devolver un código de error engañoso.
+        _manejar_broken_pipe()
+        return EXIT_OK
 
 
 if __name__ == "__main__":
