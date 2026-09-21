@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1252 passed, 1 skipped` (85 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
+- **Estado del código en esta fecha**: `1254 passed, 1 skipped` (87 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -78,9 +78,10 @@ parciales. El plan corregido está en la §13.
 | **3.12** | El presupuesto compartido de `resolve` ya no se reinicia en cada intento: `set_contexto_plan_b` acepta `reiniciar_presupuesto` y `_ejecutar_plan` pasa `False` cuando recibe un presupuesto compartido (`run` no cambia). | `tests/test_regression_008_presupuesto_compartido.py` (5 casos) |
 | **3.7 (1.5)** | `agente.duracion` es **acumulativa** entre reintentos: se suma en `_duracion_acumulada` en vez de sobrescribirse. Se usa un atributo propio para no arrastrar el `0.1` de relleno de `Agente.__post_init__`. | `tests/test_regression_007_duracion_acumulativa.py` (3 casos, comparados contra un control de un solo intento) |
 | **3.1 (1.2 + 1.10)** | El plan de respaldo **materializa** el artefacto: `detectar_artefacto()` (módulo nuevo `artefacto.py`) + plan de dos pasos (contenido mínimo → `File` `escribir`). Si no hay artefacto identificable, devuelve `fallback_sin_artefacto` en vez de un `ok` falso. Solo extensiones de texto plano. | `tests/test_regression_009_respaldo_crea_artefacto.py` (15 casos) |
-| **3.3 (1.7 + 1.8)** | Tres vías contra el contenido inventado: regla «PROHIBIDO INVENTAR CONTENIDO» en el prompt, regla 8 **BLOQUEANTE** en el validador (rechaza el plan antes de ejecutarlo) y `es_resultado_sospechoso` unificado con `es_valor_placeholder` (antes usaba una tupla propia que no cubría el relleno). Lista canónica única en `core/utils/json_llm.LITERALES_FABRICADOS`. | `tests/test_regression_010_contenido_fabricado.py` (17 casos, con el código exacto del log) |
+| **3.3 (1.7 + 1.8)** | Tres vías contra el contenido inventado: regla «PROHIBIDO INVENTAR CONTENIDO» en el prompt, regla 8 **BLOQUEANTE** en el validador (rechaza el plan antes de ejecutarlo) y `es_resultado_sospechoso` unificado con `es_valor_placeholder` (antes usaba una tupla propia que no cubría el relleno). Lista canónica única en `core/utils/json_llm.LITERALES_FABRICADOS`. | `tests/test_regression_010_contenido_fabricado.py` (19 casos, con el código exacto del log) |
+| **3.10 (1.12)** | Cobertura medida sobre el corpus real con `tools/cobertura_validador.py`: **512 ficheros, 796 pasos con código, 65 detectados (8,2 %)**, de los cuales **57 son contenido fabricado**. | Casos verbatim del corpus en `tests/test_regression_010_contenido_fabricado.py` + muestra medida en el mismo fichero |
 
-Efecto en la suite: **1166 → 1252 passed, 1 skipped**, sin regresiones (90 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 17).
+Efecto en la suite: **1166 → 1254 passed, 1 skipped**, sin regresiones (92 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 19).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
 los puntos de esta tabla ya están cerrados.
@@ -150,7 +151,7 @@ el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
 | 1.9 | LLM «solo razonamiento» tras 3 reintentos | 🟠 PARCIAL | La detección **existe** pero solo avisa: `core/executors/llm_executor.py:566-576` → `logger.warning`. No hay reintento correctivo ni cambio de `max_tokens`. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.10 | Fallback con `SyntaxError` hardcodeado | 📝 MAL DESCRITO | El código es **sintácticamente válido** (`data = contexto if contexto else {}` es correcto; `contexto` está en el scope del `exec`). El defecto real es el de 1.2: el plan de respaldo **nunca escribe el fichero**. `solver.py:437`, `builder.py:112`. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.11 | `export/exporters.py` — 2 bugs | ✅ YA RESUELTO | Columna inferida de una **ventana** de `STREAM_SNIFF_ROWS = 1000` (`export/exporters.py:44`, `:1049`), con aviso y `extrasaction="ignore"` para claves nuevas (`:1080-1085`). Y `exportar_streaming` devuelve `exito=not errores and filas_exportadas > 0` (`:1004`). |
-| 1.12 | LLM genera nombres de agentes como variables globales | 🟠 PARCIAL | El detector **existe**: `validator.py:665-680` (`identificador in nombres_agentes`) y `code_corrector.py:82` reescribe vía AST (`:156`, `:185`). Falta **medir cobertura** sobre el corpus de `logs/`, no solo el caso probado a mano. |
+| 1.12 | LLM genera nombres de agentes como variables globales | 🟠 PARCIAL | El detector **existe**: `validator.py:665-680` (`identificador in nombres_agentes`) y `code_corrector.py:82` reescribe vía AST (`:156`, `:185`). Falta **medir cobertura** sobre el corpus de `logs/`, no solo el caso probado a mano. → ✅ **medido el 2026-09-21** (§3.10): 512 ficheros y 796 pasos, con la regla 8 disparando en 57. |
 | 1.13 | Segfault en `core/sandbox.py:853` | 🔴 CONFIRMADO | Reproducido: `python -m pytest -q` muere con SIGSEGV (`tests/conftest.py:49` → `tests/test_flujo_e2e_aceptacion.py:79`). El código ya mitiga por otra vía (`sandbox.py:853-870`: `cwd` explícito para evitar `vfork`, `TemporaryFile` en vez de `PIPE`; `:872-879` con `_SPAWN_LOCK` y `stdin=DEVNULL`). El fix propuesto en el acta (`NamedTemporaryFile(delete=False)`) **no** está aplicado; la mitigación operativa es `tools/run_tests.sh --forked`. |
 | 1.14 | `Evaluador no disponible: 'NoneType' object has no attribute 'chat'` | 🔴 CONFIRMADO | `learning/reward_llm.py:63` hace `self.llm_client.chat(...)`; el `except` de `:75` produce **literalmente** ese mensaje. `EvaluadorLLM` se construye con el valor recibido (`learning/engine.py:125`) y `obtener_learning_engine()` tiene `llm_client=None` por defecto (`learning/__init__.py:22`) — **pero 3 llamadas no pasan cliente**: `core/problem_solver/solver.py:125`, `:137`, `core/scheduler.py:832`. Solo `core/execution_recorder.py:150` lo pasa bien. Al ser singleton perezoso, se salva o se rompe **según el orden de arranque**. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.15 | Colisión `--stdin` vs agentes que leen stdin | ✅ YA RESUELTO | `core/sandbox.py:879` pasa `stdin=subprocess.DEVNULL` a todo subproceso del sandbox. `main.py:448-455` consume stdin en el proceso padre; el hijo ya no lo hereda. |
@@ -249,10 +250,21 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Acción**: hoy solo `logger.warning`; añadir reintento con instrucción correctiva / subida de `max_tokens` antes de bloquear dependientes.
 - **Resuelto**: `_llamar_con_reintento_correctivo` (envoltorio de `_llamar_una_vez`): ante `error == 'only_reasoning'` reintenta **una vez** con `thinking_enabled=False`, `reasoning_effort='low'`, `max_tokens` al menos el doble y una instrucción explícita de responder directamente. Si el reintento también falla, se devuelve su error sin bucles. `tests/test_regression_006_reintento_razonamiento.py` (8 casos).
 
-### 3.10 · 🟠 Cobertura del validador de Fase 6 sobre corpus real (1.12)
+### 3.10 · ✅ CERRADO (2026-09-21) · Cobertura del validador de Fase 6 sobre corpus real (1.12)
 
-- **Archivos**: `core/problem_solver/validator.py:665-680`, `core/problem_solver/code_corrector.py:82`
+- **Archivos**: `core/problem_solver/validator.py`, `tools/cobertura_validador.py` (nuevo)
 - **Acción**: medir cuántos planes de `logs/` con nombres de agente como variable global detecta, en vez de fiarse del caso probado a mano.
+- **Medición real** (`python tools/cobertura_validador.py`): **512 ficheros**, **796 pasos con código**, **65 detectados (8,2 %)**:
+
+  | Regla | Casos |
+  |---|---|
+  | contenido de relleno (regla 8, nueva de 3.3) | **57** |
+  | placeholder literal sin sustituir | 5 |
+  | SyntaxError | 3 |
+
+- **Hallazgo principal**: **57 de 796 pasos reales (7,2 %) contenían contenido fabricado**. No era un caso raro: es sistémico, lo que confirma que 3.3 estaba bien clasificado como crítico. La regla 8 no se diseñó contra un ejemplo: se midió contra 512 planes reales.
+- **Límite honesto**: «detectado» **no** es «todo el código malo detectado». Los pasos no detectados de la muestra son en su mayoría código legítimo (una función de números romanos, un dict con datos reales), así que un 8,2 % no significa un 91,8 % de fallos. Medir la tasa de *falsos negativos* exigiría saber cuáles fallaron en ejecución, que es otro trabajo.
+- **Test**: `tests/test_regression_010_contenido_fabricado.py` incluye dos casos **verbatim del corpus** y una comprobación de la herramienta sobre una muestra (marcada `slow` y con `skipif`, porque `logs/` está en `.gitignore` y no se versiona). La medición completa se lanza a mano.
 
 ### 3.11 · ✅ CERRADO (2026-09-21) · `--timeout` no acota el comando completo (1.17)
 
@@ -426,7 +438,7 @@ Reparto propuesto, por valor real:
 | Hora | Foco | Items | Por qué |
 |---|---|---|---|
 | **1** | Aprendizaje + fallback | ~~3.2 (1.14)~~ ✅, ~~3.1 (1.2/1.10)~~ ✅ | Hora completa: la degradación silenciosa del refuerzo y el fallback que mentía están cerrados (§0.1). |
-| **2** | Causa raíz del pipeline | ~~3.3 (1.7/1.8)~~ ✅, 3.10 (1.12) | El contenido inventado ya se bloquea antes de ejecutar (§0.1); queda medir la cobertura del validador sobre el corpus real. |
+| **2** | Causa raíz del pipeline | ~~3.3 (1.7/1.8)~~ ✅, ~~3.10 (1.12)~~ ✅ | Hora completa: el contenido inventado se bloquea antes de ejecutar y la cobertura está medida sobre 512 planes reales. |
 | **3** | Quick wins visibles | ~~3.6 (1.16)~~ ✅, 3.5 (1.18), 5.1 (`resolve` en web) | El logger ya está silenciado (§0.1); quedan `BrokenPipeError` y exponer `resolve`, la pieza más visible que el usuario nunca ve. |
 | **4** | Robustez | ~~3.7 (1.5)~~ ✅, ~~3.8 (1.3)~~ ✅, ~~3.9 (1.9)~~ ✅ | Hora completa: duración acumulativa, gate del corrector y reintento correctivo cerrados (§0.1). |
 | **5** | Tools + Event Bus | 4.1, 4.2, 4.3 | Separar Agent/Tool, registry, ampliar el bus existente. |

@@ -24,7 +24,9 @@ Se cierra por tres vías:
 """
 from __future__ import annotations
 
+import importlib.util
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -50,6 +52,25 @@ datos = llm.get('json', {}) if isinstance(llm.get('json'), dict) else {}
 ideas = datos.get('ideas', [])
 resultado = {'ideas': ideas}
 """
+
+# Segundo caso REAL, sacado del corpus (medición de 3.10):
+# logs/llm_response_20260912_175146_deepseek-v4-flash.txt :: FormatearResultado
+# Sustituye una puntuación que falta por 'N/A' y sigue como si nada.
+CODIGO_FABRICADO_CORPUS = """chiste_data = contexto.get('GenerarChiste', {})
+chiste = chiste_data.get('respuesta_limpia', 'No se pudo generar el chiste.')
+evaluacion_data = contexto.get('EvaluarChiste', {})
+evaluacion_json = evaluacion_data.get('json', {})
+puntuacion = evaluacion_json.get('puntuacion', 'N/A')
+comentario = evaluacion_json.get('comentario', 'Sin comentario.')
+resultado = {
+    'chiste': chiste,
+    'puntuacion': puntuacion,
+    'comentario': comentario,
+    'mensaje_final': f"Aquí tienes un chiste:\\n\\n{chiste}\\n\\nPuntuación: {puntuacion}/10 - {comentario}"
+}
+"""
+
+LOGS = Path(__file__).resolve().parent.parent / "logs"
 
 
 @pytest.fixture
@@ -165,3 +186,47 @@ def test_es_resultado_sospechoso_sigue_detectando_vacio():
     assert es_resultado_sospechoso({})[0] is True
     assert es_resultado_sospechoso(None)[0] is True
     assert es_resultado_sospechoso({"a": "", "b": None})[0] is True
+
+
+# ---------------------------------------------------------------------------
+# 4. Cobertura sobre el corpus real (medición de 3.10)
+# ---------------------------------------------------------------------------
+
+def test_bloquea_un_segundo_caso_real_del_corpus(validador):
+    """Este plan real sustituía una puntuación ausente por 'N/A'."""
+    errores = validador._validar_codigo_python_ast(
+        codigo=CODIGO_FABRICADO_CORPUS, nombre="FormatearResultado",
+        nombres_agentes={"GenerarChiste", "EvaluarChiste"},
+        tipos_agentes={"GenerarChiste": "LLM", "EvaluarChiste": "LLM"},
+    )
+
+    assert any("RELLENO" in e for e in errores)
+
+
+def _cargar_herramienta():
+    """Carga ``tools/cobertura_validador.py`` por ruta (no es un paquete)."""
+    ruta = LOGS.parent / "tools" / "cobertura_validador.py"
+    spec = importlib.util.spec_from_file_location("cobertura_validador", ruta)
+    modulo = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(modulo)
+    return modulo
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(
+    not LOGS.is_dir(), reason="el corpus logs/ no está versionado (gitignore)"
+)
+def test_la_herramienta_mide_cobertura_sobre_logs_reales():
+    """Muestra pequeña del corpus: la herramienta funciona y algo detecta.
+
+    El corpus completo tarda ~40 s y ``logs/`` no está en git, así que la
+    suite comprueba solo una muestra; la medición completa se lanza a mano con
+    ``python tools/cobertura_validador.py``.
+    """
+    herramienta = _cargar_herramienta()
+
+    informe = herramienta.analizar(LOGS, limite=40)
+
+    assert informe["ficheros_analizados"] > 0
+    assert informe["pasos_con_codigo"] > 0
+    assert informe["por_regla"], "el corpus real debe disparar alguna regla"
