@@ -98,6 +98,11 @@ def registrar_ejecucion_en_aprendizaje(
     except Exception as e:
         logger.debug(f"No se pudo leer el presupuesto: {e}")
 
+    # V4.0-4: la auto-crítica corre en el hilo de aprendizaje; se captura el
+    # presupuesto aquí para no tocar el scheduler desde otro hilo y para que
+    # una ejecución que ya agotó su presupuesto no gaste más en reescribir.
+    presupuesto_snap = getattr(scheduler, "presupuesto", None)
+
     # 1. Guardar en DB - incluir plan original si hubo Plan B, deduplicando por id
     try:
         vistos_db: set = set()
@@ -168,11 +173,17 @@ def registrar_ejecucion_en_aprendizaje(
             # ✅ FASE 4c: registrar usos de prompts reescritos.
             # Cada agente LLM que usó una versión reescrita (activa o
             # candidata) deja constancia para poder atribuir el score.
+            #
+            # ✅ V4.0-AB: si el builder eligió el INCUMBENTE (prompt original)
+            # pero había una firma A/B identificada, se registra el uso del
+            # brazo de CONTROL. Sin esto el candidato no tiene referencia con
+            # la que compararse y la promoción es imposible en arranque en frío.
             try:
                 from learning.prompt_ab_evaluator import PromptABEvaluator
                 ab = PromptABEvaluator(db_path)
                 for item in agentes_snapshot:
                     pid = getattr(item["proxy"], "prompt_reescrito_id", 0)
+                    firma = getattr(item["proxy"], "prompt_firma", "") or ""
                     if pid:
                         # H2: se registra POR QUÉ se eligió la variante.
                         ab.registrar_uso(
@@ -180,14 +191,29 @@ def registrar_ejecucion_en_aprendizaje(
                             ejecucion_id,
                             motivo=getattr(item["proxy"], "prompt_reescrito_motivo", ""),
                         )
+                    elif firma:
+                        ab.registrar_uso_baseline(
+                            firma,
+                            ejecucion_id,
+                            motivo=getattr(item["proxy"], "prompt_reescrito_motivo", "")
+                            or "control A/B: prompt original",
+                        )
             except Exception as e:
                 logger.debug(f"AB registrar_uso falló: {e}")
 
             # ── Aprendizaje por agente (ya existía) ──
             for item in agentes_snapshot:
                 try:
+                    # V4.0-4: antes se pasaba siempre 0, así que la evaluación
+                    # del agente no se podía atribuir a NINGÚN agente concreto
+                    # y la auto-crítica acababa reescribiendo el prompt del
+                    # último LLM de la ejecución. Ahora se resuelve la fila real.
+                    agente_ejecucion_id = _id_agente_ejecucion(
+                        db_path, ejecucion_id, item.get("agente_id")
+                    )
                     engine.registrar_resultado_agente(
-                        ejecucion_id=ejecucion_id, agente_ejecucion_id=0,
+                        ejecucion_id=ejecucion_id,
+                        agente_ejecucion_id=agente_ejecucion_id,
                         agente=item["proxy"], tarea=item["descripcion"] or item["nombre"],
                         resultado_texto=item["resultado_texto"], estado_real=item["estado_real"])
                 except Exception as e:
@@ -226,10 +252,18 @@ def registrar_ejecucion_en_aprendizaje(
                         if score_plan is not None:
                             ab.actualizar_score(ejecucion_id, score_plan)
 
-                            # Evaluar candidatos de las firmas que se usaron
+                            # Evaluar candidatos de las firmas que se usaron.
+                            # V4.0-AB: también las firmas de las ejecuciones que
+                            # fueron brazo de CONTROL (prompt original); así la
+                            # decisión se toma en cuanto hay baseline suficiente,
+                            # sin esperar a que vuelva a tocar explorar.
                             firmas_vistas = set()
                             for item in agentes_snapshot:
                                 pid = getattr(item["proxy"], "prompt_reescrito_id", 0)
+                                firma_directa = getattr(item["proxy"], "prompt_firma", "") or ""
+                                if firma_directa:
+                                    firmas_vistas.add(firma_directa)
+                                    continue
                                 if not pid:
                                     continue
                                 # Recuperar la firma del prompt reescrito
@@ -250,12 +284,62 @@ def registrar_ejecucion_en_aprendizaje(
 
                 except Exception as e:
                     logger.debug(f"Aprendizaje del plan falló: {e}")
+
+            # ── V4.0-4: auto-crítica del LLM → reescritura de prompt ──
+            # Cierra el ciclo: la evaluación del LLM (no solo los errores duros)
+            # puede disparar una reescritura. Se guarda como 'candidato' y el
+            # A/B (ya arreglado en V4.0-AB) decide si se promueve.
+            #
+            # Best-effort y acotado: umbral de score, tope por ejecución,
+            # deduplicación por firma y respeto del presupuesto de la ejecución.
+            try:
+                from learning.self_critique import obtener_self_critic
+
+                self_critic = obtener_self_critic(db_path, presupuesto=presupuesto_snap)
+                if self_critic is not None:
+                    critica = self_critic.revisar_ejecucion(ejecucion_id)
+                    if critica.reescribio:
+                        logger.info(
+                            "🧠 Auto-crítica aplicada a la ejecución %s: "
+                            "prompts %s", ejecucion_id, critica.reescrituras,
+                        )
+                    elif critica.saltadas:
+                        logger.debug(
+                            "Auto-crítica sin reescritura (%s): %s",
+                            ejecucion_id, critica.saltadas,
+                        )
+            except Exception as e:
+                logger.debug(f"Auto-crítica no disponible: {e}")
+
             logger.info(f"🧠 Aprendizaje procesado para ejecución {ejecucion_id}")
         except Exception as e:
             logger.debug(f"Aprendizaje en background falló: {e}")
 
     threading.Thread(target=_worker, name="learning-recorder", daemon=True).start()
     return ejecucion_id
+
+def _id_agente_ejecucion(db_path: str, ejecucion_id: int, agente_id: str | None) -> int:
+    """Fila de ``agentes_ejecucion`` de un agente, o 0 si no se puede saber.
+
+    V4.0-4: sin esto la evaluación del agente se guardaba con
+    ``agente_ejecucion_id = 0`` y era imposible atribuirla al prompt que la
+    produjo, así que la auto-crítica reescribía el prompt equivocado.
+    """
+    if not agente_id:
+        return 0
+    try:
+        with closing(sqlite3.connect(db_path, timeout=5)) as conn:
+            fila = conn.execute(
+                """SELECT id FROM agentes_ejecucion
+                   WHERE ejecucion_id = ? AND agente_id = ?
+                   ORDER BY orden ASC LIMIT 1""",
+                (ejecucion_id, str(agente_id)),
+            ).fetchone()
+        return int(fila[0]) if fila else 0
+    except Exception as e:
+        logger.debug(f"No se pudo resolver agente_ejecucion_id: {e}")
+        return 0
+
 
 def _snapshot_de_agente(a) -> dict[str, Any] | None:
     try:
@@ -274,6 +358,7 @@ def _snapshot_de_agente(a) -> dict[str, Any] | None:
             thinking_enabled_llm=bool(getattr(a, "thinking_enabled_llm", False)),
             prompt_reescrito_id=getattr(a, "prompt_reescrito_id", 0),  # ✅ FASE 4c
             prompt_reescrito_motivo=getattr(a, "prompt_reescrito_motivo", ""),  # ✅ H2
+            prompt_firma=getattr(a, "prompt_firma", ""),  # ✅ V4.0-AB
             url_http=getattr(a, "url_http", "") or "", url=getattr(a, "url_http", "") or "",
             metodo=getattr(a, "metodo_http", "GET"), operacion=getattr(a, "operacion_file", "") or "",
             archivo_origen=getattr(a, "archivo_origen", "") or "", archivo_destino=getattr(a, "archivo_destino", "") or "",
@@ -286,7 +371,8 @@ def _snapshot_de_agente(a) -> dict[str, Any] | None:
         )
         return {"proxy": proxy, "nombre": a.nombre, "descripcion": getattr(a, "descripcion", "") or a.nombre,
                 "resultado_texto": str(a.resultado or "")[:4000],
-                "estado_real": a.estado.value if hasattr(a.estado, "value") else str(a.estado), "_id": a.id}
+                "estado_real": a.estado.value if hasattr(a.estado, "value") else str(a.estado),
+                "agente_id": a.id, "_id": a.id}
     except Exception as e:
         logger.debug(f"Snapshot aprendizaje falló para un agente: {e}")
         return None

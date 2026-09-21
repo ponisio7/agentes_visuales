@@ -134,10 +134,91 @@ Además **se registra el motivo** de la elección: en el log, en el campo
 `prompt de A → reescritura de B → prompt incorrecto` queda cubierto por tests
 con tareas semánticamente distintas (`tests/test_ab_matcher.py`).
 
-**Sigue pendiente:** el desequilibrio del A/B (0 filas `activo`, varios
-`candidato` ⇒ «solo candidato → 100%») no se toca; ahora es *seguro* (filtro de
-intención), pero sigue sin haber explotación/exploración real. Y el feedback se
-sigue atribuyendo al último agente LLM, no al que falló.
+**Sigue pendiente:** el feedback se sigue atribuyendo al último agente LLM, no
+al que falló.
+
+### Actualización V4.0-AB — el A/B ya promociona (arreglado)
+
+El desequilibrio descrito arriba era un **punto muerto**, no solo un desequilibrio:
+nadie promocionaba nunca y, como `elegir_variante` usaba el candidato al 100 %
+cuando no había `activo`, tampoco se registraba el prompt original. Sin brazo de
+control no hay comparación posible. Cuatro defectos encadenados, todos cerrados:
+
+1. **`elegir_variante` sin incumbente.** «Solo candidato → candidato al 100 %».
+   Ahora el incumbente es el `activo` si existe y, si no, el **prompt original**:
+   el candidato se explora con probabilidad 0.20 y el 80 % restante usa el
+   original (brazo de control). `prompt_reescrito_id = 0` + `prompt_firma`
+   identifican esa ejecución.
+2. **Referencia inválida.** Sin `activo`, se comparaba contra `_score_global()`
+   (media de *todo* lo registrado: escalas de agente y de plan mezcladas, más
+   filas huérfanas). Ahora la referencia es, por orden: el `activo` de la firma
+   (≥ 3 usos) → el **baseline de la firma** (≥ 3 usos, tabla nueva
+   `prompt_reescrito_baseline`) → **`espera`**. Nunca se decide sin control.
+3. **El `activo` se destruía.** `_guardar_reescritura` ponía a `descartado` el
+   `activo` de la firma al crear un candidato. Ahora supera solo a los
+   `candidato` anteriores; el incumbent sobrevive.
+4. **Huérfanas.** Las conexiones auxiliares abrían SQLite con `foreign_keys=OFF`,
+   así que al limpiar `ejecuciones` quedaban usos sin versión padre (2679 filas
+   en la BD real, de un bug histórico de tests) que contaminaban las medias.
+   Ahora las estadísticas hacen `JOIN` con `prompts_reescritos`, las conexiones
+   activan las FK, y hay `PromptABEvaluator.limpiar_huerfanos()`.
+
+**Efecto medible** (copia de la BD real, firma `73f260b440`): el candidato 223
+tenía media 0.65 y el prompt original 0.44. Con la regla antigua la referencia
+era la media global 0.616 ⇒ delta `+0.034 < 0.05` ⇒ **espera eterna y descarte a
+los 20 usos**. Con la nueva ⇒ delta `+0.212` ⇒ **promovido** (primera fila
+`activo` de la historia de la BD).
+
+Tests: `tests/test_ab_promocion_baseline.py` (13 casos).
+
+---
+
+## 1.bis. Modo «Resolver tarea» (V4.0) — implementado
+
+`run` era de un solo tiro: plan → ejecutar → veredicto. Si la aceptación
+fallaba, la ejecución acababa; el Plan B repara pasos sueltos, pero nadie
+volvía a plantear el plan. Y nada exigía que el plan fuera **verificable** antes
+de gastar una ejecución.
+
+`resolve` añade el bucle que faltaba, sin duplicar el pipeline:
+
+```
+planificar → ¿el plan es verificable? ──no──► re-planificar con el motivo
+     │ sí                                       (sin gastar ejecución)
+     ▼
+ ejecutar (Scheduler + Plan B) → verificar (gate H6)
+     │                                    │
+     │◄────────── no aceptado ────────────┘
+     ▼ aceptado → RESUELTO
+```
+
+- **`core/goal_resolver.py`**: `GoalResolver` con planificador y ejecutor
+  inyectados (módulo puro: sin Qt, sin LLM en los tests).
+- **El sistema decide la verificación**: un plan cuyo paso final/crítico no
+  declara `aceptacion` no se ejecuta; se devuelve al planificador con el motivo.
+- **No repite a ciegas**: la re-planificación recibe los `motivos` concretos de
+  la aceptación fallida y los errores de los agentes.
+- **Un presupuesto compartido** cubre planificación y todos los intentos
+  (tiempo/llamadas/tokens/coste).
+- **Parar es un resultado**: `verificado` | `intentos_agotados` |
+  `presupuesto_agotado`, siempre con motivo y consumo.
+- En `main.py`, `_ejecutar_plan` se extrae de `_ejecutar_pipeline`, así que
+  `resolve` reutiliza **exactamente** el mismo Scheduler, Plan B y gate que
+  `run`; `run`/`serve`/`web` no cambian de contrato.
+
+Uso:
+
+```bash
+python main.py resolve "informe en DOCX sobre el bitcoin con 3 gráficos"
+python main.py resolve --max-intentos 3 --json "calculadora HTML con historial"
+```
+
+**Límites que conviene no olvidar:** el gate de verificabilidad es *sintáctico*
+(comprueba que hay contrato, no que sea el contrato correcto); no hay
+re-planificación parcial (el intento fallido se descarta entero); y `resolve`
+aún no está expuesto en web/API ni en la GUI.
+
+Tests: `tests/test_goal_resolver.py` (21) y `tests/test_main_resolve.py` (12).
 
 ---
 

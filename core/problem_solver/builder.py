@@ -476,6 +476,7 @@ class PlanBuilder:
         # ── 3. ✅ FASE 5b: matching semántico por embeddings (H2) ──
         prompt_final = prompt_endurecido  # fallback si no hay match
         prompt_id_elegido = 0
+        prompt_firma_elegida = ""
         motivo_elegido = "sin match semántico (prompt original)"
         try:
             from learning.embedding_matcher import obtener_matcher
@@ -501,17 +502,30 @@ class PlanBuilder:
                 f"match_candidato={match_candidato is not None}"
             )
 
-            # Una única elección A/B: si hay activo y candidato se sortea;
-            # si solo hay uno se usa ese. Evita llamar dos veces a
+            # Una única elección A/B: si hay candidato se sortea contra el
+            # incumbente (activo si existe, si no el prompt ORIGINAL); sin
+            # candidato se usa el incumbente. Evita llamar dos veces a
             # elegir_variante (usa random) y quedarse con una variante
             # distinta a la registrada.
+            #
+            # ✅ V4.0-AB: pasar el prompt original como incumbente es lo que
+            # restaura el brazo de control. Antes, con «solo candidato», se
+            # usaba el candidato al 100 % y no se registraba ningún uso del
+            # original, así que el A/B nunca tenía referencia válida.
             if match_activo or match_candidato:
                 prompt_elegido, prompt_id_elegido = PromptABEvaluator.elegir_variante(
                     prompt_activo=(match_activo or {}).get("prompt"),
                     prompt_id_activo=(match_activo or {}).get("id"),
                     prompt_candidato=(match_candidato or {}).get("prompt"),
                     prompt_id_candidato=(match_candidato or {}).get("id"),
+                    prompt_incumbente=prompt_endurecido,
+                    prompt_id_incumbente=0,
                 )
+                # La firma identificada es siempre la del match, se use la
+                # variante o el prompt original: es la clave del A/B.
+                match_firma = match_activo or match_candidato or {}
+                prompt_firma_elegida = match_firma.get("firma") or ""
+
                 elegido = None
                 if prompt_id_elegido == (match_activo or {}).get("id"):
                     elegido = match_activo
@@ -519,6 +533,9 @@ class PlanBuilder:
                     elegido = match_candidato
                 if prompt_elegido:
                     prompt_final = prompt_elegido
+
+                sim_act = match_activo["similitud"] if match_activo else None
+                sim_cand = match_candidato["similitud"] if match_candidato else None
                 if elegido:
                     motivo_elegido = (
                         f"{elegido.get('motivo', '')} "
@@ -526,8 +543,13 @@ class PlanBuilder:
                         f"similitud={elegido.get('similitud'):.3f}, "
                         f"estado={elegido.get('estado')})"
                     )
-                sim_act = match_activo["similitud"] if match_activo else None
-                sim_cand = match_candidato["similitud"] if match_candidato else None
+                else:
+                    # Explotación: esta ejecución es el BRAZO DE CONTROL.
+                    motivo_elegido = (
+                        f"control A/B: prompt original "
+                        f"(firma={prompt_firma_elegida[:8]}, "
+                        f"sim_activo={sim_act}, sim_candidato={sim_cand})"
+                    )
                 # H2: registrar POR QUÉ se usó la variante.
                 self.logger.info(
                     f"✨ AB: '{paso.nombre}' usa id={prompt_id_elegido} — "
@@ -547,6 +569,7 @@ class PlanBuilder:
         kwargs['prompt_llm'] = self._endurecer_prompt_llm(prompt_final)
         kwargs['prompt_reescrito_id'] = _a_int(prompt_id_elegido, 0)
         kwargs['prompt_reescrito_motivo'] = motivo_elegido
+        kwargs['prompt_firma'] = prompt_firma_elegida
 
     def _endurecer_prompt_llm(self, prompt_original: str) -> str: # modificado 16 septiembre 2026 12:38 hora Madrid
         """

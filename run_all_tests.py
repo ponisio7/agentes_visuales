@@ -129,6 +129,7 @@ GRUPOS_TESTS = {
         "tests/test_scheduler_resolucion.py",
         "tests/test_scheduler_terminal.py",
         "tests/test_scheduler_plan_b.py",
+        "tests/test_scheduler_plan_b_caracterizacion.py",
         "tests/test_ejecucion_individual.py",
     ],
     "C_integration": [
@@ -150,6 +151,11 @@ GRUPOS_TESTS = {
         # Modelos, mocks y validadores sin extensiones nativas pesadas
         "tests/test_agent.py",
         "tests/test_agent_serialization.py",
+        "tests/test_ab_promocion_baseline.py",
+        "tests/test_goal_resolver.py",
+        "tests/test_main_resolve.py",
+        "tests/test_plan_failure_classifier.py",
+        "tests/test_self_critique.py",
         "tests/test_browser_executor.py",
         "tests/test_cancellation.py",
         "tests/test_conexion_a_DeepSeek_manualmente.py",

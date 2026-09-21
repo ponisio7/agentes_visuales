@@ -1057,6 +1057,12 @@ class Scheduler(QObject):
         Debe llamarse SOLO tras un ``_reclamar_plan_b()`` que devolvió True:
         el turno (``_plan_b_en_progreso``) ya viene reservado y aquí se hace
         la llamada al LLM sin el lock del scheduler.
+
+        V4.0-5: el método era un bloque de ~220 líneas con siete fases
+        entrelazadas. Ahora es un ORQUESTADOR que delega en ``_pb_*``. La
+        extracción es mecánica: el orden, los efectos y los mensajes son los
+        mismos (lo fijan los tests de caracterización de
+        ``tests/test_scheduler_plan_b_caracterizacion.py``).
         """
         # ⛔ B2: si el scheduler ya se detuvo, no se arranca otro plan. Sin
         # este guard, un Plan B en vuelo durante el cierre del proceso llegaba
@@ -1070,207 +1076,255 @@ class Scheduler(QObject):
             return False
 
         try:
-            from .plan_recovery import (
-                estrategia_para_intento,
-                firma_agente,
-                firma_plan,
-                registrar_reparacion,
-            )
-
-            intento = self._plan_b_intentos + 1
-            estrategia = estrategia_para_intento(intento)
-
-            # H7: la firma del plan que acaba de fallar entra en el conjunto
-            # anti-repetición para que el LLM no genere un plan equivalente.
-            firma_fallida = firma_plan(self._plan_original) if self._plan_original else ""
-            if firma_fallida:
-                self._firmas_plan_fallidas.add(firma_fallida)
-            self._reparaciones_intentadas.append({
-                "intento": intento,
-                "estrategia": estrategia,
-                "agente": getattr(agente_fallido, "nombre", "?"),
-                "error": (razon or "")[:300],
-            })
-
-            logger.info(
-                f"🔧 [Plan B #{intento}] estrategia={estrategia} "
-                f"'{agente_fallido.nombre}' falló: {razon}"
-            )
-            self.log_mensaje.emit(
-                f"🔧 Plan B #{intento} ({estrategia}): "
-                f"'{agente_fallido.nombre}' falló. "
-                f"Consultando al LLM... (puede tardar ~20s)",
-                "#ffc107"
-            )
-
-            # El turno ya está reclamado (``_plan_b_en_progreso=True``) por
-            # ``_reclamar_plan_b`` antes de entrar aquí.
-            self._plan_b_intentos += 1
+            intento, estrategia = self._pb_preparar_intento(agente_fallido, razon)
 
             # 1. Pedir plan B al LLM (bloqueante ~5-15s, SIN el lock del
             #    scheduler: por eso se reclama el turno antes de entrar).
-            plan_b = self.recovery.generar_plan_b(
-                problema_original=self._problema_original,
-                plan_fallido=self._plan_original,
-                agente_fallido=agente_fallido,
-                error=razon,
-                estrategia=estrategia,
-                errores_previos=list(self._reparaciones_intentadas),
-                firmas_fallidas=set(self._firmas_plan_fallidas),
-                intento=intento,
-            )
+            plan_b = self._pb_pedir_plan_al_llm(agente_fallido, razon, intento, estrategia)
 
             if plan_b is None or not getattr(plan_b, "agentes_generados", None):
-                self.log_mensaje.emit(
-                    "⚠️ Plan B descartado: sin plan válido o plan repetido. "
-                    "Bloqueando dependientes.",
-                    "#ffc107"
+                return self._pb_abortar_sin_plan(
+                    agente_fallido, razon, intento, estrategia
                 )
-                logger.warning("Plan B no disponible, bloqueando como antes")
-                registrar_reparacion(
-                    getattr(self.recovery, "db_path", ""),
-                    problema=self._problema_original,
-                    intento=intento,
-                    agente=getattr(agente_fallido, "nombre", ""),
-                    error=razon,
-                    estrategia=estrategia,
-                    resultado="sin_plan",
-                    exito=False,
-                )
-                self._plan_b_en_progreso = False
-                # ⬇️ NUEVO: marcar todos los agentes no-terminales como BLOQUEADOS
-                # para que el recuento sea coherente y la ejecución termine.
-                with self._lock:
-                    for ag in self.agentes.values():
-                        if EstadoAgente.es_terminal(ag.estado):
-                            continue
-                        if ag.id in self.running:
-                            continue  # dejar que terminen los que están corriendo
-                        ag.estado = EstadoAgente.BLOQUEADO
-                        ag.mensaje = "🚫 Plan B agotado: no se pudo recuperar la ejecución"
-                        ag.progreso = 100
-                        self.completed.add(ag.id)
-                        self.agente_actualizado.emit(ag.id)
-                    # ✅ FIX BUG 3: notificar término tras bloquear.
-                    self._verificar_terminado_internal()
-                return False
 
-            # ⬇️ NUEVO: mensaje de éxito tras generar plan_b
-            self.log_mensaje.emit(
-                f"✅ Plan B #{self._plan_b_intentos}: "
-                f"{len(plan_b.agentes_generados)} agentes generados. "
-                f"Cargando y reiniciando ejecución...",
-                "#28a745"
-            )
+            self._pb_anunciar_plan_generado(plan_b)
 
             # 2. Detener ejecución actual (cancela tokens, workers)
             #    Antes de tirar el estado, se guardan los agentes COMPLETADOS
             #    cuyo artefacto pasó la verificación: H7 evita repetir trabajo
             #    bueno (A→B→C→D con D fallido no reejecuta A/B/C).
-            reutilizables: dict[str, dict] = {}
-            with self._lock:
-                for ag in self.agentes.values():
-                    if ag.estado != EstadoAgente.COMPLETADO or ag.resultado is None:
-                        continue
-                    verificacion = self._verificaciones.get(ag.id)
-                    if verificacion is not None and not verificacion.get("aceptado", True):
-                        continue
-                    reutilizables[firma_agente(ag)] = {
-                        "resultado": ag.resultado,
-                        "salida": ag.salida,
-                        "verificacion": verificacion,
-                    }
-
+            reutilizables = self._pb_recoger_reutilizables()
             self.detener()
 
-            # 3. Limpiar TODO el estado
-            with self._lock:
-                self.agentes.clear()
-                self.completed.clear()
-                self.running.clear()
-                self._cancelados.clear()
-                self._loops_activos.clear()
-                self._loop_items_procesados.clear()
-                self._terminado_notificado = False
-                self._tiempo_inicio_ejecucion = None
-                self._verificaciones.clear()
-                self._ultima_aceptacion = None
-                self._invalidar_stats_cache()
+            # 3. Limpiar TODO el estado y cargar los nuevos agentes
+            self._pb_limpiar_estado()
+            self._pb_cargar_plan(plan_b)
 
-            # 4. Cargar los nuevos agentes
-            for agente in plan_b.agentes_generados:
-                self.agregar_agente(agente)
-            self.resolver_dependencias()
+            # 4. Reutilizar los agentes idénticos ya completados y verificados.
+            reutilizados = self._pb_reutilizar_agentes(plan_b, reutilizables)
 
-            # 4b. Reutilizar los agentes idénticos ya completados y verificados.
-            reutilizados: list[str] = []
-            with self._lock:
-                for agente in plan_b.agentes_generados:
-                    datos = reutilizables.get(firma_agente(agente))
-                    if not datos:
-                        continue
-                    agente.estado = EstadoAgente.COMPLETADO
-                    agente.resultado = datos["resultado"]
-                    agente.salida = datos.get("salida", "")
-                    agente.progreso = 100
-                    agente.mensaje = "♻ reutilizado del plan anterior (artefacto válido)"
-                    self.completed.add(agente.id)
-                    if datos.get("verificacion") is not None:
-                        self._verificaciones[agente.id] = datos["verificacion"]
-                    reutilizados.append(agente.nombre)
-                if reutilizados:
-                    self._invalidar_stats_cache()
-
-            if reutilizados:
-                self.log_mensaje.emit(
-                    f"♻ Plan B reutiliza {len(reutilizados)} agente(s) ya "
-                    f"válidos: {', '.join(reutilizados)}",
-                    "#28a745"
-                )
-                logger.info(
-                    f"Plan B: {len(reutilizados)} agentes reutilizados sin "
-                    f"reejecutar: {reutilizados}"
-                )
-
-            # 5. Actualizar el plan original para futuros Plan B
-            self._plan_original = plan_b
-
-            # 5b. Registrar el intento de reparación (H7).
-            registrar_reparacion(
-                getattr(self.recovery, "db_path", ""),
-                problema=self._problema_original,
-                intento=intento,
-                agente=getattr(agente_fallido, "nombre", ""),
-                error=razon,
-                estrategia=estrategia,
-                plan_firma=firma_plan(plan_b),
-                resultado=(
-                    f"plan_generado ({len(plan_b.agentes_generados)} agentes, "
-                    f"{len(reutilizados)} reutilizados)"
-                ),
-                exito=True,
+            # 5. Actualizar el plan original para futuros Plan B y auditar.
+            self._pb_registrar_exito(
+                agente_fallido, razon, intento, estrategia, plan_b, reutilizados
             )
 
-            # 6. Notificar a la UI
-            self.log_mensaje.emit(
-                f"✅ Plan B #{self._plan_b_intentos}: "
-                f"{len(plan_b.agentes_generados)} agentes cargados. "
-                f"Reiniciando ejecución...",
-                "#28a745"
-            )
-
-            # 7. Arrancar el nuevo plan
+            # 6. Notificar a la UI y arrancar el nuevo plan.
+            self._pb_anunciar_plan_cargado(plan_b)
             self._plan_b_en_progreso = False
             self.iniciar()
-
-            #log temporal al final de _intentar_plan_b ---> logger.info(f"FIN _intentar_plan_b: intentos={self._plan_b_intentos}, m...")
-            #logger.info(f"FIN _intentar_plan_b: intentos={self._plan_b_intentos}, max={self._max_intentos_plan_b}")
             return True
 
         except Exception as e:
             logger.exception(f"Error en Plan B: {e}")
             self._plan_b_en_progreso = False
             return False
+
+    # ------------------------------------------------------------
+    # Fases de _intentar_plan_b (V4.0-5: extracción mecánica)
+    # ------------------------------------------------------------
+    def _pb_preparar_intento(self, agente_fallido, razon: str) -> tuple[int, str]:
+        """Reserva el número de intento, elige estrategia y anota la traza.
+
+        Devuelve ``(intento, estrategia)``. Consume el intento
+        (``_plan_b_intentos += 1``) antes de la llamada al LLM: si la llamada
+        falla, el intento ya está gastado (comportamiento preexistente).
+        """
+        from .plan_recovery import estrategia_para_intento, firma_plan
+
+        intento = self._plan_b_intentos + 1
+        estrategia = estrategia_para_intento(intento)
+
+        # H7: la firma del plan que acaba de fallar entra en el conjunto
+        # anti-repetición para que el LLM no genere un plan equivalente.
+        firma_fallida = firma_plan(self._plan_original) if self._plan_original else ""
+        if firma_fallida:
+            self._firmas_plan_fallidas.add(firma_fallida)
+        self._reparaciones_intentadas.append({
+            "intento": intento,
+            "estrategia": estrategia,
+            "agente": getattr(agente_fallido, "nombre", "?"),
+            "error": (razon or "")[:300],
+        })
+
+        logger.info(
+            f"🔧 [Plan B #{intento}] estrategia={estrategia} "
+            f"'{agente_fallido.nombre}' falló: {razon}"
+        )
+        self.log_mensaje.emit(
+            f"🔧 Plan B #{intento} ({estrategia}): "
+            f"'{agente_fallido.nombre}' falló. "
+            f"Consultando al LLM... (puede tardar ~20s)",
+            "#ffc107"
+        )
+
+        # El turno ya está reclamado (``_plan_b_en_progreso=True``) por
+        # ``_reclamar_plan_b`` antes de entrar aquí.
+        self._plan_b_intentos += 1
+        return intento, estrategia
+
+    def _pb_pedir_plan_al_llm(self, agente_fallido, razon: str, intento: int, estrategia: str):
+        """Consulta al LLM (bloqueante). No toma el lock del scheduler."""
+        return self.recovery.generar_plan_b(
+            problema_original=self._problema_original,
+            plan_fallido=self._plan_original,
+            agente_fallido=agente_fallido,
+            error=razon,
+            estrategia=estrategia,
+            errores_previos=list(self._reparaciones_intentadas),
+            firmas_fallidas=set(self._firmas_plan_fallidas),
+            intento=intento,
+        )
+
+    def _pb_abortar_sin_plan(self, agente_fallido, razon: str, intento: int, estrategia: str) -> bool:
+        """No hay plan B: auditar, bloquear lo no terminal y terminar. → False."""
+        from .plan_recovery import registrar_reparacion
+
+        self.log_mensaje.emit(
+            "⚠️ Plan B descartado: sin plan válido o plan repetido. "
+            "Bloqueando dependientes.",
+            "#ffc107"
+        )
+        logger.warning("Plan B no disponible, bloqueando como antes")
+        registrar_reparacion(
+            getattr(self.recovery, "db_path", ""),
+            problema=self._problema_original,
+            intento=intento,
+            agente=getattr(agente_fallido, "nombre", ""),
+            error=razon,
+            estrategia=estrategia,
+            resultado="sin_plan",
+            exito=False,
+        )
+        self._plan_b_en_progreso = False
+        # ⬇️ Marcar todos los agentes no-terminales como BLOQUEADOS para que el
+        # recuento sea coherente y la ejecución termine.
+        with self._lock:
+            for ag in self.agentes.values():
+                if EstadoAgente.es_terminal(ag.estado):
+                    continue
+                if ag.id in self.running:
+                    continue  # dejar que terminen los que están corriendo
+                ag.estado = EstadoAgente.BLOQUEADO
+                ag.mensaje = "🚫 Plan B agotado: no se pudo recuperar la ejecución"
+                ag.progreso = 100
+                self.completed.add(ag.id)
+                self.agente_actualizado.emit(ag.id)
+            # ✅ FIX BUG 3: notificar término tras bloquear.
+            self._verificar_terminado_internal()
+        return False
+
+    def _pb_anunciar_plan_generado(self, plan_b) -> None:
+        self.log_mensaje.emit(
+            f"✅ Plan B #{self._plan_b_intentos}: "
+            f"{len(plan_b.agentes_generados)} agentes generados. "
+            f"Cargando y reiniciando ejecución...",
+            "#28a745"
+        )
+
+    def _pb_recoger_reutilizables(self) -> dict[str, dict]:
+        """Agentes completados cuyo artefacto pasó la verificación (H7)."""
+        from .plan_recovery import firma_agente
+
+        reutilizables: dict[str, dict] = {}
+        with self._lock:
+            for ag in self.agentes.values():
+                if ag.estado != EstadoAgente.COMPLETADO or ag.resultado is None:
+                    continue
+                verificacion = self._verificaciones.get(ag.id)
+                if verificacion is not None and not verificacion.get("aceptado", True):
+                    continue
+                reutilizables[firma_agente(ag)] = {
+                    "resultado": ag.resultado,
+                    "salida": ag.salida,
+                    "verificacion": verificacion,
+                }
+        return reutilizables
+
+    def _pb_limpiar_estado(self) -> None:
+        """Deja el scheduler como recién construido (salvo configuración)."""
+        with self._lock:
+            self.agentes.clear()
+            self.completed.clear()
+            self.running.clear()
+            self._cancelados.clear()
+            self._loops_activos.clear()
+            self._loop_items_procesados.clear()
+            self._terminado_notificado = False
+            self._tiempo_inicio_ejecucion = None
+            self._verificaciones.clear()
+            self._ultima_aceptacion = None
+            self._invalidar_stats_cache()
+
+    def _pb_cargar_plan(self, plan_b) -> None:
+        for agente in plan_b.agentes_generados:
+            self.agregar_agente(agente)
+        self.resolver_dependencias()
+
+    def _pb_reutilizar_agentes(self, plan_b, reutilizables: dict[str, dict]) -> list[str]:
+        """Marca como completados los agentes idénticos ya verificados."""
+        from .plan_recovery import firma_agente
+
+        reutilizados: list[str] = []
+        with self._lock:
+            for agente in plan_b.agentes_generados:
+                datos = reutilizables.get(firma_agente(agente))
+                if not datos:
+                    continue
+                agente.estado = EstadoAgente.COMPLETADO
+                agente.resultado = datos["resultado"]
+                agente.salida = datos.get("salida", "")
+                agente.progreso = 100
+                agente.mensaje = "♻ reutilizado del plan anterior (artefacto válido)"
+                self.completed.add(agente.id)
+                if datos.get("verificacion") is not None:
+                    self._verificaciones[agente.id] = datos["verificacion"]
+                reutilizados.append(agente.nombre)
+            if reutilizados:
+                self._invalidar_stats_cache()
+
+        if reutilizados:
+            self.log_mensaje.emit(
+                f"♻ Plan B reutiliza {len(reutilizados)} agente(s) ya "
+                f"válidos: {', '.join(reutilizados)}",
+                "#28a745"
+            )
+            logger.info(
+                f"Plan B: {len(reutilizados)} agentes reutilizados sin "
+                f"reejecutar: {reutilizados}"
+            )
+        return reutilizados
+
+    def _pb_registrar_exito(
+        self, agente_fallido, razon: str, intento: int, estrategia: str,
+        plan_b, reutilizados: list[str],
+    ) -> None:
+        """Actualiza el plan de referencia y audita el intento (H7)."""
+        from .plan_recovery import firma_plan, registrar_reparacion
+
+        # El plan B pasa a ser el plan de referencia para futuros Plan B.
+        self._plan_original = plan_b
+        registrar_reparacion(
+            getattr(self.recovery, "db_path", ""),
+            problema=self._problema_original,
+            intento=intento,
+            agente=getattr(agente_fallido, "nombre", ""),
+            error=razon,
+            estrategia=estrategia,
+            plan_firma=firma_plan(plan_b),
+            resultado=(
+                f"plan_generado ({len(plan_b.agentes_generados)} agentes, "
+                f"{len(reutilizados)} reutilizados)"
+            ),
+            exito=True,
+        )
+
+    def _pb_anunciar_plan_cargado(self, plan_b) -> None:
+        self.log_mensaje.emit(
+            f"✅ Plan B #{self._plan_b_intentos}: "
+            f"{len(plan_b.agentes_generados)} agentes cargados. "
+            f"Reiniciando ejecución...",
+            "#28a745"
+        )
 
 
     # ============================================================

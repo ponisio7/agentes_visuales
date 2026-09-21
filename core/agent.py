@@ -377,6 +377,7 @@ class Agente:
     thinking_enabled_llm: bool = False          
     prompt_reescrito_id: int = 0        # ✅ FASE 4c: ID de la versión reescrita usada
     prompt_reescrito_motivo: str = ""   # ✅ H2: por qué se eligió esa versión
+    prompt_firma: str = ""              # ✅ V4.0-AB: firma A/B (clave del brazo de control)
     
     # ── Loop ──
     fuente_items: str = ""
@@ -1056,6 +1057,10 @@ class Agente:
             if self.prompt_reescrito_id:
                 data["prompt_reescrito_id"] = self.prompt_reescrito_id
                 data["prompt_reescrito_motivo"] = self.prompt_reescrito_motivo
+            # ✅ V4.0-AB: la firma se guarda aunque se usara el prompt original:
+            # sin ella no se puede reconstruir el brazo de control del A/B.
+            if self.prompt_firma:
+                data["prompt_firma"] = self.prompt_firma
 
         return data
     

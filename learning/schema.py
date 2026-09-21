@@ -120,6 +120,33 @@ SQL_CREAR_TABLAS = [
     "ON prompt_reescrito_usos(prompt_reescrito_id)",
     "CREATE INDEX IF NOT EXISTS idx_prompt_reescrito_usos_ej "
     "ON prompt_reescrito_usos(ejecucion_id)",
+    # ✅ V4.0-AB: brazo de CONTROL del A/B.
+    #
+    # El A/B comparaba el candidato contra `_score_global()` (la media de TODOS
+    # los scores registrados) cuando no había un `activo`. Eso no es un control:
+    # es una población mezclada (escalas de agente y de plan, filas huérfanas,
+    # filas sintéticas). Como además nunca existía un `activo` (nadie promocionaba
+    # nunca), TODA decisión se tomaba contra esa media y el sistema quedaba en un
+    # punto muerto: el candidato siempre «empataba a la baja» o empeoraba.
+    #
+    # Aquí se registra la puntuación de las ejecuciones que usaron el prompt
+    # ORIGINAL de una firma, es decir, el brazo de control real. Así el candidato
+    # se compara contra «lo que ya hacía el prompt sin reescribir», que es la
+    # comparación que la promoción debe exigir.
+    """
+    CREATE TABLE IF NOT EXISTS prompt_reescrito_baseline (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        firma TEXT NOT NULL,
+        ejecucion_id INTEGER NOT NULL,
+        score REAL,                          -- relleno después por el aprendizaje
+        fecha TEXT NOT NULL,
+        motivo TEXT DEFAULT ''
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_prompt_baseline_firma "
+    "ON prompt_reescrito_baseline(firma, score)",
+    "CREATE INDEX IF NOT EXISTS idx_prompt_baseline_ejecucion "
+    "ON prompt_reescrito_baseline(ejecucion_id)",
 ]
 
 

@@ -109,17 +109,15 @@ class FeedbackProcessor:
     # ------------------------------------------------------------
     def procesar_feedback(self, feedback_id: int) -> dict:
         """
-        Procesa un feedback y devuelve un dict con el resultado.
+        Procesa el feedback de un USUARIO y devuelve un dict con el resultado.
 
         No lanza excepciones: si algo falla, devuelve
         {'procesado': False, 'error'|'razon': ...}.
 
-        ✅ FASE 4d: antes de calcular la firma, se quita el endurecimiento
-        del prompt_usado (si lo tiene). Esto es imprescindible para que
-        la firma coincida con la que calcula el builder sobre el prompt
-        crudo. Sin esto, todos los prompts de agentes LLM comparten la
-        misma firma (el endurecimiento ocupa más de 200 chars) y el A/B
-        no puede distinguir entre tareas.
+        Aplica las puertas propias del feedback humano (positivo = no se
+        reescribe, sin comentario = no hay nada que corregir) y delega en
+        :meth:`procesar_critica`, que es el camino ÚNICO de reescritura
+        compartido con la auto-crítica del LLM (V4.0-4).
         """
         try:
             with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
@@ -136,31 +134,75 @@ class FeedbackProcessor:
                 # Solo reescribimos si hay señal negativa o comentario.
                 if fb["score"] > 0:
                     return {"procesado": False, "razon": "feedback positivo"}
-                if not (fb["comentario"] or "").strip():
+                comentario = (fb["comentario"] or "").strip()
+                if not comentario:
                     return {"procesado": False, "razon": "sin comentario"}
 
-                agente = self._agente_relevante(conn, fb)
-                if not agente:
-                    return {"procesado": False, "razon": "sin agente LLM relevante"}
+                ejecucion_id = fb["ejecucion_id"]
+                agente_ejecucion_id = fb["agente_ejecucion_id"]
+        except Exception as e:
+            logger.warning(f"FeedbackProcessor: lectura falló: {e}")
+            return {"procesado": False, "error": str(e)}
 
-                prompt_original = (agente["prompt_usado"] or "").strip()
+        return self.procesar_critica(
+            ejecucion_id=ejecucion_id,
+            comentario=comentario,
+            agente_ejecucion_id=agente_ejecucion_id,
+            feedback_id=feedback_id,
+            origen="usuario",
+        )
+
+    def procesar_critica(
+        self,
+        *,
+        ejecucion_id: int,
+        comentario: str,
+        agente_ejecucion_id: int | None = None,
+        feedback_id: int = 0,
+        origen: str = "usuario",
+    ) -> dict:
+        """Camino ÚNICO de reescritura: crítica → candidato A/B (V4.0-4).
+
+        Lo usan las dos vías, para que no se comporten distinto:
+
+          - el feedback del **usuario** (``procesar_feedback``), y
+          - la **auto-crítica** del EvaluadorLLM (``learning/self_critique.py``),
+            que llega aquí con la justificación del evaluador como ``comentario``.
+
+        ``feedback_id`` es la fila de ``feedback_usuario`` que justifica la
+        reescritura. Para la auto-crítica se crea una fila con
+        ``alcance='auto_critica'``: satisface la FK de ``prompts_reescritos``,
+        deja auditoría del origen y —importante— **no** contamina
+        ``exito_real``, porque el HistoricalIndexer solo mira ``alcance='plan'``.
+
+        Devuelve el mismo dict que ``procesar_feedback``.
+        """
+        try:
+            with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
+                conn.row_factory = sqlite3.Row
+                conn.execute("PRAGMA busy_timeout=10000")
+
+                agente = self._agente_relevante(
+                    conn,
+                    {
+                        "agente_ejecucion_id": agente_ejecucion_id,
+                        "ejecucion_id": ejecucion_id,
+                    },
+                )
+                if not agente:
+                    return {
+                        "procesado": False,
+                        "razon": "sin agente LLM relevante",
+                    }
+
+                # ✅ FASE 4d: el prompt guardado es el endurecido; la firma se
+                # calcula sobre el crudo, que es lo que ve el builder.
+                prompt_original = self._prompt_crudo(agente["prompt_usado"])
                 if not prompt_original:
                     return {
                         "procesado": False,
                         "razon": "agente sin prompt_usado guardado",
                     }
-
-                # ✅ FASE 4d: quitar endurecimiento antes de firmar.
-                # El prompt_usado es el endurecido (con INSTRUCCIONES CRÍTICAS).
-                # El builder calcula la firma sobre el prompt CRUDO.
-                # Para que coincidan, aquí también firmamos el crudo.
-                PREFIJO_ENDURECIDO = "INSTRUCCIONES CRÍTICAS:"
-                if prompt_original.startswith(PREFIJO_ENDURECIDO):
-                    idx = prompt_original.find("TAREA:\n")
-                    if idx > 0:
-                        prompt_original = prompt_original[
-                            idx + len("TAREA:\n"):
-                        ].lstrip()
         except Exception as e:
             logger.warning(f"FeedbackProcessor: lectura falló: {e}")
             return {"procesado": False, "error": str(e)}
@@ -168,7 +210,7 @@ class FeedbackProcessor:
         # Fuera de la transacción: llamar al LLM.
         reescritura = self._reescribir_con_llm(
             prompt_original=prompt_original,
-            comentario=fb["comentario"],
+            comentario=comentario,
             agente_row=agente,
         )
         if not reescritura:
@@ -176,7 +218,7 @@ class FeedbackProcessor:
 
         if reescritura.get("skip"):
             logger.info(
-                f"FeedbackProcessor: LLM decidió no reescribir "
+                f"FeedbackProcessor: el LLM decidió no reescribir "
                 f"({reescritura.get('razon', 'sin razon')})"
             )
             return {
@@ -191,20 +233,36 @@ class FeedbackProcessor:
         prompt_id = self._guardar_reescritura(
             prompt_original=prompt_original,
             prompt_nuevo=prompt_nuevo,
-            razon=reescritura.get("razon", ""),
+            razon=f"[{origen}] {reescritura.get('razon', '')}".strip(),
             feedback_id=feedback_id,
         )
         if not prompt_id:
             return {"procesado": False, "razon": "no se pudo guardar"}
 
         logger.info(
-            f"✨ Prompt reescrito desde feedback {feedback_id} → id {prompt_id}"
+            f"✨ Prompt reescrito desde {origen} (feedback {feedback_id}) "
+            f"→ id {prompt_id}"
         )
         return {
             "procesado": True,
             "prompt_id": prompt_id,
             "razon": reescritura.get("razon", ""),
         }
+
+    @staticmethod
+    def _prompt_crudo(prompt_usado: str | None) -> str:
+        """Quita el endurecimiento del prompt guardado (idempotente).
+
+        Sin esto todas las firmas serían la del preámbulo anti-alucinación y
+        el A/B no podría distinguir tareas (FASE 4d).
+        """
+        prompt = (prompt_usado or "").strip()
+        prefijo = "INSTRUCCIONES CRÍTICAS:"
+        if prompt.startswith(prefijo):
+            idx = prompt.find("TAREA:\n")
+            if idx > 0:
+                prompt = prompt[idx + len("TAREA:\n"):].lstrip()
+        return prompt
 
     @classmethod
     def consultar_reescritura(
@@ -335,11 +393,25 @@ class FeedbackProcessor:
 
             with closing(sqlite3.connect(self.db_path, timeout=10)) as conn:
                 conn.execute("PRAGMA busy_timeout=10000")
-                # Desactivar versiones anteriores de la misma firma.
+                # FK ON: si una fila padre se borra, que arrastre a sus hijas
+                # (con FK OFF quedaban usos huérfanos contaminando el A/B).
+                try:
+                    conn.execute("PRAGMA foreign_keys=ON")
+                except sqlite3.Error:
+                    pass
+                # ✅ V4.0-AB: superar los CANDIDATOS anteriores de la misma
+                # firma (solo uno medible a la vez), pero NO tocar el `activo`.
+                #
+                # Antes se hacía `SET estado='descartado' WHERE estado='activo'`,
+                # de modo que cada reescritura nueva tiraba el incumbent
+                # promocionado. Combinado con que nadie promocionaba nunca,
+                # el resultado era: 0 filas `activo` para siempre, y el A/B sin
+                # referencia. El activo debe sobrevivir: es contra quien compite
+                # el candidato nuevo.
                 conn.execute(
                     "UPDATE prompts_reescritos "
                     "SET activo = 0, estado = 'descartado' "
-                    "WHERE firma = ? AND estado = 'activo'",
+                    "WHERE firma = ? AND estado = 'candidato'",
                     (firma,),
                 )
                 cur = conn.execute(
