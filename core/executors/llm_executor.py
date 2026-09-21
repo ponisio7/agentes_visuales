@@ -215,6 +215,52 @@ class LLMExecutor:
                 pass
 
     @classmethod
+    def _llamar_con_reintento_correctivo(cls, **kwargs) -> tuple[bool, str, dict]:
+        """Llama al modelo y, si solo devuelve razonamiento, reintenta UNA vez (3.9).
+
+        Síntoma: el modelo gasta el presupuesto de tokens "pensando" y llega
+        ``finish_reason`` sin contenido final. Antes solo se registraba un
+        ``logger.warning`` y el paso fallaba, bloqueando en cascada a sus
+        dependientes.
+
+        El reintento **no repite lo mismo**: sube ``max_tokens``, desactiva
+        ``thinking`` y añade una instrucción explícita de responder ya. Si el
+        segundo intento vuelve a fallar, se devuelve su error tal cual (sin
+        bucles).
+        """
+        ok, mensaje, datos = cls._llamar_una_vez(**kwargs)
+        if ok or (datos or {}).get("error") != "only_reasoning":
+            return ok, mensaje, datos
+
+        agente = kwargs.get("agente")
+        nombre = getattr(agente, "nombre", "?")
+        max_tokens_previos = int(kwargs.get("max_tokens") or 0)
+        max_tokens_reintento = max(max_tokens_previos * 2, MIN_TOKENS_SEGUROS * 2)
+
+        logger.warning(
+            f"🔁 [{nombre}] El LLM solo devolvió razonamiento: reintento "
+            f"correctivo con thinking desactivado y max_tokens="
+            f"{max_tokens_reintento} (antes {max_tokens_previos})."
+        )
+        cls.actualizar_progreso(agente, 50, "Reintento sin razonamiento...")
+
+        reintento = dict(kwargs)
+        reintento["thinking_enabled"] = False
+        reintento["reasoning_effort"] = "low"
+        reintento["max_tokens"] = max_tokens_reintento
+        reintento["contenido_usuario"] = (
+            f"{kwargs.get('contenido_usuario', '')}\n\n"
+            "IMPORTANTE: responde DIRECTAMENTE con el resultado pedido. No "
+            "expliques tu razonamiento ni repitas el enunciado; empieza ya con "
+            "la respuesta final."
+        )
+
+        ok2, mensaje2, datos2 = cls._llamar_una_vez(**reintento)
+        if ok2:
+            datos2 = {**(datos2 or {}), "reintento_por_razonamiento": True}
+        return ok2, mensaje2, datos2
+
+    @classmethod
     def _llamar_una_vez(
         cls,
         agente,
@@ -450,7 +496,7 @@ class LLMExecutor:
                     min(85, 40 + int(40 * idx / max(1, len(llamadas)))),
                     f"Consultando {modelo} ({idx}/{len(llamadas)})...",
                 )
-                ok, mensaje, datos = cls._llamar_una_vez(
+                ok, mensaje, datos = cls._llamar_con_reintento_correctivo(
                     agente=agente,
                     llm=_cliente_llm,
                     modelo=modelo,

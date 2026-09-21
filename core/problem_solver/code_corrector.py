@@ -148,9 +148,36 @@ class PythonCodeCorrector:
 
         if not reemplazos:
             return codigo
-        return cls._aplicar_reemplazos(codigo, reemplazos)
+        corregido = cls._aplicar_reemplazos(codigo, reemplazos)
+        return cls._validar_o_revertir(codigo, corregido)
 
     # ── helpers ──────────────────────────────────────────────
+
+    @staticmethod
+    def _validar_o_revertir(original: str, corregido: str) -> str:
+        """Gate de sintaxis: una corrección que no compila se descarta (3.8).
+
+        El corrector reescribe por spans de texto calculados sobre el AST; si un
+        span sale mal, el resultado puede no ser Python válido. El caso histórico
+        descrito en el acta era ``data = contexto if contexto else {}``
+        convertido en algo como ``contexto contexto...``.
+
+        Aceptar esa corrección rompería el paso en tiempo de ejecución y, peor,
+        el error aparecería lejos de su causa. Por eso se comprueba con
+        ``compile()`` —el equivalente en proceso de ``py_compile``— y, si falla,
+        se devuelve el código **original**: rollback, nunca una corrección a
+        medias.
+        """
+        try:
+            compile(corregido, "<python_code_corrector>", "exec")
+        except SyntaxError as e:
+            logger.warning(
+                "↩️ Corrección descartada: el resultado no compila (%s, línea %s). "
+                "Se conserva el código original.",
+                e.msg, e.lineno,
+            )
+            return original
+        return corregido
 
     @staticmethod
     def _alias_resoluble(nombre: str, ligados: set, dependencia: str | None) -> bool:

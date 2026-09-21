@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1193 passed, 1 skipped` (77 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
+- **Estado del código en esta fecha**: `1212 passed, 1 skipped` (81 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -73,11 +73,13 @@ parciales. El plan corregido está en la §13.
 | **3.6 (1.16)** | `"weasyprint"` añadido a los loggers silenciados de `main._configurar_logging`. | `tests/test_regression_002_weasyprint_silenciado.py` (4 casos) |
 | **3.5 (1.18)** | `BrokenPipeError` neutralizado en tres puntos: `_StreamHandlerTolerante` (el handler de consola ya no propaga el EPIPE), `_manejar_broken_pipe()` (redirige stdout/stderr a `os.devnull`) y `main()`, que devuelve `EXIT_OK` en vez de un código de error engañoso. | `tests/test_regression_003_broken_pipe.py` (7 casos, incluido uno end-to-end con proceso real y pipe cerrado) |
 | **3.11 (1.17)** | `--check-env --timeout N` ahora acota el comando de verdad. El `timeout` de `requests` solo limita operaciones de socket y **la resolución DNS queda fuera** (se midió: 17-22 s con `--timeout 2`). Un `signal.setitimer` **tampoco** lo resuelve (medido: 17 s), porque el handler de Python no corre mientras `getaddrinfo` está bloqueado en C. Solución: el ping se ejecuta en un hilo del que se desiste al agotar el presupuesto. Medición tras el fix: el ping tarda **exactamente 2,00 s** con `--timeout 2` (el total del comando, ~4 s, incluye ~2 s de arranque e imports). | `tests/test_regression_004_check_env_timeout.py` (10 casos) |
+| **3.8 (1.3)** | Gate de sintaxis en `PythonCodeCorrector._validar_o_revertir`: el código corregido se compila (`compile()`, el equivalente en proceso de `py_compile`) y, si no compila, se devuelve el **original** (rollback). La corrupción `contexto contexto...` no se reproducía, pero el corrector aceptaba cualquier reescritura sin comprobarla. | `tests/test_regression_005_code_corrector_gate.py` (12 casos) |
+| **3.9 (1.9)** | Reintento correctivo ante respuesta «solo razonamiento»: `_llamar_con_reintento_correctivo` reintenta **una vez** subiendo `max_tokens`, desactivando `thinking` y añadiendo una instrucción explícita de responder ya. Antes solo había `logger.warning` y el paso fallaba en cascada. | `tests/test_regression_006_reintento_razonamiento.py` (7 casos) |
 
-Efecto en la suite: **1166 → 1193 passed, 1 skipped**, sin regresiones (31 tests de regresión nuevos: 10 + 4 + 7 + 10).
+Efecto en la suite: **1166 → 1212 passed, 1 skipped**, sin regresiones (50 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
-estos cuatro puntos ya están cerrados.
+los puntos de esta tabla ya están cerrados.
 
 ---
 
@@ -132,13 +134,13 @@ test de regresión que verifique que dos intentos suman consumo.
 |---|---|---|---|
 | 1.1 | `solver.py` con `SyntaxError` tras parche | ⚪ NO REPRODUCE | `python -m compileall -q core main.py` → `exit=0`. Sin `SyntaxError`. |
 | 1.2 | Problem Solver → agente Python no ejecuta la acción | 🔴 CONFIRMADO | `core/problem_solver/solver.py:416-448` (`_crear_plan_fallback`) devuelve solo un dict con `status: ok`; nunca abre ni escribe el fichero pedido. |
-| 1.3 | `PythonCodeCorrector` corrompe código (`contexto contexto...`) | 🟠 PARCIAL | La corrupción **no está** en el repo: las 3 ocurrencias de `data = contexto if contexto else {}` (`solver.py:437`, `builder.py:112`, `validator.py:205`) están intactas. Pero `code_corrector.py:82` no llama a `py_compile` ni tiene rollback: **el gate pedido no existe**. |
+| 1.3 | `PythonCodeCorrector` corrompe código (`contexto contexto...`) | 🟠 PARCIAL | La corrupción **no está** en el repo: las 3 ocurrencias de `data = contexto if contexto else {}` (`solver.py:437`, `builder.py:112`, `validator.py:205`) están intactas. Pero `code_corrector.py:82` no llama a `py_compile` ni tiene rollback: **el gate pedido no existía**. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.4 | 401 con clave antigua; auditar claves en el repo | ❓ NO VERIFICABLE / auditoría limpia | `git ls-files \| xargs grep -nI "sk-[A-Za-z0-9]\{16,\}"` → solo fixtures enmascarados (`tests/test_env_checker.py:19`, `tests/test_ia_config.py:97`). `.env` es un **venv** (no un fichero de secretos) y está en `.gitignore`. No hay fuga en el repo; el 401 es de configuración en runtime. |
 | 1.5 | `Scheduler._ejecutar_agente` no actualiza `duracion` | 🟠 PARCIAL | **Sí la actualiza**: `core/scheduler.py:605` (`agente.duracion = duracion`). El defecto real es el segundo: `duracion` se calcula por intento (`:594`, `tiempo_fin - tiempo_inicio`) y se **sobrescribe** en cada reintento (`:726-751`), en vez de acumularse. |
 | 1.6 | Verificar flujo `Plan → Validación → BLOQUEANTE → refinar → máx N` | ✅ YA IMPLEMENTADO | `core/problem_solver/solver.py:191` `MAX_INTENTOS_VALIDACION = 2`; bucle de reintento `:193-224`; `core/problem_solver/validator.py` emite `BLOQUEANTE` en 13 ramas (p. ej. `:539` SyntaxError, `:672` identificador sin definir, `:717` clave inexistente). |
 | 1.7 | `GenerarHTML` muestra «Descripción no disponible» | 🔴 CONFIRMADO (causa raíz distinta) | El string no está en el código: lo **genera el LLM** en el paso 2 del plan. `logs/llm_response_20260913_091705_deepseek-v4-flash.txt:33` contiene el fallback `ideas.append({'titulo': f'Idea {i}', 'descripcion': 'Descripción no disponible'})`. `SeleccionarTop10`/`GenerarDescripciones`/`CombinarDatos` **no existen** en el código: son nombres de agente generados por el LLM. |
 | 1.8 | Extracción vacía en plan de 4 agentes | 🔴 CONFIRMADO (misma raíz que 1.7) | Contrato del executor LLM: `core/executors/llm_executor.py:580-582` expone `respuesta` **y** `json` (`json_auto`, puede ser `None`). El código generado hace `respuesta_llm.get('json', {})`: si el JSON tiene otra forma, degrada a `[]`/`''` **sin fallar**. Sin test de regresión. |
-| 1.9 | LLM «solo razonamiento» tras 3 reintentos | 🟠 PARCIAL | La detección **existe** pero solo avisa: `core/executors/llm_executor.py:566-576` → `logger.warning`. No hay reintento correctivo ni cambio de `max_tokens`. |
+| 1.9 | LLM «solo razonamiento» tras 3 reintentos | 🟠 PARCIAL | La detección **existe** pero solo avisa: `core/executors/llm_executor.py:566-576` → `logger.warning`. No hay reintento correctivo ni cambio de `max_tokens`. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.10 | Fallback con `SyntaxError` hardcodeado | 📝 MAL DESCRITO | El código es **sintácticamente válido** (`data = contexto if contexto else {}` es correcto; `contexto` está en el scope del `exec`). El defecto real es el de 1.2: el plan de respaldo **nunca escribe el fichero**. `solver.py:437`, `builder.py:112`. |
 | 1.11 | `export/exporters.py` — 2 bugs | ✅ YA RESUELTO | Columna inferida de una **ventana** de `STREAM_SNIFF_ROWS = 1000` (`export/exporters.py:44`, `:1049`), con aviso y `extrasaction="ignore"` para claves nuevas (`:1080-1085`). Y `exportar_streaming` devuelve `exito=not errores and filas_exportadas > 0` (`:1004`). |
 | 1.12 | LLM genera nombres de agentes como variables globales | 🟠 PARCIAL | El detector **existe**: `validator.py:665-680` (`identificador in nombres_agentes`) y `code_corrector.py:82` reescribe vía AST (`:156`, `:185`). Falta **medir cobertura** sobre el corpus de `logs/`, no solo el caso probado a mano. |
@@ -218,16 +220,18 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Acción**: acumular por agente (`agente.duracion += delta`) en vez de sobrescribir; decidir si se expone el último intento por separado.
 - **Criterio de cierre**: test con 3 intentos de 5/7/4 s → `duracion == 16`.
 
-### 3.8 · 🟠 Gate `py_compile` + rollback en `PythonCodeCorrector` (1.3)
+### 3.8 · ✅ CERRADO (2026-09-21) · Gate `py_compile` + rollback en `PythonCodeCorrector` (1.3)
 
 - **Archivo**: `core/problem_solver/code_corrector.py:82`
 - **Acción**: pipeline `generar → py_compile → test → aceptar; si falla → rollback`.
 - **Nota**: la corrupción `contexto contexto...` **no se reproduce**; el valor está en blindar el corrector y en tener el gate, no en arreglar un string roto.
+- **Resuelto**: `_validar_o_revertir(original, corregido)` compila el resultado y revierte al original si falla, con `logger.warning`. Se usa `compile()` en vez de `py_compile` porque el corrector trabaja en memoria (no escribe fichero): es la misma comprobación de sintaxis sin E/S. La parte de «tests» del pipeline no aplica aquí: un corrector no puede ejecutar los tests del paso, y el validador ya cubre el contrato. `tests/test_regression_005_code_corrector_gate.py` (12 casos).
 
-### 3.9 · 🟠 Reintento correctivo ante respuesta «solo razonamiento» (1.9)
+### 3.9 · ✅ CERRADO (2026-09-21) · Reintento correctivo ante respuesta «solo razonamiento» (1.9)
 
 - **Archivo**: `core/executors/llm_executor.py:566-576`
 - **Acción**: hoy solo `logger.warning`; añadir reintento con instrucción correctiva / subida de `max_tokens` antes de bloquear dependientes.
+- **Resuelto**: `_llamar_con_reintento_correctivo` (envoltorio de `_llamar_una_vez`): ante `error == 'only_reasoning'` reintenta **una vez** con `thinking_enabled=False`, `reasoning_effort='low'`, `max_tokens` al menos el doble y una instrucción explícita de responder directamente. Si el reintento también falla, se devuelve su error sin bucles. `tests/test_regression_006_reintento_razonamiento.py` (8 casos).
 
 ### 3.10 · 🟠 Cobertura del validador de Fase 6 sobre corpus real (1.12)
 
@@ -407,7 +411,7 @@ Reparto propuesto, por valor real:
 | **1** | Aprendizaje + fallback | ~~3.2 (1.14)~~ ✅, 3.1 (1.2/1.10) | La degradación silenciosa del refuerzo ya está cerrada (§0.1); queda el fallback que miente. |
 | **2** | Causa raíz del pipeline | 3.3 (1.7/1.8), 3.10 (1.12) | El placeholder y la extracción vacía comparten raíz. Prohibir fallbacks que inventan datos. |
 | **3** | Quick wins visibles | ~~3.6 (1.16)~~ ✅, 3.5 (1.18), 5.1 (`resolve` en web) | El logger ya está silenciado (§0.1); quedan `BrokenPipeError` y exponer `resolve`, la pieza más visible que el usuario nunca ve. |
-| **4** | Robustez | 3.7 (1.5), 3.8 (1.3), 3.9 (1.9) | Duración acumulativa, gate compile/rollback, reintento correctivo. |
+| **4** | Robustez | 3.7 (1.5), ~~3.8 (1.3)~~ ✅, ~~3.9 (1.9)~~ ✅ | Queda la duración acumulativa en reintentos; el gate del corrector y el reintento correctivo ya están cerrados (§0.1). |
 | **5** | Tools + Event Bus | 4.1, 4.2, 4.3 | Separar Agent/Tool, registry, ampliar el bus existente. |
 | **6** | Sesiones + seguridad | 4.4, 4.5, 6.1, 6.2 | Sesiones persistentes, replay, permisos, sandbox. |
 | **7** | Futuro | 10.1, 10.2, 11 | Dividir `scheduler.py`/`main.py`, tipado, mapa de plugin DSH. |
@@ -425,7 +429,7 @@ auto-crítica (0.4, tope 1), 1.13 (SIGSEGV) y 1.17.
 2. ~~`EvaluadorLLM` con cliente real en las 3 rutas~~ ✅ **cerrado** (§0.1).
 3. Problem Solver → acción real, no simulada (3.1).
 4. Prohibir fallbacks que fabrican datos (3.3).
-5. `PythonCodeCorrector` con compile/test/rollback (3.8).
+5. ~~`PythonCodeCorrector` con compile/test/rollback~~ ✅ **cerrado** (§0.1).
 6. `Scheduler` + duración acumulada en reintentos (3.7).
 7. Separar Agent de Tool + `ToolRegistry` (4.1, 4.2).
 8. Ampliar el Event Bus y cerrar sesiones persistentes + replay (4.3–4.5).
