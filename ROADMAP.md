@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1254 passed, 1 skipped` (87 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
+- **Estado del código en esta fecha**: `1262 passed, 1 skipped` (90 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -80,8 +80,9 @@ parciales. El plan corregido está en la §13.
 | **3.1 (1.2 + 1.10)** | El plan de respaldo **materializa** el artefacto: `detectar_artefacto()` (módulo nuevo `artefacto.py`) + plan de dos pasos (contenido mínimo → `File` `escribir`). Si no hay artefacto identificable, devuelve `fallback_sin_artefacto` en vez de un `ok` falso. Solo extensiones de texto plano. | `tests/test_regression_009_respaldo_crea_artefacto.py` (15 casos) |
 | **3.3 (1.7 + 1.8)** | Tres vías contra el contenido inventado: regla «PROHIBIDO INVENTAR CONTENIDO» en el prompt, regla 8 **BLOQUEANTE** en el validador (rechaza el plan antes de ejecutarlo) y `es_resultado_sospechoso` unificado con `es_valor_placeholder` (antes usaba una tupla propia que no cubría el relleno). Lista canónica única en `core/utils/json_llm.LITERALES_FABRICADOS`. | `tests/test_regression_010_contenido_fabricado.py` (19 casos, con el código exacto del log) |
 | **3.10 (1.12)** | Cobertura medida sobre el corpus real con `tools/cobertura_validador.py`: **512 ficheros, 796 pasos con código, 65 detectados (8,2 %)**, de los cuales **57 son contenido fabricado**. | Casos verbatim del corpus en `tests/test_regression_010_contenido_fabricado.py` + muestra medida en el mismo fichero |
+| **4.2 (2.5)** | Persistir la ejecución: el fallo pasa a **ERROR** accionable y la GUI **deja de inventar un id** con `SELECT MAX(id)`. Investigado con los logs de 6 días: el fallo que el parche rodeaba no ocurría, y el parche sí podía atribuir el feedback a otra ejecución. Limpiados los logs duplicados. | `tests/test_regression_011_persistencia_ejecucion.py` (8 casos) |
 
-Efecto en la suite: **1166 → 1254 passed, 1 skipped**, sin regresiones (92 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 19).
+Efecto en la suite: **1166 → 1262 passed, 1 skipped**, sin regresiones (100 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 19 + 8).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
 los puntos de esta tabla ya están cerrados.
@@ -169,7 +170,7 @@ el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
 | 2.2 | Residuos de refactor: `export/core/scheduler/`, `export/logs/` | ✅ YA NO EXISTEN | `ls export/` → solo `exporters.py`, `__init__.py`, `utils.py`, `__pycache__`. |
 | 2.3 | Módulos migrados sin verificar tests (`core/executors/`, `storage/database/`) | ✅ RESUELTO | Ambos directorios existen y la suite completa pasa: `1166 passed, 1 skipped` vía `tools/run_tests.sh`. |
 | 2.4 | `_ejecutar_agente` del `Scheduler` sin refactorizar | 🔴 CONFIRMADO | Deuda **ya declarada** en `HARNESS_STATUS.md:186-187`: el refactor V4.0-5 se limitó a `_intentar_plan_b`. |
-| 2.5 | `_ultima_ejecucion_id` con parche `SELECT MAX(id)` | 🔴 CONFIRMADO (+ bug menor) | `ui/simple_main_window.py:1085` ejecuta `SELECT MAX(id) AS ultimo FROM ejecuciones` en `_obtener_ultimo_ejecucion_id_fallback`. La causa raíz de que `registrar_ejecucion_en_aprendizaje` falle en silencio **sigue sin diagnosticar**. Extra: `logger.info` duplicado en `:1088-1093`. |
+| 2.5 | `_ultima_ejecucion_id` con parche `SELECT MAX(id)` | 🔴 CONFIRMADO → ✅ **cerrado el 2026-09-21** (§3, punto 4.2) | `ui/simple_main_window.py` ejecutaba `SELECT MAX(id)`. La investigación con los logs de 6 días mostró que **el fallo que rodeaba nunca ocurrió**; el problema real era que un fallo sería invisible y el `MAX(id)` habría atribuido el feedback a otra ejecución. |
 
 ---
 
@@ -294,11 +295,17 @@ Bloque más grande sin dividir; ya declarado en `HARNESS_STATUS.md:186-187`.
 Método: tests de caracterización **antes** de tocar (patrón ya usado en V4.0-5,
 `tests/test_scheduler_plan_b_caracterizacion.py`).
 
-### 4.2 · 🔴 Causa raíz de `registrar_ejecucion_en_aprendizaje`
+### 4.2 · ✅ CERRADO (2026-09-21) · Causa raíz de `registrar_ejecucion_en_aprendizaje`
 
-`ui/simple_main_window.py:1085` rodea el síntoma con `SELECT MAX(id)`. Entender
-**por qué** falla la función, no solo rodearla. Incluye limpiar el `logger.info`
-duplicado de `:1088-1093`.
+- **Archivos**: `core/execution_recorder.py`, `ui/simple_main_window.py`
+- **Investigación (con evidencia, no por lectura)**: se buscó el fallo en los logs reales de **6 días** de uso (15–21 sep, 492 KB): **cero apariciones** de «No se pudo guardar la ejecución», «fallback: usando último id» y «registrar_ejecucion devolvió None». Las ejecuciones recientes registran bien (ids 473-476). **El fallo que el parche rodeaba no está ocurriendo.**
+- **Causa raíz real**: el problema no era «la función falla», sino que **un fallo es invisible** y el llamador lo disimulaba. `registrar_ejecucion_en_aprendizaje` capturaba toda excepción y devolvía `None` con un simple *warning*; la GUI lo tapaba con `SELECT MAX(id) FROM ejecuciones`, que si el registro hubiera fallado de verdad habría devuelto el id de **otra** ejecución, colgando el feedback humano de la fila equivocada: un camino de corrupción silenciosa **peor** que el síntoma original.
+- **Arreglo**:
+  1. El fallo al persistir se registra como **ERROR** con `exc_info`, el mensaje explica que no se pedirá feedback y la ruta del fichero a revisar.
+  2. Se **elimina** `_obtener_ultimo_ejecucion_id_fallback`: si no hay id real, no se inventa uno y no se pide feedback. Es preferible no pedirlo a atribuirlo mal.
+  3. Limpiados los `logger.info`/`logger.warning` **duplicados** de `_persistir_ejecucion_si_hay_plan`, del fallback y la referencia obsoleta en el docstring.
+- **Observación relacionada, no tocada**: `_guardar_y_procesar_feedback` inserta con `self._ultima_ejecucion_id or 0`, así que un feedback sin ejecución crearía una fila con `ejecucion_id=0`. Hoy el guardia de `_on_ejecucion_terminada` lo impide, pero el patrón de filas huérfanas merece una revisión aparte (es la misma familia que los 2679 usos huérfanos de V4.0-AB).
+- **Test**: `tests/test_regression_011_persistencia_ejecucion.py` (8 casos). Incluye un guardia por **AST** contra la reintroducción de la consulta `MAX(id)` —se miran solo literales de cadena, para que un comentario que la mencione no haga fallar la comprobación—. Verificado que **discrimina**: con el recorder antiguo falla 1 de 8.
 
 ---
 
@@ -344,7 +351,7 @@ duplicado de `:1088-1093`.
 |---|---|---|
 | 5.1 | Exponer `resolve` en GUI o API web | **Abierto y confirmado** (`HARNESS_STATUS.md:179-180`): el bucle es puro y el ejecutor es una función, es trabajo de cableado. |
 | 5.2 | Aplicar fix del fallback | **Vivo** → es 3.1 de este roadmap. |
-| 5.3 | Revisar `_ultima_ejecucion_id` | **Vivo** → es 4.2. |
+| 5.3 | Revisar `_ultima_ejecucion_id` | ✅ **cerrado** (§0.1, punto 4.2). |
 | 5.4 | Autenticación web por token | Abierto. `web`/`serve` sin auth: cualquiera en la red consume la API key y escribe ficheros. Fix: `--token` / `AGENTES_TOKEN`. |
 | 5.5 | `--cancelar-al-timeout` | Parcialmente cubierto: existe `core/job_cancellation.py` (V3.8-3) para trabajos HTTP. Falta conectarlo al `504`. |
 | 5.6 | `--timeout` cubre también la planificación | Abierto: hoy mide desde `scheduler.iniciar()`, no desde `solver.resolver_problema()`. |

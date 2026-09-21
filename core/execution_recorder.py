@@ -137,7 +137,16 @@ def registrar_ejecucion_en_aprendizaje(
             coste=float(consumo.get("coste", 0.0) or 0.0),
         )
     except Exception as e:
-        logger.warning(f"No se pudo guardar la ejecución: {e}")
+        # 4.2: este fallo era SILENCIOSO (solo un warning) y el llamador lo
+        # tapaba con un `SELECT MAX(id)` que podía devolver el id de OTRA
+        # ejecución, atribuyendo el feedback humano a la fila equivocada. Un
+        # fallo al persistir tiene que ser visible y accionable.
+        logger.error(
+            "No se pudo guardar la ejecución en la base de datos: %s. "
+            "El feedback de esta ejecución NO se pedirá (no se inventa un id). "
+            "Revisa permisos/espacio de '%s'.",
+            e, getattr(db, "db_path", "?"), exc_info=True,
+        )
         return None
     agentes_snapshot = _construir_snapshot(scheduler)
     db_path = db.db_path

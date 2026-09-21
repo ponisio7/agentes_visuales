@@ -1034,8 +1034,9 @@ class SimpleMainWindow(QMainWindow):
     def _persistir_ejecucion_si_hay_plan(self) -> int | None:
         """Persiste la ejecución en aprendizaje si hay un plan activo.
 
-        Si registrar_ejecucion_en_aprendizaje falla o devuelve None, cae a
-        _obtener_ultimo_ejecucion_id_fallback() para no bloquear el feedback.
+        Devuelve el id REAL de la ejecución, o ``None`` si no se pudo guardar.
+        No se inventa un id: el feedback se pide solo con el id que devolvió el
+        registro (ver 4.2 del ROADMAP).
         """
         if self._ultimo_plan is None:
             logger.info("[TERMINADA] _ultimo_plan es None, no se persiste")
@@ -1054,44 +1055,27 @@ class SimpleMainWindow(QMainWindow):
                 problema=self._ultimo_problema,
                 duracion_total=duracion_total,
             )
-            logger.info(f"[TERMINADA] registrar_ejecucion devolvió {ejecucion_id}")
         except Exception as e:
-            logger.warning(f"[TERMINADA] error persistiendo: {e}", exc_info=True)
+            logger.error(f"[TERMINADA] error persistiendo la ejecución: {e}",
+                         exc_info=True)
             ejecucion_id = None
-        logger.info(f"[TERMINADA] registrar_ejecucion devolvió {ejecucion_id}")
-        # ✅ FIX: si el aprendizaje falló, obtener el último ejecucion_id
-        # de la BD directamente. Sin esto, el feedback nunca se dispara
-        # cuando el aprendizaje falla silenciosamente.
-        if ejecucion_id is None:
-            ejecucion_id = self._obtener_ultimo_ejecucion_id_fallback()
 
-        if ejecucion_id:
+        # 4.2: si el registro falló, NO se inventa un id con `SELECT MAX(id)`.
+        # Esa suposición podía devolver el id de OTRA ejecución y colgarle el
+        # feedback humano a la fila equivocada: peor que no pedirlo. El fallo
+        # queda registrado como ERROR en `execution_recorder`, que es donde se
+        # puede diagnosticar.
+        if ejecucion_id is None:
+            logger.error(
+                "[TERMINADA] la ejecución no se persistió: no se pedirá feedback "
+                "(antes se usaba MAX(id), que podía señalar otra ejecución)"
+            )
+        else:
             self._log(f"💾 ejecución guardada (ID: {ejecucion_id})", TXT_MUTED)
             self._log("🧠 aprendizaje lanzado en background", TXT_MUTED)
-        logger.info(f"[TERMINADA] persistido, ejecucion_id={ejecucion_id}")
+
         logger.info(f"[TERMINADA] persistido, ejecucion_id={ejecucion_id}")
         return ejecucion_id
-
-
-    def _obtener_ultimo_ejecucion_id_fallback(self) -> int | None:
-        """Fallback: último id de la tabla ejecuciones cuando el registro normal falla.
-
-        Nota: puede no corresponder exactamente a esta ejecución si hay
-        ejecuciones concurrentes, pero es suficiente para disparar el feedback.
-        """
-        try:
-            with closing(sqlite3.connect(self.db.db_path, timeout=5)) as conn:
-                conn.row_factory = sqlite3.Row
-                row = conn.execute("SELECT MAX(id) AS ultimo FROM ejecuciones").fetchone()
-                if row and row["ultimo"]:
-                    ultimo_id = int(row["ultimo"])
-                    logger.info(f"[TERMINADA] fallback: usando último id {ultimo_id}")
-                    logger.info(f"[TERMINADA] fallback: usando último id {ultimo_id}")
-                    return ultimo_id
-        except Exception as e:
-            logger.warning(f"[TERMINADA] fallback falló: {e}")
-            logger.warning(f"[TERMINADA] fallback falló: {e}")
-        return None
 
     
     def _quizas_pedir_feedback(self):
