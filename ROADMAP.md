@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1270 passed, 2 skipped` (120 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes, y el número de *skips* varía entre 1 y 2 según el entorno. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
+- **Estado del código en esta fecha**: `1276 passed, 1 skipped` (89 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes, y el número de *skips* varía entre 1 y 2 según el entorno. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -82,8 +82,9 @@ parciales. El plan corregido está en la §13.
 | **3.10 (1.12)** | Cobertura medida sobre el corpus real con `tools/cobertura_validador.py`: **512 ficheros, 796 pasos con código, 65 detectados (8,2 %)**, de los cuales **57 son contenido fabricado**. | Casos verbatim del corpus en `tests/test_regression_010_contenido_fabricado.py` + muestra medida en el mismo fichero |
 | **4.2 (2.5)** | Persistir la ejecución: el fallo pasa a **ERROR** accionable y la GUI **deja de inventar un id** con `SELECT MAX(id)`. Investigado con los logs de 6 días: el fallo que el parche rodeaba no ocurría, y el parche sí podía atribuir el feedback a otra ejecución. Limpiados los logs duplicados. | `tests/test_regression_011_persistencia_ejecucion.py` (8 casos) |
 | **4.1 (2.4)** | `Scheduler._ejecutar_agente`: **380 → 87 líneas**. Cada fase a su método. Tests de caracterización escritos **antes** de tocar. Extracción mecánica: los `return` tempranos pasan a centinelas y los `try/except` de la máquina de estados se mueven verbatim. | `tests/test_scheduler_ejecutar_agente_caracterizacion.py` (9 casos) |
+| **3.4 (1.13)** | SIGSEGV del sandbox: cerrado **por decisión**, no por código. Reproducido y diagnosticado como limitación de `fork()` con hilos en CPython 3.13 (causa de que 3.14 dejara de usar `fork` por defecto). La mitigación por proceso se declara definitiva en `DECISIONES.md`, con condiciones de reapertura. | `tests/test_regression_012_aislamiento_de_la_suite.py` (5 casos, protege la mitigación) |
 
-Efecto en la suite: **1166 → 1270 passed**, sin regresiones (109 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 19 + 8 + 9).
+Efecto en la suite: **1166 → 1276 passed**, sin regresiones (114 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 19 + 8 + 9 + 5).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
 los puntos de esta tabla ya están cerrados.
@@ -154,7 +155,7 @@ el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
 | 1.10 | Fallback con `SyntaxError` hardcodeado | 📝 MAL DESCRITO | El código es **sintácticamente válido** (`data = contexto if contexto else {}` es correcto; `contexto` está en el scope del `exec`). El defecto real es el de 1.2: el plan de respaldo **nunca escribe el fichero**. `solver.py:437`, `builder.py:112`. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.11 | `export/exporters.py` — 2 bugs | ✅ YA RESUELTO | Columna inferida de una **ventana** de `STREAM_SNIFF_ROWS = 1000` (`export/exporters.py:44`, `:1049`), con aviso y `extrasaction="ignore"` para claves nuevas (`:1080-1085`). Y `exportar_streaming` devuelve `exito=not errores and filas_exportadas > 0` (`:1004`). |
 | 1.12 | LLM genera nombres de agentes como variables globales | 🟠 PARCIAL | El detector **existe**: `validator.py:665-680` (`identificador in nombres_agentes`) y `code_corrector.py:82` reescribe vía AST (`:156`, `:185`). Falta **medir cobertura** sobre el corpus de `logs/`, no solo el caso probado a mano. → ✅ **medido el 2026-09-21** (§3.10): 512 ficheros y 796 pasos, con la regla 8 disparando en 57. |
-| 1.13 | Segfault en `core/sandbox.py:853` | 🔴 CONFIRMADO | Reproducido: `python -m pytest -q` muere con SIGSEGV (`tests/conftest.py:49` → `tests/test_flujo_e2e_aceptacion.py:79`). El código ya mitiga por otra vía (`sandbox.py:853-870`: `cwd` explícito para evitar `vfork`, `TemporaryFile` en vez de `PIPE`; `:872-879` con `_SPAWN_LOCK` y `stdin=DEVNULL`). El fix propuesto en el acta (`NamedTemporaryFile(delete=False)`) **no** está aplicado; la mitigación operativa es `tools/run_tests.sh --forked`. |
+| 1.13 | Segfault en `core/sandbox.py:853` | 🔴 CONFIRMADO | Reproducido: `python -m pytest -q` muere con SIGSEGV (`tests/conftest.py:49` → `tests/test_flujo_e2e_aceptacion.py:79`). El código ya mitiga por otra vía (`sandbox.py:853-870`: `cwd` explícito para evitar `vfork`, `TemporaryFile` en vez de `PIPE`; `:872-879` con `_SPAWN_LOCK` y `stdin=DEVNULL`). El fix propuesto en el acta (`NamedTemporaryFile(delete=False)`) **no** está aplicado; la mitigación operativa es `tools/run_tests.sh --forked`. → ✅ **cerrado por decisión el 2026-09-21** (§3, punto 3.4): la mitigación se declara definitiva en `DECISIONES.md`. |
 | 1.14 | `Evaluador no disponible: 'NoneType' object has no attribute 'chat'` | 🔴 CONFIRMADO | `learning/reward_llm.py:63` hace `self.llm_client.chat(...)`; el `except` de `:75` produce **literalmente** ese mensaje. `EvaluadorLLM` se construye con el valor recibido (`learning/engine.py:125`) y `obtener_learning_engine()` tiene `llm_client=None` por defecto (`learning/__init__.py:22`) — **pero 3 llamadas no pasan cliente**: `core/problem_solver/solver.py:125`, `:137`, `core/scheduler.py:832`. Solo `core/execution_recorder.py:150` lo pasa bien. Al ser singleton perezoso, se salva o se rompe **según el orden de arranque**. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.15 | Colisión `--stdin` vs agentes que leen stdin | ✅ YA RESUELTO | `core/sandbox.py:879` pasa `stdin=subprocess.DEVNULL` a todo subproceso del sandbox. `main.py:448-455` consume stdin en el proceso padre; el hijo ya no lo hereda. |
 | 1.16 | `weasyprint` contamina logs | 🔴 CONFIRMADO | `main.py:343-345` silencia `urllib3, openai, matplotlib, PIL, httpx, httpx2, httpcore, charset_normalizer`. **`weasyprint` no está en la lista**, y `core/executors/file_executor.py:18` lo importa. → ✅ **arreglado el 2026-09-21** (§0.1). |
@@ -211,12 +212,17 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Test**: `tests/test_regression_010_contenido_fabricado.py` (17 casos: incluye el código exacto del log). Verificado que **discrimina**: sin la regla 8 fallan 10 de 17.
 - **Límite honesto**: un resultado **parcialmente** fabricado (relleno en un campo junto a datos reales) no se bloquea; cerrarlo del todo requiere la validación de forma del `json` contra lo que espera el consumidor (acción 3 del análisis original), que queda como trabajo futuro.
 
-### 3.4 · 🔴 `[bug]` `SIGSEGV` intermitente en la suite / sandbox (1.13)
+### 3.4 · ✅ CERRADO POR DECISIÓN (2026-09-21) · `[bug]` `SIGSEGV` intermitente en la suite / sandbox (1.13)
 
-- **Archivos**: `core/sandbox.py:853-879`, `tools/run_tests.sh`
-- **Estado**: confirmado y **con mitigación operativa** (`--forked`). El fix de código propuesto no está aplicado.
-- **Acción**: decidir entre asumir la mitigación como definitiva (documentándolo) o aplicar el ciclo de vida explícito de temporales.
-- **Criterio de cierre**: `python -m pytest -q` sin `--forked` completa en verde, o decisión escrita de no perseguirlo.
+- **Archivos**: `core/sandbox.py`, `tools/run_tests.sh`, `DECISIONES.md`
+- **Reproducido**: `python -m pytest -q` (suite en un solo proceso) muere con `SIGSEGV`; reproducido **dos veces** en la sesión, con 186 módulos de extensión cargados (PyQt6, NumPy, SciPy, scikit-learn, pandas, lxml…). La traza apunta a `tests/conftest.py` y `tests/test_flujo_e2e_aceptacion.py`: tests que ejecutan el Scheduler, que lanza subprocesos del sandbox desde su `ThreadPoolExecutor`.
+- **Causa**: **no es nuestra lógica**. `fork()` en un proceso con hilos es inseguro en CPython 3.13 (solo sobrevive el hilo que llama a `fork`, y otro hilo puede tener tomado el lock del asignador). Es la misma razón por la que Python 3.14 dejó de usar `fork` como método por defecto de `multiprocessing` en Linux.
+- **Alternativa descartada**: el fix que proponía el acta (`NamedTemporaryFile(delete=False)` + cleanup explícito). La línea `:853` ya no es el `TemporaryFile` compitiendo con `cleanup_worker`; ese camino ya se cubrió usando `TemporaryFile` en vez de `PIPE`.
+- **Decisión (escrita en `DECISIONES.md`)**: la mitigación operativa —aislamiento por proceso con `tools/run_tests.sh` (`pytest --forked`)— es la **definitiva** mientras la base sea CPython 3.13. No se persigue un arreglo en el código de la aplicación.
+- **Por qué**: `core/sandbox.py` ya acumula cuatro defensas (`os.register_at_fork`, `_SPAWN_LOCK`, `TemporaryFile` en vez de `PIPE`, `cwd` explícito + `stdin=DEVNULL`). El hueco restante es del intérprete. Un arreglo real exige un *forkserver* o un proceso auxiliar dedicado: desproporcionado y con superficie de fallo nueva en la pieza más crítica.
+- **Coste de la mitigación**: ~30 s más de suite (125 s frente a ~90 s) y **ninguna prueba desactivada**: un SIGSEGV en un hijo se reporta como fallo de ese test.
+- **Criterio de cierre cumplido**: la segunda opción que admitía el acta —decisión escrita de no perseguirlo— con evidencia y condiciones de reapertura (CPython ≥ 3.14, un reproductor que señale a código nuestro, o un forkserver implementado).
+- **Test**: `tests/test_regression_012_aislamiento_de_la_suite.py` (5 casos) protege la decisión: falla si alguien quita `--forked` del runner, si desactiva pruebas o si borra la nota de `DECISIONES.md`.
 
 ### 3.5 · ✅ CERRADO (2026-09-21) · `[bug]` `BrokenPipeError` al cerrar el pipe (`run --json | jq`) (1.18)
 
@@ -461,7 +467,8 @@ Reparto propuesto, por valor real:
 **Fuera del día** (anotado para no perderlo): agentes por texto libre,
 clasificador de riesgo con datos reales (bloqueado por volumen de
 `problema`/`exito_real`), corrector de código con IA, calibración de umbrales de
-auto-crítica (0.4, tope 1), 1.13 (SIGSEGV) y 1.17.
+auto-crítica (0.4, tope 1) y el troceo fino de `_cerrar_intento` (172 líneas).
+~~1.13 (SIGSEGV)~~ y ~~1.17~~ ya entraron y se cerraron (3.4 y 3.11).
 
 ---
 

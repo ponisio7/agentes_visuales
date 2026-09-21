@@ -112,3 +112,67 @@ Cuando las cinco condiciones se cumplan, esta nota se sustituye por el
 informe de V4.1 con sus tests. Mientras tanto, `DECISIONES.md` es la
 referencia: si alguien propone el agente de escritorio, la respuesta es
 «condiciones 1–5 primero», no «depende».
+
+## Decisión de diseño: SIGSEGV con la suite sin aislar — mitigación definitiva (21-sep-2026)
+
+### Contexto
+
+`python -m pytest -q` (la suite completa **en un solo proceso**) muere con
+`SIGSEGV` de forma intermitente. Reproducido dos veces en la sesión del
+21-sep-2026, con 186 módulos de extensión cargados (PyQt6, NumPy, SciPy,
+scikit-learn, pandas, lxml…). La traza apunta a `tests/conftest.py`
+(`esperar_condicion`) y a `tests/test_flujo_e2e_aceptacion.py`, es decir, a
+tests que **ejecutan el Scheduler**, que a su vez lanza subprocesos del
+sandbox (`fork+exec`) desde hilos de su `ThreadPoolExecutor`.
+
+La causa no está en nuestra lógica: **`fork()` en un proceso con hilos es
+inseguro en CPython 3.13** (solo sobrevive el hilo que llama a `fork`, y otro
+hilo puede tener tomado el lock del asignador en ese instante). Es la misma
+razón por la que Python 3.14 cambió el método de arranque por defecto de
+`multiprocessing` en Linux, dejando de usar `fork`.
+
+### Decisión
+
+**La mitigación operativa es la definitiva: la suite se ejecuta aislada por
+proceso con `tools/run_tests.sh` (`pytest --forked`).** No se persigue un
+arreglo en el código de la aplicación mientras la base siga siendo CPython
+3.13.
+
+### Por qué (y qué ya se intentó)
+
+`core/sandbox.py` ya acumula cuatro defensas específicas contra esto:
+
+1. `os.register_at_fork(after_in_child=...)` para recrear los singletons
+   (`_temp_manager`, `_cache`, `_class_lock`) en el hijo y no heredar locks
+   tomados.
+2. `_SPAWN_LOCK`: serializa la creación de subprocesos.
+3. `tempfile.TemporaryFile` en lugar de `PIPE` para stdout/stderr (con `PIPE`,
+   `communicate()` repetido desde varios hilos provocaba el SIGSEGV).
+4. `cwd` explícito para forzar `fork+exec` clásico y `stdin=subprocess.DEVNULL`.
+
+Sigue fallando porque el hueco que queda **no es nuestro**: cualquier `fork`
+disparado desde un hilo mientras otro hilo está en medio de una operación de
+memoria es un fallo del intérprete. `_SPAWN_LOCK` serializa *nuestros* forks,
+no los demás hilos (Qt, pool de ejecución). Arreglarlo de verdad exige cambiar
+la arquitectura (un *forkserver* o un proceso auxiliar dedicado a lanzar los
+subprocesos), lo que es desproporcionado para el beneficio y añade superficie
+de fallo nueva en la pieza más crítica del sistema.
+
+Coste de la mitigación: ~2 min de suite (125 s frente a ~90 s) y ninguna prueba
+desactivada. El aislamiento por proceso **no oculta fallos**: un SIGSEGV en un
+hijo se reporta como fallo de ESE test.
+
+### Qué tendría que ser cierto para reabrirlo
+
+1. La base pasa a **CPython ≥ 3.14** y `python -m pytest -q` completa en verde.
+2. O aparece un reproductor mínimo que señale a **código nuestro** y no al
+   intérprete (p. ej. un manejo incorrecto de descriptores en el sandbox).
+3. O se implementa un *forkserver* y la suite sin `--forked` pasa a ser la
+   forma normal de ejecutarla.
+
+### Cómo se revierte esta decisión
+
+Cuando se cumpla (1), (2) o (3): se quita `--forked` de `tools/run_tests.sh`,
+se comprueba que la suite completa pasa sin aislar y esta nota se sustituye por
+el informe correspondiente. Mientras tanto, si alguien ve el SIGSEGV, la
+respuesta es «usa `tools/run_tests.sh`», no «depende».
