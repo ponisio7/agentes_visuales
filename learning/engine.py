@@ -27,7 +27,7 @@ from .models import (
     FailurePredictor,
     PlanScorer,
 )
-from .reward_llm import EvaluadorLLM
+from .reward_llm import EvaluadorLLM, resolver_cliente_compartido
 from .schema import aplicar_esquema_learning
 
 logger = logging.getLogger(__name__)
@@ -121,6 +121,19 @@ class LearningEngine:
         modelo_evaluador: str | None = None,
     ):
         self.db_path = str(db_path)
+        # 1.14: si no llega cliente, se resuelve el compartido del proceso en
+        # vez de quedarse con None. Tres rutas reales (solver.py:125,137 y
+        # scheduler.py:832) llaman a obtener_learning_engine() sin cliente y,
+        # al ser singleton perezoso, el evaluador quedaba sin LLM para todo el
+        # proceso: el aprendizaje por refuerzo se degradaba en silencio.
+        if llm_client is None:
+            llm_client = resolver_cliente_compartido()
+            if llm_client is None:
+                logger.error(
+                    "LearningEngine SIN CLIENTE LLM: la evaluación por refuerzo "
+                    "quedará degradada (score neutro). Pasa "
+                    "llm_client=obtener_llm_client_compartido()."
+                )
         self.llm_client = llm_client
         self.evaluador = EvaluadorLLM(
             llm_client, modelo=modelo_evaluador

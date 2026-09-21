@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1166 passed, 1 skipped` (137 s) con `tools/run_tests.sh`.
+- **Estado del código en esta fecha**: `1180 passed, 1 skipped` (110 s) con `tools/run_tests.sh` (eran 1166 antes de las correcciones de §0.1).
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -65,6 +65,20 @@ parciales. El plan corregido está en la §13.
 
 ---
 
+## 0.1 Correcciones ya aplicadas el 2026-09-21
+
+| Item | Qué se hizo | Test de regresión |
+|---|---|---|
+| **3.2 (1.14)** | `EvaluadorLLM` resuelve el cliente compartido de forma perezosa (`_cliente()`), expone `set_llm_client()` y, si no hay cliente, emite un **ERROR accionable** en vez de degradar el aprendizaje en silencio con el críptico `'NoneType' object has no attribute 'chat'`. `LearningEngine.__init__` resuelve el cliente cuando recibe `None`. | `tests/test_regression_001_evaluador_sin_cliente.py` (10 casos) |
+| **3.6 (1.16)** | `"weasyprint"` añadido a los loggers silenciados de `main._configurar_logging`. | `tests/test_regression_002_weasyprint_silenciado.py` (4 casos) |
+
+Efecto en la suite: **1166 → 1180 passed, 1 skipped**, sin regresiones.
+
+Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
+estos dos puntos ya están cerrados.
+
+---
+
 ## 1. Estado de verificación — Bloque 1
 
 | ID | Afirmación del acta | Veredicto | Evidencia |
@@ -82,9 +96,9 @@ parciales. El plan corregido está en la §13.
 | 1.11 | `export/exporters.py` — 2 bugs | ✅ YA RESUELTO | Columna inferida de una **ventana** de `STREAM_SNIFF_ROWS = 1000` (`export/exporters.py:44`, `:1049`), con aviso y `extrasaction="ignore"` para claves nuevas (`:1080-1085`). Y `exportar_streaming` devuelve `exito=not errores and filas_exportadas > 0` (`:1004`). |
 | 1.12 | LLM genera nombres de agentes como variables globales | 🟠 PARCIAL | El detector **existe**: `validator.py:665-680` (`identificador in nombres_agentes`) y `code_corrector.py:82` reescribe vía AST (`:156`, `:185`). Falta **medir cobertura** sobre el corpus de `logs/`, no solo el caso probado a mano. |
 | 1.13 | Segfault en `core/sandbox.py:853` | 🔴 CONFIRMADO | Reproducido: `python -m pytest -q` muere con SIGSEGV (`tests/conftest.py:49` → `tests/test_flujo_e2e_aceptacion.py:79`). El código ya mitiga por otra vía (`sandbox.py:853-870`: `cwd` explícito para evitar `vfork`, `TemporaryFile` en vez de `PIPE`; `:872-879` con `_SPAWN_LOCK` y `stdin=DEVNULL`). El fix propuesto en el acta (`NamedTemporaryFile(delete=False)`) **no** está aplicado; la mitigación operativa es `tools/run_tests.sh --forked`. |
-| 1.14 | `Evaluador no disponible: 'NoneType' object has no attribute 'chat'` | 🔴 CONFIRMADO | `learning/reward_llm.py:63` hace `self.llm_client.chat(...)`; el `except` de `:75` produce **literalmente** ese mensaje. `EvaluadorLLM` se construye con el valor recibido (`learning/engine.py:125`) y `obtener_learning_engine()` tiene `llm_client=None` por defecto (`learning/__init__.py:22`) — **pero 3 llamadas no pasan cliente**: `core/problem_solver/solver.py:125`, `:137`, `core/scheduler.py:832`. Solo `core/execution_recorder.py:150` lo pasa bien. Al ser singleton perezoso, se salva o se rompe **según el orden de arranque**. |
+| 1.14 | `Evaluador no disponible: 'NoneType' object has no attribute 'chat'` | 🔴 CONFIRMADO | `learning/reward_llm.py:63` hace `self.llm_client.chat(...)`; el `except` de `:75` produce **literalmente** ese mensaje. `EvaluadorLLM` se construye con el valor recibido (`learning/engine.py:125`) y `obtener_learning_engine()` tiene `llm_client=None` por defecto (`learning/__init__.py:22`) — **pero 3 llamadas no pasan cliente**: `core/problem_solver/solver.py:125`, `:137`, `core/scheduler.py:832`. Solo `core/execution_recorder.py:150` lo pasa bien. Al ser singleton perezoso, se salva o se rompe **según el orden de arranque**. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.15 | Colisión `--stdin` vs agentes que leen stdin | ✅ YA RESUELTO | `core/sandbox.py:879` pasa `stdin=subprocess.DEVNULL` a todo subproceso del sandbox. `main.py:448-455` consume stdin en el proceso padre; el hijo ya no lo hereda. |
-| 1.16 | `weasyprint` contamina logs | 🔴 CONFIRMADO | `main.py:343-345` silencia `urllib3, openai, matplotlib, PIL, httpx, httpx2, httpcore, charset_normalizer`. **`weasyprint` no está en la lista**, y `core/executors/file_executor.py:18` lo importa. |
+| 1.16 | `weasyprint` contamina logs | 🔴 CONFIRMADO | `main.py:343-345` silencia `urllib3, openai, matplotlib, PIL, httpx, httpx2, httpcore, charset_normalizer`. **`weasyprint` no está en la lista**, y `core/executors/file_executor.py:18` lo importa. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.17 | `--check-env` con latencia alta (10949 ms con `--timeout 5`) | 🟠 PARCIAL | Cierto que el `timeout` no acota el comando: se pasa a `requests` (`core/env_checker.py:239`), que es por operación (connect + read), no total. No hay `signal.alarm`. Ya existe la pista de subirlo (`:433`). Impacto bajo. |
 | 1.18 | `BrokenPipeError` en `run --json \| jq` | 🔴 CONFIRMADO | `grep -rn BrokenPipeError` no devuelve **ninguna** coincidencia en el código del proyecto (solo en `.venv`). No hay manejo ni en `_configurar_logging` ni en el `print` final. |
 
@@ -115,12 +129,13 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Acción**: que el fallback declare un paso `File`/`Shell` que materialice el artefacto, o que devuelva `status: error` honesto. Prohibido simular éxito.
 - **Criterio de cierre**: test que ejecuta el plan de fallback y comprueba `os.path.exists(saludo.txt)`.
 
-### 3.2 · 🔴 `[bug]` `EvaluadorLLM` recibe `None` y degrada el aprendizaje en silencio (1.14)
+### 3.2 · ✅ CERRADO (2026-09-21) · `[bug]` `EvaluadorLLM` recibe `None` y degrada el aprendizaje en silencio (1.14)
 
 - **Archivos**: `learning/__init__.py:22`, `learning/engine.py:125`, `learning/reward_llm.py:63,75`, `core/problem_solver/solver.py:125,137`, `core/scheduler.py:832`
 - **Causa**: 3 de 4 rutas llaman a `obtener_learning_engine()` sin `llm_client`; el singleton perezoso fija el valor de la **primera** llamada.
 - **Acción**: `set_llm_client(llm)` tras `obtener_llm_client_compartido()`, o resolver el cliente dentro de `EvaluadorLLM` de forma perezosa. Que la ausencia de cliente sea **error visible**, no score neutro 0.5.
 - **Criterio de cierre**: test que crea el engine desde `solver.py` y verifica que el evaluador tiene cliente real.
+- **Resuelto**: resolución perezosa en `EvaluadorLLM._cliente()` + `set_llm_client()` + resolución en `LearningEngine.__init__`; sin cliente, ERROR accionable en lugar de score neutro silencioso. `tests/test_regression_001_evaluador_sin_cliente.py` (10 casos, en verde).
 
 ### 3.3 · 🔴 `[bug]` Placeholder fabricado por código generado por el LLM (1.7 + 1.8)
 
@@ -142,11 +157,12 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Acción**: capturar `BrokenPipeError`, redirigir stdout a `os.devnull` y salir con `EXIT_OK`.
 - **Coste**: minutos. **Criterio de cierre**: `python main.py run --json ... | head -1` no imprime traceback.
 
-### 3.6 · 🔴 `[bug]` `weasyprint` no está silenciado (1.16)
+### 3.6 · ✅ CERRADO (2026-09-21) · `[bug]` `weasyprint` no está silenciado (1.16)
 
 - **Archivo**: `main.py:343-345`
 - **Acción**: añadir `"weasyprint"` a la tupla de loggers ruidosos.
 - **Coste**: 2 minutos. **Impacto**: alto en legibilidad de logs.
+- **Resuelto**: `"weasyprint"` añadido a la tupla de `main.py:343`. El test comprueba el nivel **efectivo** del logger hijo real (`weasyprint.progress`), no solo el nombre del padre. `tests/test_regression_002_weasyprint_silenciado.py` (4 casos, en verde).
 
 ### 3.7 · 🟠 `duracion` no acumulativa en reintentos (1.5)
 
@@ -328,9 +344,9 @@ Reparto propuesto, por valor real:
 
 | Hora | Foco | Items | Por qué |
 |---|---|---|---|
-| **1** | Aprendizaje + fallback | 3.2 (1.14), 3.1 (1.2/1.10) | Degradación silenciosa del refuerzo y fallback que miente. Los dos fallos con más impacto y menos coste. |
+| **1** | Aprendizaje + fallback | ~~3.2 (1.14)~~ ✅, 3.1 (1.2/1.10) | La degradación silenciosa del refuerzo ya está cerrada (§0.1); queda el fallback que miente. |
 | **2** | Causa raíz del pipeline | 3.3 (1.7/1.8), 3.10 (1.12) | El placeholder y la extracción vacía comparten raíz. Prohibir fallbacks que inventan datos. |
-| **3** | Quick wins visibles | 3.6 (1.16), 3.5 (1.18), 5.1 (`resolve` en web) | 2 minutos cada uno de los dos primeros; `resolve` es la pieza más visible del roadmap que el usuario nunca ve. |
+| **3** | Quick wins visibles | ~~3.6 (1.16)~~ ✅, 3.5 (1.18), 5.1 (`resolve` en web) | El logger ya está silenciado (§0.1); quedan `BrokenPipeError` y exponer `resolve`, la pieza más visible que el usuario nunca ve. |
 | **4** | Robustez | 3.7 (1.5), 3.8 (1.3), 3.9 (1.9) | Duración acumulativa, gate compile/rollback, reintento correctivo. |
 | **5** | Tools + Event Bus | 4.1, 4.2, 4.3 | Separar Agent/Tool, registry, ampliar el bus existente. |
 | **6** | Sesiones + seguridad | 4.4, 4.5, 6.1, 6.2 | Sesiones persistentes, replay, permisos, sandbox. |
@@ -345,8 +361,8 @@ auto-crítica (0.4, tope 1), 1.13 (SIGSEGV) y 1.17.
 
 ## 15. Top 10 **corregido**
 
-1. `py_compile` + tests verdes — **ya está**: 1166 passed. Mantenerlo como puerta.
-2. `EvaluadorLLM` con cliente real en las 3 rutas (3.2).
+1. `py_compile` + tests verdes — **ya está**: 1180 passed. Mantenerlo como puerta.
+2. ~~`EvaluadorLLM` con cliente real en las 3 rutas~~ ✅ **cerrado** (§0.1).
 3. Problem Solver → acción real, no simulada (3.1).
 4. Prohibir fallbacks que fabrican datos (3.3).
 5. `PythonCodeCorrector` con compile/test/rollback (3.8).

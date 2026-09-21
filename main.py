@@ -280,8 +280,11 @@ def _configurar_logging(quiet: bool = False):
     except OSError as e:
         print(f"⚠️  No se pudo abrir el log de fichero: {e}", file=sys.stderr)
 
+    # "weasyprint" (1.16): su logger `progress` escribe una línea por cada
+    # recurso externo resuelto al generar PDF y tapa el log útil.
     for ruidoso in ("urllib3", "openai", "matplotlib", "PIL",
-                    "httpx", "httpx2", "httpcore", "charset_normalizer"):
+                    "httpx", "httpx2", "httpcore", "charset_normalizer",
+                    "weasyprint"):
         logging.getLogger(ruidoso).setLevel(logging.WARNING)
 
     # H4: bus de logs (GUI/web además de terminal y fichero). No bloquea al

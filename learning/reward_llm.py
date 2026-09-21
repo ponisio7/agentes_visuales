@@ -11,6 +11,29 @@ Evalúa la calidad del resultado final en base al objetivo original.
 Responde SOLO con JSON válido: {"score": 0.0-1.0, "justificacion": "texto breve"}
 """
 
+# Motivo devuelto cuando el evaluador no tiene cliente LLM. Es un fallo de
+# CONFIGURACIÓN, no de la respuesta del modelo, y debe poder distinguirse en
+# los logs y en la justificación (ver 1.14 del ROADMAP).
+MOTIVO_SIN_CLIENTE = (
+    "Evaluador sin cliente LLM: aprendizaje por refuerzo degradado (score neutro)"
+)
+
+
+def resolver_cliente_compartido():
+    """Resuelve el cliente LLM compartido del proceso, o ``None`` si no puede.
+
+    Se importa en tiempo de llamada a propósito: ``core.llm_client`` importa
+    partes del núcleo, y hacerlo a nivel de módulo acoplaría ``learning`` al
+    núcleo ya en el import.
+    """
+    try:
+        from core.llm_client import obtener_llm_client_compartido
+
+        return obtener_llm_client_compartido()
+    except Exception as e:  # ImportError, falta de API key, etc.
+        logger.warning(f"No se pudo resolver el cliente LLM compartido: {e}")
+        return None
+
 
 @dataclass
 class Evaluacion:
@@ -32,7 +55,40 @@ class EvaluadorLLM:
         self.temperature = temperature
         self.max_tokens = max_tokens
 
+    def set_llm_client(self, llm_client) -> None:
+        """Inyecta el cliente LLM (p. ej. tras ``obtener_llm_client_compartido()``).
+
+        Necesario porque ``LearningEngine`` es un singleton perezoso: si la
+        primera construcción ocurre sin cliente, el evaluador se queda sin él
+        para todo el proceso (bug 1.14 del ROADMAP).
+        """
+        self.llm_client = llm_client
+
+    def _cliente(self):
+        """Devuelve el cliente, resolviéndolo de forma perezosa si falta."""
+        if self.llm_client is None:
+            self.llm_client = resolver_cliente_compartido()
+        return self.llm_client
+
     def evaluar(self, objetivo: str, resultado: str, traza: str = "") -> Evaluacion:
+        cliente = self._cliente()
+        if cliente is None:
+            # Fallo de CONFIGURACIÓN, no de la respuesta del modelo. Antes esto
+            # caía en el `except` genérico y producía el críptico
+            # "'NoneType' object has no attribute 'chat'" en nivel WARNING:
+            # el aprendizaje quedaba degradado en silencio. Ahora es un ERROR
+            # explícito y accionable.
+            logger.error(
+                "Evaluador LLM SIN CLIENTE: el aprendizaje por refuerzo queda "
+                "degradado (score neutro 0.5). Causa habitual: se construyó "
+                "LearningEngine/EvaluadorLLM sin llm_client. Pasa "
+                "llm_client=obtener_llm_client_compartido() o llama a "
+                "EvaluadorLLM.set_llm_client()."
+            )
+            return Evaluacion(
+                score=0.5, justificacion=MOTIVO_SIN_CLIENTE, modelo=self.modelo
+            )
+
         prompt = f"""
 OBJETIVO ORIGINAL:
 {objetivo}
@@ -60,7 +116,7 @@ Responde SOLO JSON: {{"score": <float>, "justificacion": "<por qué>"}}
             )
             if self.modelo:
                 kwargs["model"] = self.modelo  # tu LLMClient usa 'model'
-            respuesta = self.llm_client.chat(**kwargs)
+            respuesta = cliente.chat(**kwargs)
             data = self._parsear_json(respuesta)
             if not isinstance(data, dict):
                 raise ValueError(f"El evaluador no devolvió un objeto JSON: {type(data)}")
