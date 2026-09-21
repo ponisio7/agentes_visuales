@@ -38,6 +38,7 @@ import re
 from core.agent import TipoAgente
 from core.ia_config import modelo_por_defecto
 from core.sandbox_contract import NOMBRES_INYECTADOS
+from core.utils import LITERALES_FABRICADOS
 
 from .constants import CAMPOS_VALIDOS_POR_TIPO
 from .models import ExecutionPlan, StepPlan
@@ -720,9 +721,34 @@ class PlanValidator:
                     f"{sorted(claves_validas)}."
                 )
 
+        # 8. Contenido FABRICADO en el código (3.3).
+        #
+        #    El LLM, cuando la dependencia no trae lo esperado, tiende a
+        #    escribir un fallback que INVENTA el contenido ('Descripción no
+        #    disponible', 'Sin contenido', 'Idea 1'...) en vez de dejar que el
+        #    paso falle. El plan "triunfa" y el usuario recibe relleno: es el
+        #    bug real que aparece en logs/llm_response_20260913_091705*.txt.
+        #    Inventar contenido oculta el fallo y además impide que el Plan B
+        #    se active, así que se bloquea el plan entero.
+        for nodo in ast.walk(arbol):
+            if not isinstance(nodo, ast.Constant):
+                continue
+            if not isinstance(nodo.value, str):
+                continue
+            if nodo.value.strip().lower() not in LITERALES_FABRICADOS:
+                continue
+            errores.append(
+                f"BLOQUEANTE: {nombre}: contenido de RELLENO literal "
+                f"'{nodo.value}'. No inventes el dato que falta: si la "
+                f"dependencia no trae lo esperado, deja que el paso falle para "
+                f"que se replanifique."
+            )
+
         return errores
 
-    def _validar_codigo_python(self, paso, nombres_agentes: set, tipos_agentes: dict | None = None) -> list:
+    def _validar_codigo_python(
+        self, paso, nombres_agentes: set, tipos_agentes: dict | None = None
+    ) -> list:
         """
         Delega en la función pura para tener una única fuente de verdad.
         """

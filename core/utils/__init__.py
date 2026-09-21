@@ -11,9 +11,14 @@ from .json_extra import (
     extraer_json_balanceado,
     limpiar_codigo,
 )
-from .json_llm import es_valor_placeholder, extraer_json_de_llm
+from .json_llm import (
+    LITERALES_FABRICADOS,
+    es_valor_placeholder,
+    extraer_json_de_llm,
+)
 
 __all__ = [
+    "LITERALES_FABRICADOS",
     "es_valor_placeholder",
     "extraer_json_balanceado",
     "extraer_json_de_llm",

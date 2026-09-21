@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1235 passed, 1 skipped` (84 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
+- **Estado del código en esta fecha**: `1252 passed, 1 skipped` (85 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -78,8 +78,9 @@ parciales. El plan corregido está en la §13.
 | **3.12** | El presupuesto compartido de `resolve` ya no se reinicia en cada intento: `set_contexto_plan_b` acepta `reiniciar_presupuesto` y `_ejecutar_plan` pasa `False` cuando recibe un presupuesto compartido (`run` no cambia). | `tests/test_regression_008_presupuesto_compartido.py` (5 casos) |
 | **3.7 (1.5)** | `agente.duracion` es **acumulativa** entre reintentos: se suma en `_duracion_acumulada` en vez de sobrescribirse. Se usa un atributo propio para no arrastrar el `0.1` de relleno de `Agente.__post_init__`. | `tests/test_regression_007_duracion_acumulativa.py` (3 casos, comparados contra un control de un solo intento) |
 | **3.1 (1.2 + 1.10)** | El plan de respaldo **materializa** el artefacto: `detectar_artefacto()` (módulo nuevo `artefacto.py`) + plan de dos pasos (contenido mínimo → `File` `escribir`). Si no hay artefacto identificable, devuelve `fallback_sin_artefacto` en vez de un `ok` falso. Solo extensiones de texto plano. | `tests/test_regression_009_respaldo_crea_artefacto.py` (15 casos) |
+| **3.3 (1.7 + 1.8)** | Tres vías contra el contenido inventado: regla «PROHIBIDO INVENTAR CONTENIDO» en el prompt, regla 8 **BLOQUEANTE** en el validador (rechaza el plan antes de ejecutarlo) y `es_resultado_sospechoso` unificado con `es_valor_placeholder` (antes usaba una tupla propia que no cubría el relleno). Lista canónica única en `core/utils/json_llm.LITERALES_FABRICADOS`. | `tests/test_regression_010_contenido_fabricado.py` (17 casos, con el código exacto del log) |
 
-Efecto en la suite: **1166 → 1235 passed, 1 skipped**, sin regresiones (73 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15).
+Efecto en la suite: **1166 → 1252 passed, 1 skipped**, sin regresiones (90 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 17).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
 los puntos de esta tabla ya están cerrados.
@@ -144,8 +145,8 @@ el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
 | 1.4 | 401 con clave antigua; auditar claves en el repo | ❓ NO VERIFICABLE / auditoría limpia | `git ls-files \| xargs grep -nI "sk-[A-Za-z0-9]\{16,\}"` → solo fixtures enmascarados (`tests/test_env_checker.py:19`, `tests/test_ia_config.py:97`). `.env` es un **venv** (no un fichero de secretos) y está en `.gitignore`. No hay fuga en el repo; el 401 es de configuración en runtime. |
 | 1.5 | `Scheduler._ejecutar_agente` no actualiza `duracion` | 🟠 PARCIAL | **Sí la actualiza**: `core/scheduler.py:605` (`agente.duracion = duracion`). El defecto real es el segundo: `duracion` se calcula por intento (`:594`, `tiempo_fin - tiempo_inicio`) y se **sobrescribe** en cada reintento (`:726-751`), en vez de acumularse. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.6 | Verificar flujo `Plan → Validación → BLOQUEANTE → refinar → máx N` | ✅ YA IMPLEMENTADO | `core/problem_solver/solver.py:191` `MAX_INTENTOS_VALIDACION = 2`; bucle de reintento `:193-224`; `core/problem_solver/validator.py` emite `BLOQUEANTE` en 13 ramas (p. ej. `:539` SyntaxError, `:672` identificador sin definir, `:717` clave inexistente). |
-| 1.7 | `GenerarHTML` muestra «Descripción no disponible» | 🔴 CONFIRMADO (causa raíz distinta) | El string no está en el código: lo **genera el LLM** en el paso 2 del plan. `logs/llm_response_20260913_091705_deepseek-v4-flash.txt:33` contiene el fallback `ideas.append({'titulo': f'Idea {i}', 'descripcion': 'Descripción no disponible'})`. `SeleccionarTop10`/`GenerarDescripciones`/`CombinarDatos` **no existen** en el código: son nombres de agente generados por el LLM. |
-| 1.8 | Extracción vacía en plan de 4 agentes | 🔴 CONFIRMADO (misma raíz que 1.7) | Contrato del executor LLM: `core/executors/llm_executor.py:580-582` expone `respuesta` **y** `json` (`json_auto`, puede ser `None`). El código generado hace `respuesta_llm.get('json', {})`: si el JSON tiene otra forma, degrada a `[]`/`''` **sin fallar**. Sin test de regresión. |
+| 1.7 | `GenerarHTML` muestra «Descripción no disponible» | 🔴 CONFIRMADO (causa raíz distinta) | El string no está en el código: lo **genera el LLM** en el paso 2 del plan. `logs/llm_response_20260913_091705_deepseek-v4-flash.txt:33` contiene el fallback `ideas.append({'titulo': f'Idea {i}', 'descripcion': 'Descripción no disponible'})`. `SeleccionarTop10`/`GenerarDescripciones`/`CombinarDatos` **no existen** en el código: son nombres de agente generados por el LLM. → ✅ **arreglado el 2026-09-21** (§0.1). |
+| 1.8 | Extracción vacía en plan de 4 agentes | 🔴 CONFIRMADO (misma raíz que 1.7) | Contrato del executor LLM: `core/executors/llm_executor.py:580-582` expone `respuesta` **y** `json` (`json_auto`, puede ser `None`). El código generado hace `respuesta_llm.get('json', {})`: si el JSON tiene otra forma, degrada a `[]`/`''` **sin fallar**. Sin test de regresión. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.9 | LLM «solo razonamiento» tras 3 reintentos | 🟠 PARCIAL | La detección **existe** pero solo avisa: `core/executors/llm_executor.py:566-576` → `logger.warning`. No hay reintento correctivo ni cambio de `max_tokens`. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.10 | Fallback con `SyntaxError` hardcodeado | 📝 MAL DESCRITO | El código es **sintácticamente válido** (`data = contexto if contexto else {}` es correcto; `contexto` está en el scope del `exec`). El defecto real es el de 1.2: el plan de respaldo **nunca escribe el fichero**. `solver.py:437`, `builder.py:112`. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.11 | `export/exporters.py` — 2 bugs | ✅ YA RESUELTO | Columna inferida de una **ventana** de `STREAM_SNIFF_ROWS = 1000` (`export/exporters.py:44`, `:1049`), con aviso y `extrasaction="ignore"` para claves nuevas (`:1080-1085`). Y `exportar_streaming` devuelve `exito=not errores and filas_exportadas > 0` (`:1004`). |
@@ -194,12 +195,18 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Criterio de cierre**: test que crea el engine desde `solver.py` y verifica que el evaluador tiene cliente real.
 - **Resuelto**: resolución perezosa en `EvaluadorLLM._cliente()` + `set_llm_client()` + resolución en `LearningEngine.__init__`; sin cliente, ERROR accionable en lugar de score neutro silencioso. `tests/test_regression_001_evaluador_sin_cliente.py` (10 casos, en verde).
 
-### 3.3 · 🔴 `[bug]` Placeholder fabricado por código generado por el LLM (1.7 + 1.8)
+### 3.3 · ✅ CERRADO (2026-09-21) · Placeholder fabricado por código generado por el LLM (1.7 + 1.8)
 
 - **Evidencia**: `logs/llm_response_20260913_091705_deepseek-v4-flash.txt:33`; contrato en `core/executors/llm_executor.py:580-582`
 - **Causa**: el plan asume `respuesta_llm.get('json', {})` con forma `{"ideas": [...]}`; si no encaja, el código **generado** rellena datos falsos en vez de fallar.
-- **Acción**: prohibir en el prompt del planificador los fallbacks que inventan contenido; que un resultado vacío sea fallo del paso y dispare Plan B.
-- **Criterio de cierre**: el caso «5 ideas» falla de forma visible o se recupera; nunca muestra «Descripción no disponible».
+- **Resuelto por tres vías**, que se refuerzan entre sí:
+  1. **Prompt** (`prompt_builder.PYTHON_RULES`): regla explícita «PROHIBIDO INVENTAR CONTENIDO» que nombra los literales vetados y obliga a **dejar fallar** el paso para que el sistema replanifique.
+  2. **Validador** (`validator.py`, regla 8): BLOQUEANTE si el código generado lleva un literal de relleno. El plan del log se rechaza antes de ejecutarse, así que el solver reintenta con la instrucción correctiva en vez de producir relleno.
+  3. **Gate Nivel 1** (`es_resultado_sospechoso`): ahora usa `es_valor_placeholder` como única fuente de verdad. Antes tenía **su propia tupla de «valores vacíos»** que no incluía el contenido fabricado, así que el relleno pasaba la verificación como resultado válido.
+- **Decisión de alcance**: se bloquean literales inequívocos de relleno (multi-palabra y `n/a`), pero **no** cadenas cortas y ambiguas como `na`, `none` o `null`, que siguen tratándose como vacías solo en tiempo de ejecución. Evita falsos positivos sobre planes legítimos.
+- **Criterio de cierre**: el caso «5 ideas» ya no puede llegar a ejecutarse con relleno.
+- **Test**: `tests/test_regression_010_contenido_fabricado.py` (17 casos: incluye el código exacto del log). Verificado que **discrimina**: sin la regla 8 fallan 10 de 17.
+- **Límite honesto**: un resultado **parcialmente** fabricado (relleno en un campo junto a datos reales) no se bloquea; cerrarlo del todo requiere la validación de forma del `json` contra lo que espera el consumidor (acción 3 del análisis original), que queda como trabajo futuro.
 
 ### 3.4 · 🔴 `[bug]` `SIGSEGV` intermitente en la suite / sandbox (1.13)
 
@@ -419,7 +426,7 @@ Reparto propuesto, por valor real:
 | Hora | Foco | Items | Por qué |
 |---|---|---|---|
 | **1** | Aprendizaje + fallback | ~~3.2 (1.14)~~ ✅, ~~3.1 (1.2/1.10)~~ ✅ | Hora completa: la degradación silenciosa del refuerzo y el fallback que mentía están cerrados (§0.1). |
-| **2** | Causa raíz del pipeline | 3.3 (1.7/1.8), 3.10 (1.12) | El placeholder y la extracción vacía comparten raíz. Prohibir fallbacks que inventan datos. |
+| **2** | Causa raíz del pipeline | ~~3.3 (1.7/1.8)~~ ✅, 3.10 (1.12) | El contenido inventado ya se bloquea antes de ejecutar (§0.1); queda medir la cobertura del validador sobre el corpus real. |
 | **3** | Quick wins visibles | ~~3.6 (1.16)~~ ✅, 3.5 (1.18), 5.1 (`resolve` en web) | El logger ya está silenciado (§0.1); quedan `BrokenPipeError` y exponer `resolve`, la pieza más visible que el usuario nunca ve. |
 | **4** | Robustez | ~~3.7 (1.5)~~ ✅, ~~3.8 (1.3)~~ ✅, ~~3.9 (1.9)~~ ✅ | Hora completa: duración acumulativa, gate del corrector y reintento correctivo cerrados (§0.1). |
 | **5** | Tools + Event Bus | 4.1, 4.2, 4.3 | Separar Agent/Tool, registry, ampliar el bus existente. |
@@ -438,7 +445,7 @@ auto-crítica (0.4, tope 1), 1.13 (SIGSEGV) y 1.17.
 1. `py_compile` + tests verdes — **ya está**: 1180 passed. Mantenerlo como puerta.
 2. ~~`EvaluadorLLM` con cliente real en las 3 rutas~~ ✅ **cerrado** (§0.1).
 3. ~~Problem Solver → acción real, no simulada (3.1)~~ ✅ **cerrado** (§0.1).
-4. Prohibir fallbacks que fabrican datos (3.3).
+4. ~~Prohibir fallbacks que fabrican datos (3.3)~~ ✅ **cerrado** (§0.1).
 5. ~~`PythonCodeCorrector` con compile/test/rollback~~ ✅ **cerrado** (§0.1).
 6. ~~`Scheduler` + duración acumulada en reintentos (3.7)~~ ✅ **cerrado** (§0.1).
 7. Separar Agent de Tool + `ToolRegistry` (4.1, 4.2).

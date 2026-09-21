@@ -10,6 +10,8 @@ import logging
 import re
 from typing import Any
 
+from core.utils import es_valor_placeholder
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,16 +96,25 @@ def parsear_json_robusto(texto: str) -> Any | None:
 
 
 def es_resultado_sospechoso(resultado: Any) -> tuple[bool, str]:
-    """Detecta resultados vacíos que antes pasaban silenciosos."""
+    """Detecta resultados vacíos o de RELLENO que antes pasaban silenciosos.
+
+    Usa ``es_valor_placeholder`` como única fuente de verdad (3.3): antes tenía
+    su propia tupla de «valores vacíos» que no incluía el contenido fabricado
+    (``'Descripción no disponible'`` y compañía), así que el relleno del LLM
+    pasaba el gate Nivel 1 como si fuera un resultado válido.
+    """
     if resultado is None:
         return True, "resultado es None"
-    if resultado == {} or resultado == [] or resultado == "":
-        return True, "resultado vacío"
     if isinstance(resultado, dict):
-        vacios = (None, '', [], {}, 'N/A', 'null')
-        if all(v in vacios for v in resultado.values()):
-            return True, f"todos los valores vacíos: {list(resultado.keys())}"
+        # El caso dict se comprueba primero para poder nombrar las claves.
+        if all(es_valor_placeholder(v) for v in resultado.values()):
+            return True, (
+                f"todos los valores vacíos o de relleno: {list(resultado.keys())}"
+            )
         for k, v in resultado.items():
             if isinstance(v, dict) and not v:
                 return True, f"clave '{k}' es dict vacío"
+        return False, ""
+    if es_valor_placeholder(resultado):
+        return True, "resultado vacío o de relleno"
     return False, ""

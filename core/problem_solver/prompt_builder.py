@@ -55,6 +55,15 @@ class PromptBuilder:
         "SIEMPRE cruza por `id` usando `str()` en AMBOS lados para evitar mismatch int/str. "
         "Si el cruce por id falla, usa el ÍNDICE como fallback. NUNCA inventes claves nuevas: "
         "usa las claves que YA existen en el contexto.",
+        "**PROHIBIDO INVENTAR CONTENIDO (fallbacks silenciosos)**: NUNCA rellenes con "
+        "texto de relleno cuando falte el dato esperado. Está prohibido escribir "
+        "literales como 'Descripción no disponible', 'Sin contenido', 'N/A', "
+        "'Idea 1', 'placeholder', 'lorem ipsum' o similares, y también construir "
+        "datos falsos dentro de un `if`/`else` \"para que no falle\". Si la "
+        "dependencia no trae lo que necesitas, deja que el paso FALLE de forma "
+        "natural: accede a la clave y deja que el error salga, para que el sistema "
+        "replanifique con el motivo real. Un plan que inventa contenido se RECHAZA "
+        "antes de ejecutarse.",
         "**PARA LOOPS — CONTRATO DE FUENTE ITEMS**:",
         "  - `fuente_items` debe tener la forma `'NombreDependencia.clave'`.",
         "  - La dependencia DEBE producir un resultado con esa clave exacta.",

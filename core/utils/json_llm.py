@@ -20,9 +20,35 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+# Marcadores de contenido FABRICADO (3.3 del ROADMAP).
+#
+# El LLM, cuando no tiene el dato, tiende a escribir un fallback que INVENTA
+# contenido en lugar de dejar que el paso falle. El caso real que originó el
+# bug: un plan que, si el JSON no traía la forma esperada, rellenaba
+# ``{'titulo': f'Idea {i}', 'descripcion': 'Descripción no disponible'}``. El
+# plan "triunfaba" y el usuario recibía relleno.
+#
+# Esta tupla es la ÚNICA fuente de verdad: la usan el detector de plantillas
+# del executor LLM, el gate Nivel 1 de verificación y el validador de planes.
+LITERALES_FABRICADOS = (
+    "descripción no disponible", "descripcion no disponible",
+    "información no disponible", "informacion no disponible",
+    "contenido no disponible", "texto no disponible",
+    "no disponible",
+    "sin contenido", "sin datos",
+    "n/a",
+    "lorem ipsum", "texto de relleno", "contenido de relleno",
+    "texto de ejemplo", "contenido de ejemplo",
+    "pendiente de rellenar", "por determinar",
+    "placeholder",
+)
+
+# "na" y "none"/"null" se tratan como vacíos en tiempo de ejecución, pero NO se
+# bloquean como literales: son demasiado cortos y ambiguos para prohibirlos en
+# el código generado.
 _VALORES_PLACEHOLDER = {
-    "", "...", "…", "sin contenido", "sin datos", "n/a", "na", "-", "null", "none",
-}
+    "", "...", "…", "n/a", "na", "-", "null", "none",
+} | set(LITERALES_FABRICADOS)
 
 
 def es_valor_placeholder(valor) -> bool:
@@ -205,4 +231,4 @@ def extraer_json_de_llm(texto: Any) -> dict | list | None:
     return None
 
 
-__all__ = ["es_valor_placeholder", "extraer_json_de_llm"]
+__all__ = ["LITERALES_FABRICADOS", "es_valor_placeholder", "extraer_json_de_llm"]
