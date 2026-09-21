@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1212 passed, 1 skipped` (81 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
+- **Estado del código en esta fecha**: `1220 passed, 1 skipped` (85 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -75,8 +75,10 @@ parciales. El plan corregido está en la §13.
 | **3.11 (1.17)** | `--check-env --timeout N` ahora acota el comando de verdad. El `timeout` de `requests` solo limita operaciones de socket y **la resolución DNS queda fuera** (se midió: 17-22 s con `--timeout 2`). Un `signal.setitimer` **tampoco** lo resuelve (medido: 17 s), porque el handler de Python no corre mientras `getaddrinfo` está bloqueado en C. Solución: el ping se ejecuta en un hilo del que se desiste al agotar el presupuesto. Medición tras el fix: el ping tarda **exactamente 2,00 s** con `--timeout 2` (el total del comando, ~4 s, incluye ~2 s de arranque e imports). | `tests/test_regression_004_check_env_timeout.py` (10 casos) |
 | **3.8 (1.3)** | Gate de sintaxis en `PythonCodeCorrector._validar_o_revertir`: el código corregido se compila (`compile()`, el equivalente en proceso de `py_compile`) y, si no compila, se devuelve el **original** (rollback). La corrupción `contexto contexto...` no se reproducía, pero el corrector aceptaba cualquier reescritura sin comprobarla. | `tests/test_regression_005_code_corrector_gate.py` (12 casos) |
 | **3.9 (1.9)** | Reintento correctivo ante respuesta «solo razonamiento»: `_llamar_con_reintento_correctivo` reintenta **una vez** subiendo `max_tokens`, desactivando `thinking` y añadiendo una instrucción explícita de responder ya. Antes solo había `logger.warning` y el paso fallaba en cascada. | `tests/test_regression_006_reintento_razonamiento.py` (7 casos) |
+| **3.12** | El presupuesto compartido de `resolve` ya no se reinicia en cada intento: `set_contexto_plan_b` acepta `reiniciar_presupuesto` y `_ejecutar_plan` pasa `False` cuando recibe un presupuesto compartido (`run` no cambia). | `tests/test_regression_008_presupuesto_compartido.py` (5 casos) |
+| **3.7 (1.5)** | `agente.duracion` es **acumulativa** entre reintentos: se suma en `_duracion_acumulada` en vez de sobrescribirse. Se usa un atributo propio para no arrastrar el `0.1` de relleno de `Agente.__post_init__`. | `tests/test_regression_007_duracion_acumulativa.py` (3 casos, comparados contra un control de un solo intento) |
 
-Efecto en la suite: **1166 → 1212 passed, 1 skipped**, sin regresiones (50 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7).
+Efecto en la suite: **1166 → 1220 passed, 1 skipped**, sin regresiones (58 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
 los puntos de esta tabla ya están cerrados.
@@ -98,7 +100,7 @@ Reconstruido y verificado: **12/12** en `test_main_resolve.py`, **43/43** en
 `test_main_cli.py` (el contrato de `run` no cambia) y **21/21** en
 `test_goal_resolver.py`.
 
-### 🔴 Defecto descubierto al reconstruir: el presupuesto compartido no se comparte
+### 🔴 Defecto descubierto al reconstruir: el presupuesto compartido no se comparte → ✅ arreglado (3.12)
 
 El informe promete que «un único presupuesto cubre la planificación y **todos**
 los intentos». En el cableado real **no ocurre**:
@@ -121,10 +123,13 @@ Por qué no se detectó: los tests del bucle (`test_goal_resolver.py`) inyectan 
 ejecutor falso que registra gasto directamente en el `BudgetManager`, sin pasar
 por el `Scheduler`. La interacción solo existe en el cableado real.
 
-**Acción propuesta** (no aplicada: toca `core/scheduler.py`, que tiene trabajo
-en curso): añadir `reiniciar_presupuesto: bool = True` a `set_contexto_plan_b` y
-que `_ejecutar_plan` pase `False` cuando recibe un presupuesto compartido. Con
-test de regresión que verifique que dos intentos suman consumo.
+**Acción aplicada el 2026-09-21** (punto 3.12 de §3): `set_contexto_plan_b`
+acepta `reiniciar_presupuesto: bool = True`, y `_ejecutar_plan` pasa
+`presupuesto is None` — es decir, `False` cuando el presupuesto es compartido
+(modo `resolve`) y `True` en `run`, que no cambia de comportamiento.
+`tests/test_regression_008_presupuesto_compartido.py` (5 casos). Verificado que
+el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
+5 de 5.
 
 ---
 
@@ -136,7 +141,7 @@ test de regresión que verifique que dos intentos suman consumo.
 | 1.2 | Problem Solver → agente Python no ejecuta la acción | 🔴 CONFIRMADO | `core/problem_solver/solver.py:416-448` (`_crear_plan_fallback`) devuelve solo un dict con `status: ok`; nunca abre ni escribe el fichero pedido. |
 | 1.3 | `PythonCodeCorrector` corrompe código (`contexto contexto...`) | 🟠 PARCIAL | La corrupción **no está** en el repo: las 3 ocurrencias de `data = contexto if contexto else {}` (`solver.py:437`, `builder.py:112`, `validator.py:205`) están intactas. Pero `code_corrector.py:82` no llama a `py_compile` ni tiene rollback: **el gate pedido no existía**. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.4 | 401 con clave antigua; auditar claves en el repo | ❓ NO VERIFICABLE / auditoría limpia | `git ls-files \| xargs grep -nI "sk-[A-Za-z0-9]\{16,\}"` → solo fixtures enmascarados (`tests/test_env_checker.py:19`, `tests/test_ia_config.py:97`). `.env` es un **venv** (no un fichero de secretos) y está en `.gitignore`. No hay fuga en el repo; el 401 es de configuración en runtime. |
-| 1.5 | `Scheduler._ejecutar_agente` no actualiza `duracion` | 🟠 PARCIAL | **Sí la actualiza**: `core/scheduler.py:605` (`agente.duracion = duracion`). El defecto real es el segundo: `duracion` se calcula por intento (`:594`, `tiempo_fin - tiempo_inicio`) y se **sobrescribe** en cada reintento (`:726-751`), en vez de acumularse. |
+| 1.5 | `Scheduler._ejecutar_agente` no actualiza `duracion` | 🟠 PARCIAL | **Sí la actualiza**: `core/scheduler.py:605` (`agente.duracion = duracion`). El defecto real es el segundo: `duracion` se calcula por intento (`:594`, `tiempo_fin - tiempo_inicio`) y se **sobrescribe** en cada reintento (`:726-751`), en vez de acumularse. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.6 | Verificar flujo `Plan → Validación → BLOQUEANTE → refinar → máx N` | ✅ YA IMPLEMENTADO | `core/problem_solver/solver.py:191` `MAX_INTENTOS_VALIDACION = 2`; bucle de reintento `:193-224`; `core/problem_solver/validator.py` emite `BLOQUEANTE` en 13 ramas (p. ej. `:539` SyntaxError, `:672` identificador sin definir, `:717` clave inexistente). |
 | 1.7 | `GenerarHTML` muestra «Descripción no disponible» | 🔴 CONFIRMADO (causa raíz distinta) | El string no está en el código: lo **genera el LLM** en el paso 2 del plan. `logs/llm_response_20260913_091705_deepseek-v4-flash.txt:33` contiene el fallback `ideas.append({'titulo': f'Idea {i}', 'descripcion': 'Descripción no disponible'})`. `SeleccionarTop10`/`GenerarDescripciones`/`CombinarDatos` **no existen** en el código: son nombres de agente generados por el LLM. |
 | 1.8 | Extracción vacía en plan de 4 agentes | 🔴 CONFIRMADO (misma raíz que 1.7) | Contrato del executor LLM: `core/executors/llm_executor.py:580-582` expone `respuesta` **y** `json` (`json_auto`, puede ser `None`). El código generado hace `respuesta_llm.get('json', {})`: si el JSON tiene otra forma, degrada a `[]`/`''` **sin fallar**. Sin test de regresión. |
@@ -214,11 +219,12 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Coste**: 2 minutos. **Impacto**: alto en legibilidad de logs.
 - **Resuelto**: `"weasyprint"` añadido a la tupla de `main.py:343`. El test comprueba el nivel **efectivo** del logger hijo real (`weasyprint.progress`), no solo el nombre del padre. `tests/test_regression_002_weasyprint_silenciado.py` (4 casos, en verde).
 
-### 3.7 · 🟠 `duracion` no acumulativa en reintentos (1.5)
+### 3.7 · ✅ CERRADO (2026-09-21) · `duracion` no acumulativa en reintentos (1.5)
 
 - **Archivo**: `core/scheduler.py:594, 605, 726-751`
 - **Acción**: acumular por agente (`agente.duracion += delta`) en vez de sobrescribir; decidir si se expone el último intento por separado.
 - **Criterio de cierre**: test con 3 intentos de 5/7/4 s → `duracion == 16`.
+- **Resuelto**: se acumula en `agente._duracion_acumulada` (atributo propio, para no arrastrar el `0.1` de relleno de `Agente.__post_init__`) y `agente.duracion` refleja la suma. El test compara contra un **control de un solo intento** con calentamiento previo, en vez de fijar segundos absolutos, para no depender de lo que tarde el sandbox en arrancar. Verificado que **discrimina**: con el código antiguo fallan 3 de 3; con el arreglo, 3 de 3 pasan. `tests/test_regression_007_duracion_acumulativa.py`.
 
 ### 3.8 · ✅ CERRADO (2026-09-21) · Gate `py_compile` + rollback en `PythonCodeCorrector` (1.3)
 
@@ -246,7 +252,7 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Dos hipótesis descartadas con medición**: (a) el `timeout` de `requests` no basta porque la **resolución DNS** queda fuera — `--timeout 2` tardaba 17-22 s; (b) `signal.setitimer` tampoco lo resuelve porque el handler de Python no corre mientras `getaddrinfo` bloquea en C — medido: 17 s. Tras el arreglo, el ping tarda **exactamente 2,00 s** con `--timeout 2`.
 - **Test**: `tests/test_regression_004_check_env_timeout.py` (10 casos).
 
-### 3.12 · 🔴 `[bug]` El presupuesto compartido de `resolve` se reinicia en cada intento
+### 3.12 · ✅ CERRADO (2026-09-21) · `[bug]` El presupuesto compartido de `resolve` se reinicia en cada intento
 
 - **Archivos**: `core/scheduler.py:232-233`, `core/budget_manager.py:162-164`, `main.py` (`_ejecutar_plan`)
 - **Síntoma**: el límite de tiempo/llamadas/tokens de `resolve` no acota el total; cada intento arranca el presupuesto de cero.
@@ -254,6 +260,7 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 - **Acción**: `reiniciar_presupuesto: bool = True` en `set_contexto_plan_b`; `_ejecutar_plan` pasa `False` con presupuesto compartido.
 - **Criterio de cierre**: test que ejecuta dos intentos y verifica que el consumo se **suma**.
 - **Detalle y evidencia**: ver §0.2.
+- **Resuelto**: `reiniciar_presupuesto` en `set_contexto_plan_b` + `_ejecutar_plan` pasando `presupuesto is None`. Verificado que el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo, 5 de 5. `tests/test_regression_008_presupuesto_compartido.py`.
 
 ---
 
@@ -411,7 +418,7 @@ Reparto propuesto, por valor real:
 | **1** | Aprendizaje + fallback | ~~3.2 (1.14)~~ ✅, 3.1 (1.2/1.10) | La degradación silenciosa del refuerzo ya está cerrada (§0.1); queda el fallback que miente. |
 | **2** | Causa raíz del pipeline | 3.3 (1.7/1.8), 3.10 (1.12) | El placeholder y la extracción vacía comparten raíz. Prohibir fallbacks que inventan datos. |
 | **3** | Quick wins visibles | ~~3.6 (1.16)~~ ✅, 3.5 (1.18), 5.1 (`resolve` en web) | El logger ya está silenciado (§0.1); quedan `BrokenPipeError` y exponer `resolve`, la pieza más visible que el usuario nunca ve. |
-| **4** | Robustez | 3.7 (1.5), ~~3.8 (1.3)~~ ✅, ~~3.9 (1.9)~~ ✅ | Queda la duración acumulativa en reintentos; el gate del corrector y el reintento correctivo ya están cerrados (§0.1). |
+| **4** | Robustez | ~~3.7 (1.5)~~ ✅, ~~3.8 (1.3)~~ ✅, ~~3.9 (1.9)~~ ✅ | Hora completa: duración acumulativa, gate del corrector y reintento correctivo cerrados (§0.1). |
 | **5** | Tools + Event Bus | 4.1, 4.2, 4.3 | Separar Agent/Tool, registry, ampliar el bus existente. |
 | **6** | Sesiones + seguridad | 4.4, 4.5, 6.1, 6.2 | Sesiones persistentes, replay, permisos, sandbox. |
 | **7** | Futuro | 10.1, 10.2, 11 | Dividir `scheduler.py`/`main.py`, tipado, mapa de plugin DSH. |
@@ -430,7 +437,7 @@ auto-crítica (0.4, tope 1), 1.13 (SIGSEGV) y 1.17.
 3. Problem Solver → acción real, no simulada (3.1).
 4. Prohibir fallbacks que fabrican datos (3.3).
 5. ~~`PythonCodeCorrector` con compile/test/rollback~~ ✅ **cerrado** (§0.1).
-6. `Scheduler` + duración acumulada en reintentos (3.7).
+6. ~~`Scheduler` + duración acumulada en reintentos (3.7)~~ ✅ **cerrado** (§0.1).
 7. Separar Agent de Tool + `ToolRegistry` (4.1, 4.2).
 8. Ampliar el Event Bus y cerrar sesiones persistentes + replay (4.3–4.5).
 9. Permisos + sandbox real (6.1, 6.2).

@@ -218,7 +218,17 @@ class Scheduler(QObject):
 
         #logger.debug(f"Scheduler inicializado (max_concurrent={max_concurrent})")
 
-    def set_contexto_plan_b(self, recovery, problema_original: str, plan_original):
+    def set_contexto_plan_b(
+        self, recovery, problema_original: str, plan_original,
+        reiniciar_presupuesto: bool = True,
+    ):
+        """Inyecta el contexto del Plan B.
+
+        ``reiniciar_presupuesto`` (3.12): en ``run`` cada ejecución arranca con
+        el presupuesto a cero, pero en ``resolve`` el MISMO presupuesto cubre
+        todos los intentos, así que reiniciarlo aquí lo dejaría sin efecto. El
+        modo ``resolve`` pasa ``False``.
+        """
         self.recovery = recovery
         self._problema_original = problema_original or ""
         self._plan_original = plan_original
@@ -232,7 +242,7 @@ class Scheduler(QObject):
         self._parada_dura = None
         if getattr(self, "recovery_manager", None) is not None:
             self.recovery_manager.reset()
-        if getattr(self, "presupuesto", None) is not None:
+        if getattr(self, "presupuesto", None) is not None and reiniciar_presupuesto:
             self.presupuesto.reset()
         logger.debug("Plan B contexto inyectado en Scheduler")
 
@@ -602,7 +612,16 @@ class Scheduler(QObject):
 
             with self._lock:
                 agente.tiempo_fin = tiempo_fin
-                agente.duracion = duracion  # ← persistir duración real
+                # 3.7: ACUMULATIVA entre reintentos. Antes se sobrescribía, así
+                # que con intentos de 5 + 7 + 4 s `duracion` acababa en 4 s (el
+                # último) en vez de 16 s. Se acumula en un atributo propio para
+                # no arrastrar el 0.1 de relleno que fija ``Agente.__post_init__``.
+                _acumulada = (
+                    float(getattr(agente, "_duracion_acumulada", 0.0) or 0.0)
+                    + duracion
+                )
+                agente._duracion_acumulada = _acumulada
+                agente.duracion = _acumulada
                 agente.progreso = 80
                 agente.mensaje = "Procesando resultado..."
 

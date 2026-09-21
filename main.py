@@ -716,6 +716,10 @@ def _ejecutar_plan(
                 ),
                 problema_original=problema,
                 plan_original=plan,
+                # 3.12: con presupuesto compartido (modo ``resolve``) NO se
+                # reinicia, o cada intento arrancaría el límite de cero y el
+                # tope no acotaría el total.
+                reiniciar_presupuesto=presupuesto is None,
             )
         except Exception as e:
             log.debug("Plan B no disponible: %s", e)
