@@ -458,91 +458,41 @@ class Scheduler(QObject):
     # core/scheduler.py - MÉTODO _ejecutar_agente COMPLETO CON CANCELACIÓN
 
     def _ejecutar_agente(self, agente: Agente, contexto_extra: dict = None):
-        """
-        Ejecuta un agente en un hilo worker con soporte para cancelación.
+        """Ejecuta un agente en un hilo worker con soporte para cancelación.
+
+        Orquestador de fases (ROADMAP 4.1). Antes eran 380 líneas seguidas; cada
+        fase vive ahora en su propio método, para poder leerlas y probarlas por
+        separado:
+
+          FASE 1  ``_abrir_token_cancelacion``
+          FASE 2  ``_marcar_en_ejecucion``
+          FASE 3  ``_construir_contexto_o_saltar``
+          FASE 4  ``_ejecutar_con_executor``
+          FASE 4b ``_verificar_aceptacion``
+          FASE 5  ``_cerrar_intento`` (duración + estado + política de reintento)
+          finally ``_cerrar_token_cancelacion``
+
+        La extracción es mecánica: los ``return`` tempranos se han convertido en
+        valores centinela (``None`` / ``False``) y el ``return`` de la rama de
+        reintento en el flag ``reintentar``.
         """
         # ── Import del executor ──
-        try:
-            from core.executors import AgentExecutor
-        except ImportError as e:
-            self._manejar_error_importacion(agente, e)
+        if not self._preparar_executor(agente):
             return
 
         # ── FASE 1: Crear token de cancelación ──
-        token = self._gestor_cancelacion.crear_token({
-            'agente_id': agente.id,
-            'agente_nombre': agente.nombre,
-            'timestamp_inicio': time.time()
-        })
-
-        with self._lock:
-            self._tokens_activos[agente.id] = token
+        token = self._abrir_token_cancelacion(agente)
 
         try:
             # ── FASE 2: INICIO ──
-            tiempo_inicio = time.time()
-            with self._lock:
-                # Transición: PENDIENTE/EN_COLA/REINTENTANDO → EJECUTANDO
-                try:
-                    agente.transicionar_a(
-                        EstadoAgente.EJECUTANDO,
-                        "⚡ Iniciando ejecución..."
-                    )
-                except ValueError as e:
-                    self.log_mensaje.emit(
-                        f"⚠️ [{agente.nombre}] No se puede ejecutar: {e}",
-                        "#ffc107"
-                    )
-                    return
-
-                agente.tiempo_inicio = tiempo_inicio
-                agente.progreso = 10
-                agente._bridge = self.bridge
-
-                if self._tiempo_inicio_ejecucion is None:
-                    self._tiempo_inicio_ejecucion = tiempo_inicio
-
-            self._bus.publicar_agente_actualizado(agente.id, origen="scheduler")
-            self._bus.publicar_log(
-                f"▶️ [{agente.nombre}] Iniciando ejecución ({agente.tipo.value})",
-                "#007bff",
-                origen="scheduler"
-            )
+            tiempo_inicio = self._marcar_en_ejecucion(agente)
+            if tiempo_inicio is None:
+                return
 
             # ── FASE 3: Construir contexto ──
-            contexto = contexto_extra or {}
-            with self._lock:
-                for dep_id in agente.dependencias_ids:
-                    dep = self.agentes.get(dep_id)
-                    if dep:
-                        if dep.estado in (EstadoAgente.ERROR, EstadoAgente.TIMEOUT, EstadoAgente.SALTADO):
-                            try:
-                                agente.transicionar_a(
-                                    EstadoAgente.SALTADO,
-                                    f"⏭️ Dependencia '{dep.nombre}' falló ({dep.estado.value})"
-                                )
-                            except ValueError:
-                                agente.estado = EstadoAgente.SALTADO
-                                agente.mensaje = f"⏭️ Dependencia '{dep.nombre}' falló"
-
-                            agente.progreso = 100
-                            self.log_mensaje.emit(
-                                f"⏭️ [{agente.nombre}] Saltado: dependencia '{dep.nombre}' falló",
-                                "#6c757d"
-                            )
-                            self.agente_actualizado.emit(agente.id)
-
-                            with self._lock:
-                                self.completed.add(agente.id)
-                                self.running.discard(agente.id)
-                                self._invalidar_stats_cache()
-                                self._verificar_terminado_internal()
-                                self._intentar_lanzar_internal()
-                            return
-
-                        if dep and dep.resultado is not None and dep.estado == EstadoAgente.COMPLETADO:
-                            contexto[dep.nombre] = dep.resultado
-                            contexto[dep_id] = dep.resultado
+            contexto = self._construir_contexto_o_saltar(agente, contexto_extra)
+            if contexto is None:
+                return
 
             # ── FASE 4: Ejecutar con timeout y token de cancelación ──
             if agente.tipo == TipoAgente.LOOP:
@@ -553,244 +503,22 @@ class Scheduler(QObject):
             # ── ✅ NUEVO: Aviso de riesgo basado en aprendizaje ──
             self._avisar_riesgo_aprendizaje(agente)
 
-            try:
-
-                exito, mensaje, resultado = AgentExecutor.ejecutar(
-                    agente,
-                    contexto,
-                    cancellation_token=token  # ← PASAR EL TOKEN
-                )
-            except Exception as e:
-                exito, mensaje, resultado = False, f"Error crítico: {e}", {}
-                logger.exception(f"Error ejecutando agente {agente.nombre}")
+            exito, mensaje, resultado = self._ejecutar_con_executor(
+                agente, contexto, token
+            )
 
             # ── FASE 4b: VERIFICACIÓN DE ACEPTACIÓN (H6) ──
-            # Se comprueba el ARTEFACTO real (disco/bytes), no lo que el
-            # ejecutor dice haber producido. Se hace fuera del lock porque
-            # toca disco. Un paso crítico con resultado sospechoso (Nivel 1)
-            # o un contrato incumplido (Nivel 2) convierten el éxito en fallo
-            # con motivo, y ese motivo alimenta al Plan B.
-            fallo_verificacion = False
-            verificacion = None
-            if exito:
-                try:
-                    from .verification import verificar_agente
-
-                    verificacion = verificar_agente(agente, resultado)
-                except Exception as e:
-                    # Un verificador roto NUNCA debe tumbar la ejecución, pero
-                    # tampoco puede dar por bueno lo que no comprobó.
-                    logger.warning(
-                        f"Verificación de '{agente.nombre}' falló: {e}"
-                    )
-                    verificacion = None
-                if verificacion is not None:
-                    with self._lock:
-                        self._verificaciones[agente.id] = verificacion.to_dict()
-                    if not verificacion.aceptado:
-                        fallo_verificacion = True
-                        exito = False
-                        mensaje = (
-                            f"Aceptación fallida: {verificacion.motivo()}"
-                        )
-                        self.log_mensaje.emit(
-                            f"🔎 [{agente.nombre}] Aceptación fallida → "
-                            f"{verificacion.motivo()}",
-                            "#dc3545"
-                        )
+            exito, mensaje, fallo_verificacion = self._verificar_aceptacion(
+                agente, exito, mensaje, resultado
+            )
 
             # ── FASE 5: FINALIZACIÓN ──
-            tiempo_fin = time.time()
-            duracion = tiempo_fin - tiempo_inicio
-
-            # Bajo lock SOLO se decide si hay que bloquear dependientes. El
-            # bloqueo (que puede llamar al LLM para el Plan B) se ejecuta
-            # después, fuera del crítico: con el lock tomado, la llamada de
-            # red (~15-20 s) congelaba la UI (obtener_estadisticas usa el
-            # mismo lock) y paraba al resto de workers en FASE 5.
-            bloquear_razon: str | None = None
-
-            with self._lock:
-                agente.tiempo_fin = tiempo_fin
-                # 3.7: ACUMULATIVA entre reintentos. Antes se sobrescribía, así
-                # que con intentos de 5 + 7 + 4 s `duracion` acababa en 4 s (el
-                # último) en vez de 16 s. Se acumula en un atributo propio para
-                # no arrastrar el 0.1 de relleno que fija ``Agente.__post_init__``.
-                _acumulada = (
-                    float(getattr(agente, "_duracion_acumulada", 0.0) or 0.0)
-                    + duracion
-                )
-                agente._duracion_acumulada = _acumulada
-                agente.duracion = _acumulada
-                agente.progreso = 80
-                agente.mensaje = "Procesando resultado..."
-
-                # ── Log especial para loops ──
-                if agente.tipo == TipoAgente.LOOP:
-                    self._loops_activos.discard(agente.id)
-                    self._loop_items_procesados.pop(agente.id, None)
-                    if resultado and isinstance(resultado, dict):
-                        total_items = resultado.get('total_items', 0)
-                        exitos = resultado.get('exitos', 0)
-                        errores_loop = resultado.get('errores', 0)
-                        no_ejecutados = resultado.get('no_ejecutados', 0)
-                        duracion_loop = resultado.get('duracion_total', 0)
-                        self.log_mensaje.emit(
-                            f"📊 [{agente.nombre}] Loop: {total_items} items, "
-                            f"✅{exitos} ❌{errores_loop} ⏭{no_ejecutados} no ejec | {duracion_loop:.2f}s",
-                            "#6f42c1"
-                        )
-
-                # ── Determinar estado final usando la máquina de estados ──
-                # ``razon`` debe estar siempre definida: fue_cancelado puede
-                # venir de self._cancelados sin que el token esté cancelado
-                # (p. ej. si el agente se marcó cancelado mientras un reintento
-                # registraba un token nuevo). Antes eso provocaba un
-                # UnboundLocalError silencioso en el hilo worker.
-                razon = token.obtener_metadata(
-                    'razon_cancelacion', 'Cancelado por el usuario'
-                )
-                fue_cancelado = agente.id in self._cancelados
-                # Verificar si el token fue cancelado
-                if token.esta_cancelado():
-                    fue_cancelado = True
-
-                self._cancelados.discard(agente.id)
-
-                if fue_cancelado:
-                    try:
-                        agente.transicionar_a(
-                            EstadoAgente.CANCELADO,
-                            f"⛔ {razon}"
-                        )
-                    except ValueError:
-                        agente.estado = EstadoAgente.CANCELADO
-                        agente.mensaje = f"⛔ {razon}"
-                    agente.progreso = 100
-                    self.log_mensaje.emit(
-                        f"⛔ [{agente.nombre}] {razon}",
-                        "#6c757d"
-                    )
-                    bloquear_razon = f"{razon}"
-
-                elif exito:
-                    try:
-                        agente.transicionar_a(
-                            EstadoAgente.COMPLETADO,
-                            "✅ Completado"
-                        )
-                    except ValueError:
-                        agente.estado = EstadoAgente.COMPLETADO
-                        agente.mensaje = "✅ Completado"
-                    agente.progreso = 100
-                    agente.salida = mensaje
-                    agente.resultado = resultado
-
-                    resumen_resultado = self._resumir_resultado_log(agente, resultado)
-                    self.log_mensaje.emit(
-                        f"✅ [{agente.nombre}] Completado en {duracion:.2f}s → {resumen_resultado}",
-                        "#28a745"
-                    )
-
-                else:
-                    # ── Verificar si fue timeout ──
-                    es_timeout = (
-                        "timeout" in mensaje.lower() or
-                        "excedió" in mensaje.lower() or
-                        "timed out" in mensaje.lower()
-                    )
-
-                    if es_timeout:
-                        try:
-                            agente.transicionar_a(
-                                EstadoAgente.TIMEOUT,
-                                f"⏱️ Timeout: {mensaje[:100]}"
-                            )
-                        except ValueError:
-                            agente.estado = EstadoAgente.TIMEOUT
-                            agente.mensaje = "⏱️ Timeout"
-                        agente.progreso = 100
-                        agente.error = mensaje
-                        self.log_mensaje.emit(
-                            f"⏱️ [{agente.nombre}] Timeout después de {duracion:.2f}s",
-                            "#dc3545"
-                        )
-                        bloquear_razon = f"Timeout: {mensaje[:100]}"
-
-                    # ── Fallo de aceptación: error final SIN reintentos ──
-                    # El artefacto no cumple el contrato y el contrato es
-                    # determinista: reintentar el mismo paso daría el mismo
-                    # resultado. Se falla ya y el motivo va al Plan B.
-                    elif fallo_verificacion:
-                        try:
-                            agente.transicionar_a(
-                                EstadoAgente.ERROR,
-                                f"❌ {mensaje[:150]}"
-                            )
-                        except ValueError:
-                            agente.estado = EstadoAgente.ERROR
-                            agente.mensaje = f"❌ {mensaje[:150]}"
-                        agente.progreso = 100
-                        agente.error = mensaje
-                        self.log_mensaje.emit(
-                            f"❌ [{agente.nombre}] Rechazado por aceptación "
-                            f"tras {duracion:.2f}s → {mensaje[:200]}",
-                            "#dc3545"
-                        )
-                        # ``mensaje`` ya empieza por "Aceptación fallida:"; ese
-                        # motivo es el que recibe el Plan B.
-                        bloquear_razon = mensaje
-
-                    # ── Verificar reintentos ──
-                    elif agente.reintentos < agente.max_reintentos:
-                        agente.reintentos += 1
-                        try:
-                            agente.transicionar_a(
-                                EstadoAgente.REINTENTANDO,
-                                f"🔄 Reintento {agente.reintentos}/{agente.max_reintentos}"
-                            )
-                        except ValueError:
-                            agente.estado = EstadoAgente.REINTENTANDO
-                            agente.mensaje = f"🔄 Reintento {agente.reintentos}/{agente.max_reintentos}"
-                        agente.progreso = 0
-                        self.running.discard(agente.id)
-                        self._invalidar_stats_cache()
-                        self.log_mensaje.emit(
-                            f"🔄 [{agente.nombre}] Reintentando "
-                            f"({agente.reintentos}/{agente.max_reintentos})",
-                            "#ffc107"
-                        )
-                        try:
-                            agente.transicionar_a(
-                                EstadoAgente.EN_COLA,
-                                f"📋 En cola para reintento {agente.reintentos}"
-                            )
-                        except ValueError:
-                            agente.estado = EstadoAgente.EN_COLA
-                        self._reintentar_agente.emit(agente.id, contexto_extra)
-                        self.agente_actualizado.emit(agente.id)
-                        self._intentar_lanzar_internal()
-                        return
-
-                    else:
-                        # ── Error final (sin más reintentos) ──
-                        try:
-                            agente.transicionar_a(
-                                EstadoAgente.ERROR,
-                                f"❌ Error tras {agente.reintentos} reintentos"
-                            )
-                        except ValueError:
-                            agente.estado = EstadoAgente.ERROR
-                            agente.mensaje = f"❌ Error tras {agente.reintentos} reintentos"
-                        agente.progreso = 100
-                        agente.error = mensaje
-
-                        error_resumen = self._resumir_error_log(agente, mensaje, resultado)
-                        self.log_mensaje.emit(
-                            f"❌ [{agente.nombre}] Error después de {duracion:.2f}s → {error_resumen}",
-                            "#dc3545"
-                        )
-                        bloquear_razon = f"Error: {mensaje[:100]}"
+            bloquear_razon, reintentar = self._cerrar_intento(
+                agente, token, exito, mensaje, resultado,
+                tiempo_inicio, fallo_verificacion, contexto_extra,
+            )
+            if reintentar:
+                return
 
             # ── Plan B / bloqueo de dependientes (FUERA del lock) ──
             # ``_bloquear_dependientes`` puede llamar al LLM para generar el
@@ -804,31 +532,10 @@ class Scheduler(QObject):
                     # ensuciaría el nuevo (p. ej. añadiría su id a completed).
                     return
 
-            with self._lock:
-                # ── Actualizar conjuntos de estado ──
-                self.running.discard(agente.id)
-                if agente.estado in (
-                    EstadoAgente.COMPLETADO,
-                    EstadoAgente.ERROR,
-                    EstadoAgente.TIMEOUT,
-                    EstadoAgente.CANCELADO,
-                    EstadoAgente.SALTADO,
-                    EstadoAgente.BLOQUEADO
-                ):
-                    self.completed.add(agente.id)
-                    self._invalidar_stats_cache()
+            self._actualizar_conjuntos_finales(agente)
 
         finally:
-            # ── Limpiar token ──
-            token.completar()
-            with self._lock:
-                # Solo borrar si el token registrado sigue siendo el nuestro:
-                # en la ruta de reintento el mismo agente puede tener ya otro
-                # worker con un token nuevo, y borrarlo lo dejaba fuera del
-                # mapa de cancelación (detener() ya no podría pararlo).
-                if self._tokens_activos.get(agente.id) is token:
-                    self._tokens_activos.pop(agente.id, None)
-            self._gestor_cancelacion.eliminar_token(token.id)
+            self._cerrar_token_cancelacion(agente, token)
 
         # ── FASE 6: Emitir señales (fuera del lock) ──
         self.agente_actualizado.emit(agente.id)
@@ -837,6 +544,406 @@ class Scheduler(QObject):
         with self._lock:
             self._verificar_terminado_internal()
             self._intentar_lanzar_internal()
+
+    def _preparar_executor(self, agente: Agente) -> bool:
+        """Comprueba que ``AgentExecutor`` se puede importar.
+
+        Si no, marca el error del agente y devuelve ``False``: el original
+        volvía ANTES de crear el token de cancelación, y eso se conserva.
+        """
+        try:
+            from core.executors import AgentExecutor  # noqa: F401
+        except ImportError as e:
+            self._manejar_error_importacion(agente, e)
+            return False
+        return True
+
+    def _abrir_token_cancelacion(self, agente: Agente):
+        """FASE 1: registra un token de cancelación para este agente."""
+        token = self._gestor_cancelacion.crear_token({
+            'agente_id': agente.id,
+            'agente_nombre': agente.nombre,
+            'timestamp_inicio': time.time()
+        })
+        with self._lock:
+            self._tokens_activos[agente.id] = token
+        return token
+
+    def _marcar_en_ejecucion(self, agente: Agente) -> float | None:
+        """FASE 2: transiciona a EJECUTANDO y devuelve ``tiempo_inicio``.
+
+        Devuelve ``None`` si la máquina de estados rechaza la transición (antes
+        hacía ``return`` directamente).
+        """
+        tiempo_inicio = time.time()
+        with self._lock:
+            # Transición: PENDIENTE/EN_COLA/REINTENTANDO → EJECUTANDO
+            try:
+                agente.transicionar_a(
+                    EstadoAgente.EJECUTANDO,
+                    "⚡ Iniciando ejecución..."
+                )
+            except ValueError as e:
+                self.log_mensaje.emit(
+                    f"⚠️ [{agente.nombre}] No se puede ejecutar: {e}",
+                    "#ffc107"
+                )
+                return None
+
+            agente.tiempo_inicio = tiempo_inicio
+            agente.progreso = 10
+            agente._bridge = self.bridge
+
+            if self._tiempo_inicio_ejecucion is None:
+                self._tiempo_inicio_ejecucion = tiempo_inicio
+
+        self._bus.publicar_agente_actualizado(agente.id, origen="scheduler")
+        self._bus.publicar_log(
+            f"▶️ [{agente.nombre}] Iniciando ejecución ({agente.tipo.value})",
+            "#007bff",
+            origen="scheduler"
+        )
+        return tiempo_inicio
+
+    def _construir_contexto_o_saltar(
+        self, agente: Agente, contexto_extra: dict | None
+    ) -> dict | None:
+        """FASE 3: construye el contexto de dependencias.
+
+        Devuelve ``None`` si alguna dependencia falló: en ese caso el agente
+        queda SALTADO, se cierra su contabilidad y se relanza el plan (antes
+        hacía ``return`` directamente).
+        """
+        contexto = contexto_extra or {}
+        with self._lock:
+            for dep_id in agente.dependencias_ids:
+                dep = self.agentes.get(dep_id)
+                if dep:
+                    if dep.estado in (EstadoAgente.ERROR, EstadoAgente.TIMEOUT, EstadoAgente.SALTADO):
+                        try:
+                            agente.transicionar_a(
+                                EstadoAgente.SALTADO,
+                                f"⏭️ Dependencia '{dep.nombre}' falló ({dep.estado.value})"
+                            )
+                        except ValueError:
+                            agente.estado = EstadoAgente.SALTADO
+                            agente.mensaje = f"⏭️ Dependencia '{dep.nombre}' falló"
+
+                        agente.progreso = 100
+                        self.log_mensaje.emit(
+                            f"⏭️ [{agente.nombre}] Saltado: dependencia '{dep.nombre}' falló",
+                            "#6c757d"
+                        )
+                        self.agente_actualizado.emit(agente.id)
+
+                        with self._lock:
+                            self.completed.add(agente.id)
+                            self.running.discard(agente.id)
+                            self._invalidar_stats_cache()
+                            self._verificar_terminado_internal()
+                            self._intentar_lanzar_internal()
+                        return None
+
+                    if dep and dep.resultado is not None and dep.estado == EstadoAgente.COMPLETADO:
+                        contexto[dep.nombre] = dep.resultado
+                        contexto[dep_id] = dep.resultado
+        return contexto
+
+    def _ejecutar_con_executor(
+        self, agente: Agente, contexto: dict, token
+    ) -> tuple[bool, str, dict]:
+        """FASE 4: llama al executor. Un error inesperado no tumba el worker."""
+        from core.executors import AgentExecutor
+
+        try:
+            return AgentExecutor.ejecutar(
+                agente,
+                contexto,
+                cancellation_token=token  # ← PASAR EL TOKEN
+            )
+        except Exception as e:
+            logger.exception(f"Error ejecutando agente {agente.nombre}")
+            return False, f"Error crítico: {e}", {}
+
+    def _verificar_aceptacion(
+        self, agente: Agente, exito: bool, mensaje: str, resultado
+    ) -> tuple[bool, str, bool]:
+        """FASE 4b: VERIFICACIÓN DE ACEPTACIÓN (H6).
+
+        Se comprueba el ARTEFACTO real (disco/bytes), no lo que el ejecutor dice
+        haber producido. Se hace fuera del lock porque toca disco. Un paso
+        crítico con resultado sospechoso (Nivel 1) o un contrato incumplido
+        (Nivel 2) convierten el éxito en fallo con motivo, y ese motivo alimenta
+        al Plan B.
+
+        Devuelve ``(exito, mensaje, fallo_verificacion)``.
+        """
+        if not exito:
+            return exito, mensaje, False
+
+        try:
+            from .verification import verificar_agente
+
+            verificacion = verificar_agente(agente, resultado)
+        except Exception as e:
+            # Un verificador roto NUNCA debe tumbar la ejecución, pero
+            # tampoco puede dar por bueno lo que no comprobó.
+            logger.warning(
+                f"Verificación de '{agente.nombre}' falló: {e}"
+            )
+            return exito, mensaje, False
+
+        if verificacion is None:
+            return exito, mensaje, False
+
+        with self._lock:
+            self._verificaciones[agente.id] = verificacion.to_dict()
+
+        if verificacion.aceptado:
+            return exito, mensaje, False
+
+        mensaje = f"Aceptación fallida: {verificacion.motivo()}"
+        self.log_mensaje.emit(
+            f"🔎 [{agente.nombre}] Aceptación fallida → "
+            f"{verificacion.motivo()}",
+            "#dc3545"
+        )
+        return False, mensaje, True
+
+    def _preparar_cierre(
+        self, agente: Agente, tiempo_fin: float, duracion: float, resultado
+    ) -> None:
+        """FASE 5a: persiste tiempos, duración acumulada y log de loops."""
+        agente.tiempo_fin = tiempo_fin
+        # 3.7: ACUMULATIVA entre reintentos. Antes se sobrescribía, así
+        # que con intentos de 5 + 7 + 4 s `duracion` acababa en 4 s (el
+        # último) en vez de 16 s. Se acumula en un atributo propio para
+        # no arrastrar el 0.1 de relleno que fija ``Agente.__post_init__``.
+        _acumulada = (
+            float(getattr(agente, "_duracion_acumulada", 0.0) or 0.0)
+            + duracion
+        )
+        agente._duracion_acumulada = _acumulada
+        agente.duracion = _acumulada
+        agente.progreso = 80
+        agente.mensaje = "Procesando resultado..."
+
+        # ── Log especial para loops ──
+        if agente.tipo == TipoAgente.LOOP:
+            self._loops_activos.discard(agente.id)
+            self._loop_items_procesados.pop(agente.id, None)
+            if resultado and isinstance(resultado, dict):
+                total_items = resultado.get('total_items', 0)
+                exitos = resultado.get('exitos', 0)
+                errores_loop = resultado.get('errores', 0)
+                no_ejecutados = resultado.get('no_ejecutados', 0)
+                duracion_loop = resultado.get('duracion_total', 0)
+                self.log_mensaje.emit(
+                    f"📊 [{agente.nombre}] Loop: {total_items} items, "
+                    f"✅{exitos} ❌{errores_loop} ⏭{no_ejecutados} no ejec | {duracion_loop:.2f}s",
+                    "#6f42c1"
+                )
+
+    def _cerrar_intento(
+        self,
+        agente: Agente,
+        token,
+        exito: bool,
+        mensaje: str,
+        resultado,
+        tiempo_inicio: float,
+        fallo_verificacion: bool,
+        contexto_extra: dict | None,
+    ) -> tuple[str | None, bool]:
+        """FASE 5: duración, estado final y política de reintento.
+
+        Devuelve ``(razon_para_bloquear_dependientes, hay_que_reintentar)``. La
+        rama de reintento era un ``return`` a mitad del método; ahora se señala
+        con el segundo elemento.
+        """
+        tiempo_fin = time.time()
+        duracion = tiempo_fin - tiempo_inicio
+
+        with self._lock:
+            self._preparar_cierre(agente, tiempo_fin, duracion, resultado)
+
+            # ── Determinar estado final usando la máquina de estados ──
+            # ``razon`` debe estar siempre definida: fue_cancelado puede
+            # venir de self._cancelados sin que el token esté cancelado
+            # (p. ej. si el agente se marcó cancelado mientras un reintento
+            # registraba un token nuevo). Antes eso provocaba un
+            # UnboundLocalError silencioso en el hilo worker.
+            razon = token.obtener_metadata(
+                'razon_cancelacion', 'Cancelado por el usuario'
+            )
+            fue_cancelado = agente.id in self._cancelados
+            # Verificar si el token fue cancelado
+            if token.esta_cancelado():
+                fue_cancelado = True
+
+            self._cancelados.discard(agente.id)
+
+            if fue_cancelado:
+                try:
+                    agente.transicionar_a(
+                        EstadoAgente.CANCELADO,
+                        f"⛔ {razon}"
+                    )
+                except ValueError:
+                    agente.estado = EstadoAgente.CANCELADO
+                    agente.mensaje = f"⛔ {razon}"
+                agente.progreso = 100
+                self.log_mensaje.emit(
+                    f"⛔ [{agente.nombre}] {razon}",
+                    "#6c757d"
+                )
+                return f"{razon}", False
+
+            if exito:
+                try:
+                    agente.transicionar_a(
+                        EstadoAgente.COMPLETADO,
+                        "✅ Completado"
+                    )
+                except ValueError:
+                    agente.estado = EstadoAgente.COMPLETADO
+                    agente.mensaje = "✅ Completado"
+                agente.progreso = 100
+                agente.salida = mensaje
+                agente.resultado = resultado
+
+                resumen_resultado = self._resumir_resultado_log(agente, resultado)
+                self.log_mensaje.emit(
+                    f"✅ [{agente.nombre}] Completado en {duracion:.2f}s → {resumen_resultado}",
+                    "#28a745"
+                )
+                return None, False
+
+            # ── Fallo: verificar si fue timeout ──
+            es_timeout = (
+                "timeout" in mensaje.lower() or
+                "excedió" in mensaje.lower() or
+                "timed out" in mensaje.lower()
+            )
+
+            if es_timeout:
+                try:
+                    agente.transicionar_a(
+                        EstadoAgente.TIMEOUT,
+                        f"⏱️ Timeout: {mensaje[:100]}"
+                    )
+                except ValueError:
+                    agente.estado = EstadoAgente.TIMEOUT
+                    agente.mensaje = "⏱️ Timeout"
+                agente.progreso = 100
+                agente.error = mensaje
+                self.log_mensaje.emit(
+                    f"⏱️ [{agente.nombre}] Timeout después de {duracion:.2f}s",
+                    "#dc3545"
+                )
+                return f"Timeout: {mensaje[:100]}", False
+
+            # ── Fallo de aceptación: error final SIN reintentos ──
+            # El artefacto no cumple el contrato y el contrato es
+            # determinista: reintentar el mismo paso daría el mismo
+            # resultado. Se falla ya y el motivo va al Plan B.
+            if fallo_verificacion:
+                try:
+                    agente.transicionar_a(
+                        EstadoAgente.ERROR,
+                        f"❌ {mensaje[:150]}"
+                    )
+                except ValueError:
+                    agente.estado = EstadoAgente.ERROR
+                    agente.mensaje = f"❌ {mensaje[:150]}"
+                agente.progreso = 100
+                agente.error = mensaje
+                self.log_mensaje.emit(
+                    f"❌ [{agente.nombre}] Rechazado por aceptación "
+                    f"tras {duracion:.2f}s → {mensaje[:200]}",
+                    "#dc3545"
+                )
+                # ``mensaje`` ya empieza por "Aceptación fallida:"; ese
+                # motivo es el que recibe el Plan B.
+                return mensaje, False
+
+            # ── Verificar reintentos ──
+            if agente.reintentos < agente.max_reintentos:
+                agente.reintentos += 1
+                try:
+                    agente.transicionar_a(
+                        EstadoAgente.REINTENTANDO,
+                        f"🔄 Reintento {agente.reintentos}/{agente.max_reintentos}"
+                    )
+                except ValueError:
+                    agente.estado = EstadoAgente.REINTENTANDO
+                    agente.mensaje = f"🔄 Reintento {agente.reintentos}/{agente.max_reintentos}"
+                agente.progreso = 0
+                self.running.discard(agente.id)
+                self._invalidar_stats_cache()
+                self.log_mensaje.emit(
+                    f"🔄 [{agente.nombre}] Reintentando "
+                    f"({agente.reintentos}/{agente.max_reintentos})",
+                    "#ffc107"
+                )
+                try:
+                    agente.transicionar_a(
+                        EstadoAgente.EN_COLA,
+                        f"📋 En cola para reintento {agente.reintentos}"
+                    )
+                except ValueError:
+                    agente.estado = EstadoAgente.EN_COLA
+                self._reintentar_agente.emit(agente.id, contexto_extra)
+                self.agente_actualizado.emit(agente.id)
+                self._intentar_lanzar_internal()
+                return None, True
+
+            # ── Error final (sin más reintentos) ──
+            try:
+                agente.transicionar_a(
+                    EstadoAgente.ERROR,
+                    f"❌ Error tras {agente.reintentos} reintentos"
+                )
+            except ValueError:
+                agente.estado = EstadoAgente.ERROR
+                agente.mensaje = f"❌ Error tras {agente.reintentos} reintentos"
+            agente.progreso = 100
+            agente.error = mensaje
+
+            error_resumen = self._resumir_error_log(agente, mensaje, resultado)
+            self.log_mensaje.emit(
+                f"❌ [{agente.nombre}] Error después de {duracion:.2f}s → {error_resumen}",
+                "#dc3545"
+            )
+            return f"Error: {mensaje[:100]}", False
+
+    def _actualizar_conjuntos_finales(self, agente: Agente) -> None:
+        """Mueve el agente de ``running`` a ``completed`` si está en estado final."""
+        with self._lock:
+            # ── Actualizar conjuntos de estado ──
+            self.running.discard(agente.id)
+            if agente.estado in (
+                EstadoAgente.COMPLETADO,
+                EstadoAgente.ERROR,
+                EstadoAgente.TIMEOUT,
+                EstadoAgente.CANCELADO,
+                EstadoAgente.SALTADO,
+                EstadoAgente.BLOQUEADO
+            ):
+                self.completed.add(agente.id)
+                self._invalidar_stats_cache()
+
+    def _cerrar_token_cancelacion(self, agente: Agente, token) -> None:
+        """``finally``: completa y desregistra el token de cancelación."""
+        token.completar()
+        with self._lock:
+            # Solo borrar si el token registrado sigue siendo el nuestro:
+            # en la ruta de reintento el mismo agente puede tener ya otro
+            # worker con un token nuevo, y borrarlo lo dejaba fuera del
+            # mapa de cancelación (detener() ya no podría pararlo).
+            if self._tokens_activos.get(agente.id) is token:
+                self._tokens_activos.pop(agente.id, None)
+        self._gestor_cancelacion.eliminar_token(token.id)
 
     def _avisar_riesgo_aprendizaje(self, agente: Agente):
         """

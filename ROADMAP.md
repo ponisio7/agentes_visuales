@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1262 passed, 1 skipped` (90 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
+- **Estado del código en esta fecha**: `1270 passed, 2 skipped` (120 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes, y el número de *skips* varía entre 1 y 2 según el entorno. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -81,8 +81,9 @@ parciales. El plan corregido está en la §13.
 | **3.3 (1.7 + 1.8)** | Tres vías contra el contenido inventado: regla «PROHIBIDO INVENTAR CONTENIDO» en el prompt, regla 8 **BLOQUEANTE** en el validador (rechaza el plan antes de ejecutarlo) y `es_resultado_sospechoso` unificado con `es_valor_placeholder` (antes usaba una tupla propia que no cubría el relleno). Lista canónica única en `core/utils/json_llm.LITERALES_FABRICADOS`. | `tests/test_regression_010_contenido_fabricado.py` (19 casos, con el código exacto del log) |
 | **3.10 (1.12)** | Cobertura medida sobre el corpus real con `tools/cobertura_validador.py`: **512 ficheros, 796 pasos con código, 65 detectados (8,2 %)**, de los cuales **57 son contenido fabricado**. | Casos verbatim del corpus en `tests/test_regression_010_contenido_fabricado.py` + muestra medida en el mismo fichero |
 | **4.2 (2.5)** | Persistir la ejecución: el fallo pasa a **ERROR** accionable y la GUI **deja de inventar un id** con `SELECT MAX(id)`. Investigado con los logs de 6 días: el fallo que el parche rodeaba no ocurría, y el parche sí podía atribuir el feedback a otra ejecución. Limpiados los logs duplicados. | `tests/test_regression_011_persistencia_ejecucion.py` (8 casos) |
+| **4.1 (2.4)** | `Scheduler._ejecutar_agente`: **380 → 87 líneas**. Cada fase a su método. Tests de caracterización escritos **antes** de tocar. Extracción mecánica: los `return` tempranos pasan a centinelas y los `try/except` de la máquina de estados se mueven verbatim. | `tests/test_scheduler_ejecutar_agente_caracterizacion.py` (9 casos) |
 
-Efecto en la suite: **1166 → 1262 passed, 1 skipped**, sin regresiones (100 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 19 + 8).
+Efecto en la suite: **1166 → 1270 passed**, sin regresiones (109 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15 + 19 + 8 + 9).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
 los puntos de esta tabla ya están cerrados.
@@ -169,7 +170,7 @@ el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
 | 2.1 | `LLMClient` sin singleton en `core/executors.py` («candidato #1 a corrupción de heap») | ✅ YA RESUELTO | `core/executors/llm_executor.py:366-371` usa `obtener_llm_client_compartido()`, con comentario explícito del fix (`✅ B1`). |
 | 2.2 | Residuos de refactor: `export/core/scheduler/`, `export/logs/` | ✅ YA NO EXISTEN | `ls export/` → solo `exporters.py`, `__init__.py`, `utils.py`, `__pycache__`. |
 | 2.3 | Módulos migrados sin verificar tests (`core/executors/`, `storage/database/`) | ✅ RESUELTO | Ambos directorios existen y la suite completa pasa: `1166 passed, 1 skipped` vía `tools/run_tests.sh`. |
-| 2.4 | `_ejecutar_agente` del `Scheduler` sin refactorizar | 🔴 CONFIRMADO | Deuda **ya declarada** en `HARNESS_STATUS.md:186-187`: el refactor V4.0-5 se limitó a `_intentar_plan_b`. |
+| 2.4 | `_ejecutar_agente` del `Scheduler` sin refactorizar | 🔴 CONFIRMADO → ✅ **cerrado el 2026-09-21** (§3, punto 4.1) | Deuda declarada en `HARNESS_STATUS.md:186-187`: el refactor V4.0-5 se limitó a `_intentar_plan_b`. Ahora 380 → 87 líneas, con tests de caracterización previos. |
 | 2.5 | `_ultima_ejecucion_id` con parche `SELECT MAX(id)` | 🔴 CONFIRMADO → ✅ **cerrado el 2026-09-21** (§3, punto 4.2) | `ui/simple_main_window.py` ejecutaba `SELECT MAX(id)`. La investigación con los logs de 6 días mostró que **el fallo que rodeaba nunca ocurrió**; el problema real era que un fallo sería invisible y el `MAX(id)` habría atribuido el feedback a otra ejecución. |
 
 ---
@@ -289,11 +290,16 @@ Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 
 ## 4. Bloque 2 — Deuda técnica (backlog vivo)
 
-### 4.1 · 🔴 Refactorizar `Scheduler._ejecutar_agente`
+### 4.1 · ✅ CERRADO (2026-09-21) · Refactorizar `Scheduler._ejecutar_agente`
 
-Bloque más grande sin dividir; ya declarado en `HARNESS_STATUS.md:186-187`.
-Método: tests de caracterización **antes** de tocar (patrón ya usado en V4.0-5,
-`tests/test_scheduler_plan_b_caracterizacion.py`).
+- **Archivo**: `core/scheduler.py`
+- **Estado de partida**: el método más grande del Scheduler, **380 líneas** con 7 fases y cinco `return` tempranos. Ya declarado como deuda en `HARNESS_STATUS.md:186-187`.
+- **Método**: tests de caracterización **antes** de tocar (patrón de V4.0-5) → `tests/test_scheduler_ejecutar_agente_caracterizacion.py` (9 casos) que congelan las ramas observables: éxito, error sin reintentos, timeout, reintento con éxito, reintentos agotados, dependencia fallida, aceptación fallida sin reintentos, cancelación y limpieza del token. Se aíslan del sandbox sustituyendo `AgentExecutor.ejecutar` con un doble (siempre vía `monkeypatch`, para no filtrar el parche).
+- **Resultado**: `_ejecutar_agente` pasa a ser un **orquestador de 87 líneas**; cada fase vive en su método: `_preparar_executor`, `_abrir_token_cancelacion`, `_marcar_en_ejecucion`, `_construir_contexto_o_saltar`, `_ejecutar_con_executor`, `_verificar_aceptacion`, `_cerrar_intento` (con `_preparar_cierre`), `_actualizar_conjuntos_finales` y `_cerrar_token_cancelacion`.
+- **Cómo se conservó el comportamiento**: la extracción es **mecánica**. Los `return` tempranos se convirtieron en centinelas (`None`) y el `return` de la rama de reintento en el flag `reintentar`; los `try/except ValueError` de la máquina de estados se movieron **verbatim**, sin unificar, para no introducir diferencias sutiles en el mensaje de cada estado.
+- **Dato que reveló la caracterización**: un fallo de dependencia deja al dependiente en **BLOQUEADO**, no en SALTADO (lo hace `_bloquear_dependientes`). Se comprobó que la rama SALTADO es defensiva e inalcanzable por el flujo normal: al desactivar el bloqueo, el dependiente nunca se lanza y la ejecución se queda colgada. Queda documentado en el test en vez de dejar un test que se cuelga 60 s.
+- **Verificación**: 9/9 de caracterización, 56/56 en la batería de Scheduler/Plan B/aceptación/paradas duras/e2e/integración y **1270 passed** en la suite determinista. `ruff` limpio.
+- **Pendiente menor**: `_cerrar_intento` sigue teniendo 172 líneas (es la máquina de estados completa, una sola responsabilidad). Se puede partir en `_finalizar_cancelado` / `_finalizar_exitoso` / `_finalizar_fallido` / `_programar_reintento` en una pasada siguiente; no se hizo aquí para no acumular riesgo en el mismo commit.
 
 ### 4.2 · ✅ CERRADO (2026-09-21) · Causa raíz de `registrar_ejecucion_en_aprendizaje`
 
