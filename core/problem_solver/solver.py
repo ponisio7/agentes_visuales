@@ -29,6 +29,7 @@ import time
 
 from core.llm_client import LLMClient
 
+from .artefacto import detectar_artefacto
 from .builder import PlanBuilder
 from .code_corrector import PythonCodeCorrector
 from .constants import PlanComplexity
@@ -413,39 +414,106 @@ class ProblemSolver:
     # ============================================================
 
     def _crear_plan_fallback(self, problema: str) -> dict:
-        """Crea un plan de fallback con código Python CORRECTO."""
+        """Crea un plan de respaldo que **materializa** el artefacto pedido.
+
+        Antes devolvía un único paso Python que solo construía
+        ``{'status': 'ok', ...}``: el archivo pedido nunca se creaba y el
+        sistema aparentaba haber tenido éxito (1.2/1.10). El respaldo no puede
+        conocer el contenido real, pero sí puede dejar el artefacto en disco
+        con un contenido mínimo y **declararlo** en su propio texto, que es lo
+        contrario de simular.
+
+        Si el enunciado no nombra ningún archivo que se pueda escribir como
+        texto, se devuelve un resultado **honesto** (``fallback_sin_artefacto``)
+        en vez de un ``ok`` falso.
+        """
         self.logger.warning(f"Creando plan de fallback para: {problema[:50]}...")
 
         nombre = f"Resolver_{re.sub(r'[^a-zA-Z0-9_]', '_', problema[:20])}"
+        artefacto = detectar_artefacto(problema)
+
+        if not artefacto:
+            return {
+                "titulo": f"Resolver: {problema[:50]}...",
+                "analisis": (
+                    "Plan de respaldo sin artefacto identificable: no se puede "
+                    "materializar ningún archivo."
+                ),
+                "estimacion_tiempo_segundos": 10,
+                "pasos": [
+                    {
+                        "orden": 1,
+                        "nombre": nombre,
+                        "descripcion": problema[:100],
+                        "tipo": "Python",
+                        "dependencias": [],
+                        "configuracion": {
+                            "codigo": (
+                                "# Plan de respaldo SIN artefacto: se informa de\n"
+                                "# forma honesta, nunca con un 'ok' falso.\n"
+                                "resultado = {\n"
+                                "    'status': 'fallback_sin_artefacto',\n"
+                                "    'ok': False,\n"
+                                "    'aviso': (\n"
+                                "        'El planificador no está disponible y el enunciado no '\n"
+                                "        'nombra ningún archivo que se pueda crear; no se ha '\n"
+                                "        'producido ningún artefacto.'\n"
+                                "    ),\n"
+                                "}\n"
+                            ),
+                            "timeout": 30
+                        },
+                        "justificacion": (
+                            "No hay artefacto identificable: se declara el fallo "
+                            "en vez de simular éxito"
+                        )
+                    }
+                ]
+            }
+
+        contenido = (
+            f"Contenido de respaldo para {artefacto}.\n"
+            "El planificador no pudo usar el LLM, así que este archivo se ha creado "
+            "con el contenido mínimo del plan de respaldo.\n"
+        )
+        paso_contenido = f"Preparar_{re.sub(r'[^a-zA-Z0-9_]', '_', artefacto)[:20]}"
 
         return {
             "titulo": f"Resolver: {problema[:50]}...",
-            "analisis": "Se resuelve el problema utilizando Python con acceso correcto al contexto.",
-            "estimacion_tiempo_segundos": 30,
+            "analisis": (
+                f"Plan de respaldo: materializa '{artefacto}' con contenido mínimo, "
+                "porque el planificador no está disponible."
+            ),
+            "estimacion_tiempo_segundos": 15,
             "pasos": [
                 {
                     "orden": 1,
-                    "nombre": nombre,
-                    "descripcion": problema[:100],
+                    "nombre": paso_contenido,
+                    "descripcion": f"Prepara el contenido de respaldo para {artefacto}",
                     "tipo": "Python",
                     "dependencias": [],
                     "configuracion": {
-                        "codigo": (
-                            "import json\n"
-                            "import time\n\n"
-                            "# Datos disponibles en 'contexto'\n"
-                            "data = contexto if contexto else {}\n\n"
-                            "# Procesar el problema\n"
-                            "resultado = {\n"
-                            "    'status': 'ok',\n"
-                            "    'problema': 'Resuelto con fallback',\n"
-                            "    'timestamp': time.time(),\n"
-                            "    'datos_recibidos': data\n"
-                            "}\n"
-                        ),
+                        "codigo": f"resultado = {contenido!r}\n",
                         "timeout": 30
                     },
-                    "justificacion": "Paso único para resolver el problema usando Python con contexto correcto"
+                    "justificacion": (
+                        "Produce el contenido mínimo que escribirá el paso File"
+                    )
+                },
+                {
+                    "orden": 2,
+                    "nombre": "GuardarArtefacto",
+                    "descripcion": f"Escribe {artefacto} en disco",
+                    "tipo": "File",
+                    "dependencias": [paso_contenido],
+                    "configuracion": {
+                        "operacion": "escribir",
+                        "archivo_destino": artefacto
+                    },
+                    "justificacion": (
+                        "Materializa el artefacto pedido: el respaldo escribe de "
+                        "verdad, no simula"
+                    )
                 }
             ]
         }

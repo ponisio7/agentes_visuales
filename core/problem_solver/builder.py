@@ -33,6 +33,7 @@ from core.agent import Agente, TipoAgente
 from core.executors.security import validar_ruta_archivo
 from core.ia_config import modelo_por_defecto, normalizar_modelo
 
+from .artefacto import detectar_artefacto
 from .models import ContratoAceptacion, ExecutionPlan, StepPlan
 
 # Palabras del enunciado que implican que un documento debe llevar imagen.
@@ -99,27 +100,67 @@ class PlanBuilder:
     def construir_plan(self, problema: str, plan_dict: dict) -> ExecutionPlan:
         """Construye un ExecutionPlan desde el diccionario del LLM."""
         if 'pasos' not in plan_dict or not plan_dict['pasos']:
+            # 1.2/1.10: este paso por defecto también simulaba éxito. Si el
+            # enunciado nombra un archivo, se materializa con contenido mínimo
+            # vía un paso File; si no, se declara el fallo en vez de un 'ok'.
             self.logger.warning("Plan sin pasos, creando paso por defecto")
-            plan_dict['pasos'] = [{
-                "orden": 1,
-                "nombre": "ResolverProblema",
-                "descripcion": problema[:100],
-                "tipo": "Python",
-                "dependencias": [],
-                "configuracion": {
-                    "codigo": (
-                        "import json\n\n"
-                        "data = contexto if contexto else {}\n\n"
-                        "resultado = {\n"
-                        " 'status': 'ok',\n"
-                        " 'problema': 'Resuelto',\n"
-                        " 'datos': data\n"
-                        "}\n"
-                    ),
-                    "timeout": 30
-                },
-                "justificacion": "Paso principal para resolver el problema"
-            }]
+            artefacto = detectar_artefacto(problema)
+            if artefacto:
+                plan_dict['pasos'] = [
+                    {
+                        "orden": 1,
+                        "nombre": "PrepararContenidoRespaldo",
+                        "descripcion": f"Contenido mínimo para {artefacto}",
+                        "tipo": "Python",
+                        "dependencias": [],
+                        "configuracion": {
+                            "codigo": (
+                                "resultado = (\n"
+                                f"    'Contenido de respaldo para {artefacto}.\\n'\n"
+                                "    'El plan no declaró pasos; se ha creado este archivo '\n"
+                                "    'con el contenido mínimo de respaldo.\\n'\n"
+                                ")\n"
+                            ),
+                            "timeout": 30
+                        },
+                        "justificacion": "Contenido mínimo para el artefacto pedido"
+                    },
+                    {
+                        "orden": 2,
+                        "nombre": "GuardarArtefactoRespaldo",
+                        "descripcion": f"Escribe {artefacto} en disco",
+                        "tipo": "File",
+                        "dependencias": ["PrepararContenidoRespaldo"],
+                        "configuracion": {
+                            "operacion": "escribir",
+                            "archivo_destino": artefacto
+                        },
+                        "justificacion": "Materializa el artefacto en vez de simular éxito"
+                    },
+                ]
+            else:
+                plan_dict['pasos'] = [{
+                    "orden": 1,
+                    "nombre": "ResolverProblema",
+                    "descripcion": problema[:100],
+                    "tipo": "Python",
+                    "dependencias": [],
+                    "configuracion": {
+                        "codigo": (
+                            "# Sin artefacto identificable: se declara el fallo.\n"
+                            "resultado = {\n"
+                            "    'status': 'plan_sin_pasos',\n"
+                            "    'ok': False,\n"
+                            "    'aviso': (\n"
+                            "        'El plan no declaró pasos y el enunciado no nombra '\n"
+                            "        'ningún archivo que se pueda crear.'\n"
+                            "    ),\n"
+                            "}\n"
+                        ),
+                        "timeout": 30
+                    },
+                    "justificacion": "Paso por defecto honesto: no simula haber resuelto"
+                }]
 
         plan = ExecutionPlan(
             problema_original=problema,

@@ -4,7 +4,7 @@
 - **Fecha**: 2026-09-21
 - **Rama**: `harness/v3.8.0`
 - **Origen**: acta de cierre + backlog priorizado de la sesión del 21/09, **auditada contra el código real** antes de versionarla.
-- **Estado del código en esta fecha**: `1220 passed, 1 skipped` (85 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
+- **Estado del código en esta fecha**: `1235 passed, 1 skipped` (84 s) con `tools/run_tests.sh tests/ -m "not network"`; los 4 tests de red (API real de DeepSeek) quedan fuera porque son intermitentes. La referencia previa a las correcciones de §0.1 era `1180 passed, 1 skipped`.
 
 > **Cómo leer este documento.** El material de origen describía 18 fallos en el
 > Bloque 1 como si estuvieran todos vivos. La auditoría muestra que **casi la
@@ -77,8 +77,9 @@ parciales. El plan corregido está en la §13.
 | **3.9 (1.9)** | Reintento correctivo ante respuesta «solo razonamiento»: `_llamar_con_reintento_correctivo` reintenta **una vez** subiendo `max_tokens`, desactivando `thinking` y añadiendo una instrucción explícita de responder ya. Antes solo había `logger.warning` y el paso fallaba en cascada. | `tests/test_regression_006_reintento_razonamiento.py` (7 casos) |
 | **3.12** | El presupuesto compartido de `resolve` ya no se reinicia en cada intento: `set_contexto_plan_b` acepta `reiniciar_presupuesto` y `_ejecutar_plan` pasa `False` cuando recibe un presupuesto compartido (`run` no cambia). | `tests/test_regression_008_presupuesto_compartido.py` (5 casos) |
 | **3.7 (1.5)** | `agente.duracion` es **acumulativa** entre reintentos: se suma en `_duracion_acumulada` en vez de sobrescribirse. Se usa un atributo propio para no arrastrar el `0.1` de relleno de `Agente.__post_init__`. | `tests/test_regression_007_duracion_acumulativa.py` (3 casos, comparados contra un control de un solo intento) |
+| **3.1 (1.2 + 1.10)** | El plan de respaldo **materializa** el artefacto: `detectar_artefacto()` (módulo nuevo `artefacto.py`) + plan de dos pasos (contenido mínimo → `File` `escribir`). Si no hay artefacto identificable, devuelve `fallback_sin_artefacto` en vez de un `ok` falso. Solo extensiones de texto plano. | `tests/test_regression_009_respaldo_crea_artefacto.py` (15 casos) |
 
-Efecto en la suite: **1166 → 1220 passed, 1 skipped**, sin regresiones (58 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3).
+Efecto en la suite: **1166 → 1235 passed, 1 skipped**, sin regresiones (73 tests de regresión nuevos: 10 + 4 + 7 + 10 + 12 + 7 + 5 + 3 + 15).
 
 Los conteos de §0 y las tablas de §1 reflejan el estado **en la auditoría**;
 los puntos de esta tabla ya están cerrados.
@@ -138,7 +139,7 @@ el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
 | ID | Afirmación del acta | Veredicto | Evidencia |
 |---|---|---|---|
 | 1.1 | `solver.py` con `SyntaxError` tras parche | ⚪ NO REPRODUCE | `python -m compileall -q core main.py` → `exit=0`. Sin `SyntaxError`. |
-| 1.2 | Problem Solver → agente Python no ejecuta la acción | 🔴 CONFIRMADO | `core/problem_solver/solver.py:416-448` (`_crear_plan_fallback`) devuelve solo un dict con `status: ok`; nunca abre ni escribe el fichero pedido. |
+| 1.2 | Problem Solver → agente Python no ejecuta la acción | 🔴 CONFIRMADO → ✅ **arreglado el 2026-09-21** (§0.1) | `core/problem_solver/solver.py:416-448` (`_crear_plan_fallback`) devolvía solo un dict con `status: ok`; nunca escribía el fichero pedido. |
 | 1.3 | `PythonCodeCorrector` corrompe código (`contexto contexto...`) | 🟠 PARCIAL | La corrupción **no está** en el repo: las 3 ocurrencias de `data = contexto if contexto else {}` (`solver.py:437`, `builder.py:112`, `validator.py:205`) están intactas. Pero `code_corrector.py:82` no llama a `py_compile` ni tiene rollback: **el gate pedido no existía**. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.4 | 401 con clave antigua; auditar claves en el repo | ❓ NO VERIFICABLE / auditoría limpia | `git ls-files \| xargs grep -nI "sk-[A-Za-z0-9]\{16,\}"` → solo fixtures enmascarados (`tests/test_env_checker.py:19`, `tests/test_ia_config.py:97`). `.env` es un **venv** (no un fichero de secretos) y está en `.gitignore`. No hay fuga en el repo; el 401 es de configuración en runtime. |
 | 1.5 | `Scheduler._ejecutar_agente` no actualiza `duracion` | 🟠 PARCIAL | **Sí la actualiza**: `core/scheduler.py:605` (`agente.duracion = duracion`). El defecto real es el segundo: `duracion` se calcula por intento (`:594`, `tiempo_fin - tiempo_inicio`) y se **sobrescribe** en cada reintento (`:726-751`), en vez de acumularse. → ✅ **arreglado el 2026-09-21** (§0.1). |
@@ -146,7 +147,7 @@ el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
 | 1.7 | `GenerarHTML` muestra «Descripción no disponible» | 🔴 CONFIRMADO (causa raíz distinta) | El string no está en el código: lo **genera el LLM** en el paso 2 del plan. `logs/llm_response_20260913_091705_deepseek-v4-flash.txt:33` contiene el fallback `ideas.append({'titulo': f'Idea {i}', 'descripcion': 'Descripción no disponible'})`. `SeleccionarTop10`/`GenerarDescripciones`/`CombinarDatos` **no existen** en el código: son nombres de agente generados por el LLM. |
 | 1.8 | Extracción vacía en plan de 4 agentes | 🔴 CONFIRMADO (misma raíz que 1.7) | Contrato del executor LLM: `core/executors/llm_executor.py:580-582` expone `respuesta` **y** `json` (`json_auto`, puede ser `None`). El código generado hace `respuesta_llm.get('json', {})`: si el JSON tiene otra forma, degrada a `[]`/`''` **sin fallar**. Sin test de regresión. |
 | 1.9 | LLM «solo razonamiento» tras 3 reintentos | 🟠 PARCIAL | La detección **existe** pero solo avisa: `core/executors/llm_executor.py:566-576` → `logger.warning`. No hay reintento correctivo ni cambio de `max_tokens`. → ✅ **arreglado el 2026-09-21** (§0.1). |
-| 1.10 | Fallback con `SyntaxError` hardcodeado | 📝 MAL DESCRITO | El código es **sintácticamente válido** (`data = contexto if contexto else {}` es correcto; `contexto` está en el scope del `exec`). El defecto real es el de 1.2: el plan de respaldo **nunca escribe el fichero**. `solver.py:437`, `builder.py:112`. |
+| 1.10 | Fallback con `SyntaxError` hardcodeado | 📝 MAL DESCRITO | El código es **sintácticamente válido** (`data = contexto if contexto else {}` es correcto; `contexto` está en el scope del `exec`). El defecto real es el de 1.2: el plan de respaldo **nunca escribe el fichero**. `solver.py:437`, `builder.py:112`. → ✅ **arreglado el 2026-09-21** (§0.1). |
 | 1.11 | `export/exporters.py` — 2 bugs | ✅ YA RESUELTO | Columna inferida de una **ventana** de `STREAM_SNIFF_ROWS = 1000` (`export/exporters.py:44`, `:1049`), con aviso y `extrasaction="ignore"` para claves nuevas (`:1080-1085`). Y `exportar_streaming` devuelve `exito=not errores and filas_exportadas > 0` (`:1004`). |
 | 1.12 | LLM genera nombres de agentes como variables globales | 🟠 PARCIAL | El detector **existe**: `validator.py:665-680` (`identificador in nombres_agentes`) y `code_corrector.py:82` reescribe vía AST (`:156`, `:185`). Falta **medir cobertura** sobre el corpus de `logs/`, no solo el caso probado a mano. |
 | 1.13 | Segfault en `core/sandbox.py:853` | 🔴 CONFIRMADO | Reproducido: `python -m pytest -q` muere con SIGSEGV (`tests/conftest.py:49` → `tests/test_flujo_e2e_aceptacion.py:79`). El código ya mitiga por otra vía (`sandbox.py:853-870`: `cwd` explícito para evitar `vfork`, `TemporaryFile` en vez de `PIPE`; `:872-879` con `_SPAWN_LOCK` y `stdin=DEVNULL`). El fix propuesto en el acta (`NamedTemporaryFile(delete=False)`) **no** está aplicado; la mitigación operativa es `tools/run_tests.sh --forked`. |
@@ -175,13 +176,15 @@ el test **discrimina**: con el código antiguo fallan 3 de 5; con el arreglo,
 Solo los que siguen abiertos. Cada uno listo para convertirse en issue
 (plantilla en `.github/ISSUE_TEMPLATE/`).
 
-### 3.1 · 🔴 `[bug]` El plan de fallback nunca produce el artefacto pedido (1.2 + 1.10)
+### 3.1 · ✅ CERRADO (2026-09-21) · `[bug]` El plan de fallback nunca produce el artefacto pedido (1.2 + 1.10)
 
-- **Archivos**: `core/problem_solver/solver.py:416-448`, `core/problem_solver/builder.py:112`
+- **Archivos**: `core/problem_solver/solver.py`, `core/problem_solver/builder.py`, `core/problem_solver/artefacto.py` (nuevo)
 - **Síntoma**: ante fallo de API key, «crear `saludo.txt`» termina en `status: ok` sin que exista el fichero.
-- **Causa**: `_crear_plan_fallback` devuelve un dict de resultado; la escritura la haría un agente `File` que el plan de respaldo no incluye.
-- **Acción**: que el fallback declare un paso `File`/`Shell` que materialice el artefacto, o que devuelva `status: error` honesto. Prohibido simular éxito.
-- **Criterio de cierre**: test que ejecuta el plan de fallback y comprueba `os.path.exists(saludo.txt)`.
+- **Causa**: `_crear_plan_fallback` devolvía un único paso Python que solo construía un dict; la escritura la haría un agente `File` que el plan de respaldo no incluía. El paso por defecto de `PlanBuilder` (plan sin pasos) tenía el mismo defecto.
+- **Decisión de diseño**: se materializa **y** se declara. El respaldo no puede conocer el contenido real (para eso está el LLM), pero sí puede detectar el archivo nombrado en el enunciado y escribirlo con contenido mínimo que dice ser respaldo. Así no se simula éxito: se hace una parte real del trabajo y se declara la limitación. Si el enunciado no nombra ningún archivo escribible, se devuelve `fallback_sin_artefacto` en vez de un `ok` falso.
+- **Alcance**: solo extensiones de texto plano. Los binarios (`.docx`, `.pdf`…) se excluyen a propósito: escribirlos "a mano" produciría un archivo corrupto con la extensión correcta, peor que no crearlo.
+- **Criterio de cierre**: test que ejecuta el plan de respaldo y comprueba que `saludo.txt` existe y no está vacío.
+- **Resuelto**: `detectar_artefacto()` en el módulo nuevo `artefacto.py` (sin ciclos entre `solver` y `builder`) + plan de dos pasos (contenido → `File` `escribir`). `tests/test_regression_009_respaldo_crea_artefacto.py` (15 casos, 3 de ellos ejecutan el plan de verdad con el Scheduler). Verificado que **discrimina**: con el `solver.py` antiguo fallan 5 de 15.
 
 ### 3.2 · ✅ CERRADO (2026-09-21) · `[bug]` `EvaluadorLLM` recibe `None` y degrada el aprendizaje en silencio (1.14)
 
@@ -415,7 +418,7 @@ Reparto propuesto, por valor real:
 
 | Hora | Foco | Items | Por qué |
 |---|---|---|---|
-| **1** | Aprendizaje + fallback | ~~3.2 (1.14)~~ ✅, 3.1 (1.2/1.10) | La degradación silenciosa del refuerzo ya está cerrada (§0.1); queda el fallback que miente. |
+| **1** | Aprendizaje + fallback | ~~3.2 (1.14)~~ ✅, ~~3.1 (1.2/1.10)~~ ✅ | Hora completa: la degradación silenciosa del refuerzo y el fallback que mentía están cerrados (§0.1). |
 | **2** | Causa raíz del pipeline | 3.3 (1.7/1.8), 3.10 (1.12) | El placeholder y la extracción vacía comparten raíz. Prohibir fallbacks que inventan datos. |
 | **3** | Quick wins visibles | ~~3.6 (1.16)~~ ✅, 3.5 (1.18), 5.1 (`resolve` en web) | El logger ya está silenciado (§0.1); quedan `BrokenPipeError` y exponer `resolve`, la pieza más visible que el usuario nunca ve. |
 | **4** | Robustez | ~~3.7 (1.5)~~ ✅, ~~3.8 (1.3)~~ ✅, ~~3.9 (1.9)~~ ✅ | Hora completa: duración acumulativa, gate del corrector y reintento correctivo cerrados (§0.1). |
@@ -434,7 +437,7 @@ auto-crítica (0.4, tope 1), 1.13 (SIGSEGV) y 1.17.
 
 1. `py_compile` + tests verdes — **ya está**: 1180 passed. Mantenerlo como puerta.
 2. ~~`EvaluadorLLM` con cliente real en las 3 rutas~~ ✅ **cerrado** (§0.1).
-3. Problem Solver → acción real, no simulada (3.1).
+3. ~~Problem Solver → acción real, no simulada (3.1)~~ ✅ **cerrado** (§0.1).
 4. Prohibir fallbacks que fabrican datos (3.3).
 5. ~~`PythonCodeCorrector` con compile/test/rollback~~ ✅ **cerrado** (§0.1).
 6. ~~`Scheduler` + duración acumulada en reintentos (3.7)~~ ✅ **cerrado** (§0.1).
