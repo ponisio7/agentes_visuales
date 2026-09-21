@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "📋 Roadmap y estado verificado"
+    url: "https://github.com/ponisio7/agentes_visuales/blob/harness/v3.8.0/ROADMAP.md"
+    about: "Antes de abrir un issue, comprueba en ROADMAP.md §1 si el fallo sigue vivo: casi la mitad del acta original ya está resuelta."
+  - name: "🗂 Estado del sprint"
+    url: "https://github.com/ponisio7/agentes_visuales/blob/harness/v3.8.0/HARNESS_STATUS.md"
+    about: "Trabajo completado, deuda declarada y bloqueos del sprint en curso."
+  - name: "🧭 Decisiones de arquitectura"
+    url: "https://github.com/ponisio7/agentes_visuales/blob/harness/v3.8.0/DECISIONES.md"
+    about: "Decisiones ya tomadas (p. ej. Desktop Agent: no ahora) que no deben reproponerse sin cumplir sus condiciones."

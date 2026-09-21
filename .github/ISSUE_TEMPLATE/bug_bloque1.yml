@@ -1,0 +1,105 @@
+name: "🔴 Bug de estabilidad (Bloque 1)"
+description: "Fallo que bloquea estabilidad: núcleo, Pipeline, LLM o sandbox."
+title: "[bug] "
+labels: ["bug", "bloque-1-estabilidad"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por el reporte. Antes de abrir el issue, comprueba en
+        `ROADMAP.md` §1 que el fallo **sigue vivo**: varios puntos del acta
+        original ya están resueltos y no deben reabrirse.
+
+        Puertas obligatorias del proyecto (deben pasar antes de tocar nada):
+        ```bash
+        python -m compileall -q core main.py
+        tools/run_tests.sh        # sin --forked hay SIGSEGV conocido
+        ```
+
+  - type: input
+    id: roadmap_id
+    attributes:
+      label: "ID en ROADMAP.md"
+      description: "Punto del roadmap al que corresponde (p. ej. 3.1, 3.2, 3.6)."
+      placeholder: "3.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: sintoma
+    attributes:
+      label: "Síntoma observable"
+      description: "Qué se ve, no qué se cree que falla. Comando exacto y salida."
+      placeholder: |
+        Comando: python main.py run --prompt "crear saludo.txt"
+        Esperado: existe saludo.txt
+        Obtenido: status ok sin fichero
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduccion
+    attributes:
+      label: "Pasos de reproducción"
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: veredicto
+    attributes:
+      label: "Veredicto de la auditoría"
+      description: "Ver leyenda en ROADMAP.md. Si no lo has reproducido, marca «no verificado»."
+      options:
+        - "🔴 Confirmado (reproducido)"
+        - "🟠 Parcial (parte de la afirmación es falsa)"
+        - "📝 Mal descrito (defecto real, causa distinta)"
+        - "⚪ No reproduce"
+        - "❓ No verificado"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidencia
+    attributes:
+      label: "Evidencia en el código"
+      description: "Rutas con línea, trazas o logs. Ej.: core/problem_solver/solver.py:416-448"
+    validations:
+      required: true
+
+  - type: textarea
+    id: causa
+    attributes:
+      label: "Causa raíz propuesta"
+      description: "Si no se conoce, escribe «sin diagnosticar» en vez de dejar el campo vacío."
+
+  - type: textarea
+    id: accion
+    attributes:
+      label: "Acción propuesta"
+    validations:
+      required: true
+
+  - type: input
+    id: cierre
+    attributes:
+      label: "Criterio de cierre verificable"
+      description: "El test o comando concreto que demuestra el arreglo."
+      placeholder: "test_regression_NNN comprueba os.path.exists('saludo.txt')"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: reglas
+    attributes:
+      label: "Reglas del proyecto"
+      options:
+        - label: "El fallback no debe simular éxito: un resultado vacío es un fallo del paso."
+          required: true
+        - label: "No incluyo API keys ni credenciales en texto plano."
+          required: true
+        - label: "Añadiré el test de regresión correspondiente (ROADMAP §9 · 7.4)."
+          required: true

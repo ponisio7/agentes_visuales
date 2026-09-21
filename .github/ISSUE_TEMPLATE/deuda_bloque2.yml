@@ -1,0 +1,93 @@
+name: "🟠 Deuda técnica (Bloque 2)"
+description: "Refactor, módulo sin verificar, parche sobre síntoma o residuo de migración."
+title: "[deuda] "
+labels: ["deuda-tecnica", "bloque-2-deuda"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        La deuda del Bloque 2 se paga con **tests de caracterización antes de
+        tocar**, no después. Patrón ya validado en V4.0-5:
+        `tests/test_scheduler_plan_b_caracterizacion.py`.
+
+  - type: input
+    id: roadmap_id
+    attributes:
+      label: "ID en ROADMAP.md"
+      description: "Punto del roadmap (p. ej. 4.1, 4.2)."
+      placeholder: "4.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: deuda
+    attributes:
+      label: "Deuda concreta"
+      description: "Qué está mal y por qué importa ahora (no en abstracto)."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: clase
+    attributes:
+      label: "Clase de deuda"
+      options:
+        - "Módulo/función gigante sin dividir"
+        - "Parche sobre síntoma (causa raíz sin diagnosticar)"
+        - "Módulo migrado sin verificar tests"
+        - "Residuo de refactor"
+        - "Duplicación"
+        - "Falta de tipado fuerte"
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidencia
+    attributes:
+      label: "Evidencia"
+      description: "Rutas con línea, recuento de líneas, referencias cruzadas."
+      placeholder: "core/scheduler.py — 1792 líneas; HARNESS_STATUS.md:186-187"
+    validations:
+      required: true
+
+  - type: textarea
+    id: causa_raiz
+    attributes:
+      label: "Causa raíz"
+      description: "Si el punto es un parche sobre síntoma, describir qué falla realmente."
+
+  - type: textarea
+    id: plan
+    attributes:
+      label: "Plan de refactor"
+      description: "Pasos, en orden, con el punto de no retorno marcado."
+    validations:
+      required: true
+
+  - type: input
+    id: caracterizacion
+    attributes:
+      label: "Test de caracterización previo"
+      description: "Nombre del fichero de test que fija el comportamiento actual antes de tocar."
+      placeholder: "tests/test_scheduler_ejecutar_agente_caracterizacion.py"
+    validations:
+      required: true
+
+  - type: input
+    id: cierre
+    attributes:
+      label: "Criterio de cierre"
+      description: "Métrica objetiva: líneas, complejidad, tests en verde, avisos de ruff."
+      placeholder: "suite 1166+ passed y ruff limpio en lo tocado"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: reglas
+    attributes:
+      label: "Reglas del proyecto"
+      options:
+        - label: "Corro la suite completa aislada (`tools/run_tests.sh`) antes y después."
+          required: true
+        - label: "No divido artificialmente: ~500 líneas y una responsabilidad por módulo (ROADMAP §12 · 10.1)."
+          required: true
